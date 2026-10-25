@@ -242,13 +242,24 @@ static void StyleDockToolbar(QToolBar *toolbar)
 {
 	if (!toolbar)
 		return;
+	/* Match OBSBasic.ui scenesToolbar / sourcesToolbar. No widget
+	 * stylesheet: Yami's "OBSDock QToolBar QToolButton" supplies the
+	 * metrics, and the icon-* class supplies the themed icon. */
 	toolbar->setIconSize(QSize(16, 16));
-	toolbar->setFixedHeight(32);
-	toolbar->setStyleSheet(QString::fromUtf8(
-		"QToolBar { border: none; border-top: 1px solid palette(mid); background: transparent; spacing: 0px; padding: 1px; margin: 0px; }"
-		"QToolButton { background: transparent; border: 1px solid transparent; margin: 1px; margin-top: 2px; padding: 4px; min-width: 16px; min-height: 16px; }"
-		"QToolButton:hover { border-color: palette(mid); }"
-		"QToolButton:pressed { background: palette(mid); }"));
+	toolbar->setFloatable(false);
+	toolbar->setMovable(false);
+	toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+}
+
+static void SetToolbarClass(QToolBar *toolbar, QAction *action, const char *cls)
+{
+	if (!action)
+		return;
+	action->setProperty("class", QString::fromUtf8(cls));
+	QWidget *button = toolbar ? toolbar->widgetForAction(action) : nullptr;
+	if (!button)
+		return;
+	button->setProperty("class", QString::fromUtf8(cls));
 }
 
 void CanvasDock::LoadUI()
@@ -530,23 +541,21 @@ void CanvasDock::LoadUI()
 		toolbar->setIconSize(QSize(16, 16));
 		toolbar->setFloatable(false);
 		toolbar->setMovable(false);
-		auto a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/plus.svg")),
+		auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/plus.svg")),
 					    QString::fromUtf8(obs_frontend_get_locale_string("Add")), [this] { AddScene(); });
 		a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("AddScene")));
-		toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
-		toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
+		SetToolbarClass(toolbar, a, "icon-plus");
 
-		a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/trash.svg")),
-				       QString::fromUtf8(obs_frontend_get_locale_string("RemoveScene")), [this] {
+		a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/minus.svg")),
+				       QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
 					       auto item = sceneList->currentItem();
 					       if (!item) {
 						       return;
 					       }
 					       RemoveScene(item->text());
 				       });
-		a->setProperty("class", QString::fromUtf8("icon-trash"));
-		toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
-		toolbar->widgetForAction(a)->setProperty("class", QString::fromUtf8("icon-trash"));
+		a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("RemoveScene")));
+		SetToolbarClass(toolbar, a, "icon-trash");
 		a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 #ifdef __APPLE__
 		a->setShortcut({Qt::Key_Backspace});
@@ -555,7 +564,7 @@ void CanvasDock::LoadUI()
 #endif
 		sceneList->addAction(a);
 		toolbar->addSeparator();
-		a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/filter.svg")),
+		a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/filter.svg")),
 				       QString::fromUtf8(obs_frontend_get_locale_string("SceneFilters")), [this] {
 					       auto item = sceneList->currentItem();
 					       if (!item) {
@@ -568,19 +577,19 @@ void CanvasDock::LoadUI()
 					       obs_frontend_open_source_filters(s);
 					       obs_source_release(s);
 				       });
-		toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("filtersIcon")));
-		toolbar->widgetForAction(a)->setProperty("class", "icon-filter");
+		a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SceneFilters")));
+		SetToolbarClass(toolbar, a, "icon-filter");
 		toolbar->addSeparator();
-		a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/up.svg")),
-				       QString::fromUtf8(obs_frontend_get_locale_string("MoveSceneUp")),
+		a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/up.svg")),
+				       QString::fromUtf8(obs_frontend_get_locale_string("MoveUp")),
 				       [this] { ChangeSceneIndex(true, -1, 0); });
-		toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("upArrowIconSmall")));
-		toolbar->widgetForAction(a)->setProperty("class", "icon-up");
-		a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/down.svg")),
-				       QString::fromUtf8(obs_frontend_get_locale_string("MoveSceneDown")),
+		a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSceneUp")));
+		SetToolbarClass(toolbar, a, "icon-up");
+		a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/down.svg")),
+				       QString::fromUtf8(obs_frontend_get_locale_string("MoveDown")),
 				       [this] { ChangeSceneIndex(true, 1, sceneList->count() - 1); });
-		toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("downArrowIconSmall")));
-		toolbar->widgetForAction(a)->setProperty("class", "icon-down");
+		a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSceneDown")));
+		SetToolbarClass(toolbar, a, "icon-down");
 		StyleDockToolbar(toolbar);
 		scenesGroupLayout->addWidget(toolbar);
 
@@ -626,14 +635,14 @@ void CanvasDock::LoadUI()
 	toolbar->setIconSize(QSize(16, 16));
 	toolbar->setFloatable(false);
 	auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/plus.svg")),
-				    QString::fromUtf8(obs_frontend_get_locale_string("AddSource")),
+				    QString::fromUtf8(obs_frontend_get_locale_string("Add")),
 				    [this] { OpenSourceSelectDialog(this, scene); });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("AddSource")));
+	SetToolbarClass(toolbar, a, "icon-plus");
 
 	a = toolbar->addAction(
-		QIcon(QString::fromUtf8("theme:Dark/trash.svg")),
-		QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")), [this] {
+		QIcon(QString::fromUtf8(":/res/images/minus.svg")),
+		QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
 			std::vector<OBSSceneItem> items;
 			obs_scene_enum_items(scene, selected_items, &items);
 			if (!items.size()) {
@@ -711,9 +720,8 @@ void CanvasDock::LoadUI()
 			obs_frontend_add_undo_redo_action(action_name.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
 							  undo_json.c_str(), redo_json.c_str(), false);
 		});
-	a->setProperty("class", QString::fromUtf8("icon-trash"));
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", QString::fromUtf8("icon-trash"));
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")));
+	SetToolbarClass(toolbar, a, "icon-trash");
 	a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 #ifdef __APPLE__
 	a->setShortcut({Qt::Key_Backspace});
@@ -722,20 +730,20 @@ void CanvasDock::LoadUI()
 #endif
 	sourceList->addAction(a);
 	toolbar->addSeparator();
-	a = toolbar->addAction(QIcon(":/settings/images/settings/general.svg"),
-			       QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")), [this] {
+	a = toolbar->addAction(QIcon(QString::fromUtf8(":/settings/images/settings/general.svg")),
+			       QString::fromUtf8(obs_frontend_get_locale_string("Properties")), [this] {
 				       auto item = GetCurrentSceneItem();
 				       auto source = obs_sceneitem_get_source(item);
 				       if (source) {
 					       obs_frontend_open_source_properties(source);
 				       }
 			       });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("propertiesIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-gear");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")));
+	SetToolbarClass(toolbar, a, "icon-gear");
 
 	toolbar->addSeparator();
 	a = toolbar->addAction(
-		QIcon(":/res/images/up.svg"), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")), [this] {
+		QIcon(QString::fromUtf8(":/res/images/up.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveUp")), [this] {
 			auto item = GetCurrentSceneItem();
 			if (!item) {
 				return;
@@ -753,10 +761,10 @@ void CanvasDock::LoadUI()
 			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
 							  undo_json.c_str(), redo_json.c_str(), false);
 		});
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("upArrowIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-up");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")));
+	SetToolbarClass(toolbar, a, "icon-up");
 	a = toolbar->addAction(
-		QIcon(":/res/images/down.svg"), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")), [this] {
+		QIcon(QString::fromUtf8(":/res/images/down.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveDown")), [this] {
 			auto item = GetCurrentSceneItem();
 			if (!item) {
 				return;
@@ -774,8 +782,8 @@ void CanvasDock::LoadUI()
 			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
 							  undo_json.c_str(), redo_json.c_str(), false);
 		});
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("downArrowIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-down");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")));
+	SetToolbarClass(toolbar, a, "icon-down");
 
 	StyleDockToolbar(toolbar);
 	sourcesGroupLayout->addWidget(toolbar);
@@ -825,8 +833,7 @@ void CanvasDock::LoadUI()
 		addButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 		addButton->setAccessibleName(QString::fromUtf8(obs_frontend_get_locale_string("Basic.AddTransition")));
 		addButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("Basic.AddTransition")));
-		addButton->setIcon(QIcon(QString::fromUtf8("theme:Dark/plus.svg")));
-		addButton->setProperty("themeID", "addIconSmall");
+		addButton->setIcon(QIcon(QString::fromUtf8(":/res/images/plus.svg")));
 		addButton->setProperty("class", QString::fromUtf8("btn-tool icon-plus"));
 		addButton->setFlat(false);
 		addButton->style()->unpolish(addButton);
@@ -918,8 +925,7 @@ void CanvasDock::LoadUI()
 		removeButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 		removeButton->setAccessibleName(QString::fromUtf8(obs_frontend_get_locale_string("Basic.RemoveTransition")));
 		removeButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("Basic.RemoveTransition")));
-		removeButton->setIcon(QIcon(QString::fromUtf8("theme:Dark/trash.svg")));
-		removeButton->setProperty("themeID", "removeIconSmall");
+		removeButton->setIcon(QIcon(QString::fromUtf8(":/res/images/minus.svg")));
 		removeButton->setProperty("class", QString::fromUtf8("btn-tool icon-trash"));
 		removeButton->setFlat(false);
 		removeButton->style()->unpolish(removeButton);
@@ -958,8 +964,7 @@ void CanvasDock::LoadUI()
 		propsButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 		propsButton->setAccessibleName(QString::fromUtf8(obs_frontend_get_locale_string("Basic.TransitionProperties")));
 		propsButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("Basic.TransitionProperties")));
-		propsButton->setIcon(QIcon(QString::fromUtf8("theme:Dark/dots-vert.svg")));
-		propsButton->setProperty("themeID", "menuIconSmall");
+		propsButton->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/general.svg")));
 		propsButton->setProperty("class", QString::fromUtf8("btn-tool icon-dots-vert"));
 		propsButton->setFlat(false);
 		propsButton->style()->unpolish(propsButton);

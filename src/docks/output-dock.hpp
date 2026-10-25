@@ -20,8 +20,10 @@ private:
 	QVBoxLayout *mainLayout = nullptr;
 	QLabel *mainPlatformIconLabel = nullptr;
 	QLabel *mainStreamCanvasLabel = nullptr;
+	QLabel *mainRecordCanvasLabel = nullptr;
 	QPushButton *mainStreamButton = nullptr;
 	QPushButton *mainRecordButton = nullptr;
+	obs_output_t *canvasRecordOutput = nullptr;
 	QFrame *mainStreamGroup = nullptr;
 	QFrame *mainRecordGroup = nullptr;
 	QString mainPlatformUrl;
@@ -44,6 +46,13 @@ private:
 
 	std::function<void()> mainStreamOnStarted;
 	std::function<void()> mainRecordOnStarted;
+
+	bool RecordUsesCanvas() const;
+	bool CanvasRecordActive() const;
+	bool StartCanvasRecord();
+	void StopCanvasRecord();
+	void ToggleMainRecord();
+	void RefreshRecordCanvasLabel();
 
 	static void frontend_event(enum obs_frontend_event event, void *private_data);
 

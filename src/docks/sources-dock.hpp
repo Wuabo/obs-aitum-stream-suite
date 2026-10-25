@@ -4,6 +4,9 @@
 #include <QFrame>
 #include <QListWidget>
 
+class QAction;
+class QToolBar;
+
 class SourcesDock : public QFrame {
 	Q_OBJECT
 private:
@@ -11,12 +14,18 @@ private:
 
 	obs_weak_source_t *scene = nullptr;
 	SourceTree *sourceList;
+	QToolBar *sourceToolbar = nullptr;
+	QAction *removeAction = nullptr;
+	QAction *propertiesAction = nullptr;
+	QAction *moveUpAction = nullptr;
+	QAction *moveDownAction = nullptr;
 	std::vector<obs_sceneitem_t *> hoveredPreviewItems;
 	std::vector<obs_sceneitem_t *> selectedItems;
 	std::mutex selectMutex;
 
 	obs_sceneitem_t *GetCurrentSceneItem();
 	int GetTopSelectedSourceItem();
+	void UpdateSourceToolbar();
 
 	void ShowSourcesContextMenu(obs_sceneitem_t *item);
 

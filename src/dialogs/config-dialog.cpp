@@ -26,6 +26,7 @@
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QVBoxLayout>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTextEdit>
@@ -251,25 +252,32 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	outputGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 	StyleSettingsCard(outputGroup);
 
-	auto outputLayout = new QFormLayout;
-	outputLayout->setContentsMargins(4, 2, 4, 2);
-	outputLayout->setSpacing(2);
-	outputLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-	outputLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
+	auto outputLayout = new QVBoxLayout;
+	outputLayout->setContentsMargins(8, 8, 8, 8);
+	outputLayout->setSpacing(6);
 
 	auto mainTitle2 = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputTitle")));
-	mainTitle2->setStyleSheet("font-weight: bold;");
-	outputLayout->addRow(mainTitle2);
+	mainTitle2->setStyleSheet(QString::fromUtf8("font-weight: bold;"));
+	outputLayout->addWidget(mainTitle2, 0, Qt::AlignLeft);
 
-	auto mainDescription2 = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputDescription")));
+	QString mainDescriptionText = QString::fromUtf8(obs_module_text("SettingsMainOutputDescription"));
+	mainDescriptionText.replace(QLatin1Char('\n'), QLatin1Char(' '));
+	mainDescriptionText.replace(QString::fromUtf8("  "), QString::fromUtf8(" "));
+	auto mainDescription2 = new QLabel(mainDescriptionText);
 	mainDescription2->setWordWrap(true);
-	outputLayout->addRow(mainDescription2);
+	mainDescription2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+	outputLayout->addWidget(mainDescription2);
 
-	auto mainOutputLayout = new QHBoxLayout;
-	mainOutputLayout->setContentsMargins(0, 0, 0, 0);
-	mainOutputLayout->setSpacing(16);
+	auto showLabel = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputShow")));
+	showLabel->setContentsMargins(0, 6, 0, 0);
+	outputLayout->addWidget(showLabel, 0, Qt::AlignLeft);
+
+	auto options = new QVBoxLayout;
+	options->setContentsMargins(4, 0, 0, 0);
+	options->setSpacing(6);
+
 	mainStream = new QCheckBox(QString::fromUtf8(obs_module_text("Stream")));
-	mainStream->setIcon(QIcon(":/aitum/media/stream.svg"));
+	mainStream->setIcon(QIcon(QString::fromUtf8(":/aitum/media/stream.svg")));
 	mainStream->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
 	connect(mainStream, &QCheckBox::checkStateChanged, [this] {
@@ -278,9 +286,13 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 #endif
 		obs_data_set_bool(main_settings, "main_stream_output_show", mainStream->isChecked());
 	});
-	mainOutputLayout->addWidget(mainStream, 0, Qt::AlignVCenter);
+	options->addWidget(mainStream, 0, Qt::AlignLeft);
+
+	auto recordRow = new QHBoxLayout;
+	recordRow->setContentsMargins(0, 0, 0, 0);
+	recordRow->setSpacing(8);
 	mainRecord = new QCheckBox(QString::fromUtf8(obs_module_text("Record")));
-	mainRecord->setIcon(QIcon(":/aitum/media/record.svg"));
+	mainRecord->setIcon(QIcon(QString::fromUtf8(":/aitum/media/record.svg")));
 	mainRecord->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
 	connect(mainRecord, &QCheckBox::checkStateChanged, [this] {
@@ -289,11 +301,20 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 #endif
 		obs_data_set_bool(main_settings, "main_record_output_show", mainRecord->isChecked());
 	});
-	mainOutputLayout->addWidget(mainRecord, 0, Qt::AlignVCenter);
-	mainOutputLayout->addStretch(1);
-	auto showLabel = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputShow")));
-	showLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-	outputLayout->addRow(showLabel, mainOutputLayout);
+	recordRow->addWidget(mainRecord, 0, Qt::AlignVCenter);
+	mainRecordCanvas = new QComboBox;
+	mainRecordCanvas->setMinimumWidth(140);
+	mainRecordCanvas->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+	mainRecordCanvas->setToolTip(QString::fromUtf8(obs_module_text("RecordCanvas")));
+	connect(mainRecordCanvas, &QComboBox::currentTextChanged, [this](const QString &text) {
+		if (main_settings) {
+			obs_data_set_string(main_settings, "main_record_canvas", text.toUtf8().constData());
+		}
+	});
+	recordRow->addWidget(mainRecordCanvas, 0, Qt::AlignVCenter);
+	recordRow->addStretch(1);
+	options->addLayout(recordRow);
+	outputLayout->addLayout(options);
 
 	outputGroup->setLayout(outputLayout);
 
@@ -856,6 +877,33 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 	}
 	mainStream->setChecked(obs_data_get_bool(settings, "main_stream_output_show"));
 	mainRecord->setChecked(obs_data_get_bool(settings, "main_record_output_show"));
+	mainRecordCanvas->blockSignals(true);
+	mainRecordCanvas->clear();
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) {
+			auto combo = static_cast<QComboBox *>(param);
+			auto name = QString::fromUtf8(obs_canvas_get_name(canvas));
+			if (name == QString::fromUtf8("Components")) {
+				return true;
+			}
+			combo->addItem(name);
+			return true;
+		},
+		mainRecordCanvas);
+	const QString savedCanvas = QString::fromUtf8(obs_data_get_string(settings, "main_record_canvas"));
+	if (!savedCanvas.isEmpty()) {
+		if (mainRecordCanvas->findText(savedCanvas) < 0) {
+			mainRecordCanvas->addItem(savedCanvas);
+		}
+		mainRecordCanvas->setCurrentText(savedCanvas);
+	} else if (mainRecordCanvas->count() > 0) {
+		obs_canvas_t *mainCanvas = obs_get_main_canvas();
+		if (mainCanvas) {
+			mainRecordCanvas->setCurrentText(QString::fromUtf8(obs_canvas_get_name(mainCanvas)));
+			obs_canvas_release(mainCanvas);
+		}
+	}
+	mainRecordCanvas->blockSignals(false);
 
 	obs_data_array_release(extra_outputs);
 	extra_outputs = obs_data_get_array(settings, "outputs");

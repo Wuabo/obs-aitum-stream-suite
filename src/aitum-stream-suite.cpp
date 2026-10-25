@@ -30,8 +30,6 @@
 #include <QPointer>
 #include <QStyle>
 #include <QTimer>
-#include <QToolBar>
-#include <QToolButton>
 #include <util/dstr.h>
 
 OBS_DECLARE_MODULE()
@@ -39,7 +37,6 @@ OBS_MODULE_AUTHOR("Aitum");
 OBS_MODULE_USE_DEFAULT_LOCALE("aitum-stream-suite", "en-US")
 
 obs_data_t *current_profile_config = nullptr;
-QToolBar *toolbar = nullptr;
 
 QAction *studioModeAction = nullptr;
 
@@ -57,8 +54,6 @@ TransitionsDock *transitions_dock = nullptr;
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
 extern obs_websocket_vendor vendor;
-
-extern QWidget *aitumSettingsWidget;
 
 static bool finished_loading = false;
 static bool scene_collection_changing = false;
@@ -663,8 +658,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	}
 }
 
-QWidget *aitumSettingsWidget = nullptr;
-
 bool obs_data_array_equal(obs_data_array_t *a, obs_data_array_t *b)
 {
 	size_t a_count = obs_data_array_count(a);
@@ -727,6 +720,12 @@ void open_config_dialog(int tab, const char *create_type)
 				obs_data_set_bool(current_profile_config, "main_record_output_show", show);
 				outputs_changed = true;
 			}
+			const char *recordCanvas = obs_data_get_string(settings, "main_record_canvas");
+			const char *savedCanvas = obs_data_get_string(current_profile_config, "main_record_canvas");
+			if (strcmp(recordCanvas ? recordCanvas : "", savedCanvas ? savedCanvas : "") != 0) {
+				obs_data_set_string(current_profile_config, "main_record_canvas", recordCanvas ? recordCanvas : "");
+				outputs_changed = true;
+			}
 			obs_data_array_t *a = obs_data_get_array(current_profile_config, "canvas");
 			obs_data_array_t *b = obs_data_get_array(settings, "canvas");
 			if (!obs_data_array_equal(a, b)) {
@@ -784,45 +783,7 @@ bool obs_module_load(void)
 	const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	/* Keep the user's OBS theme (Yami/Acri, etc.). Do not force Aitum theme. */
 
-	/* OBS owns dock placement — plugin only adds docks + a small toolbar. */
-	toolbar = new QToolBar(main_window);
-	toolbar->setObjectName(QStringLiteral("AitumToolbar"));
-	toolbar->setWindowTitle(QString::fromUtf8(obs_module_text("AitumStreamSuite")));
-	toolbar->setFloatable(false);
-	main_window->addToolBar(toolbar);
-
-	auto aitumSettingsAction = toolbar->addAction(QString::fromUtf8(obs_module_text("Settings")));
-	aitumSettingsAction->setProperty("themeID", "configIconSmall");
-	aitumSettingsAction->setProperty("class", "icon-gear");
-	aitumSettingsWidget = toolbar->widgetForAction(aitumSettingsAction);
-	aitumSettingsWidget->setProperty("themeID", "configIconSmall");
-	aitumSettingsWidget->setProperty("class", "icon-gear");
-	aitumSettingsWidget->setObjectName("AitumStreamSuiteSettingsButton");
-	QObject::connect(aitumSettingsAction, &QAction::triggered, [] { open_config_dialog(0, nullptr); });
-
-	//tb->addAction(QString::fromUtf8(obs_module_text("Reset")));
-	//tb->layout()->addItem(new QSpacerItem(0, 0));
-	QWidget *spacer = new QWidget();
-	spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	toolbar->addWidget(spacer);
-
-	//auto controlsToolBar = main_window->addToolBar(QString::fromUtf8(obs_module_text("Controls")));
-	auto controlsToolBar = toolbar;
-
-	auto settingsButton = controlsToolBar->addAction(QString::fromUtf8(obs_module_text("Settings")));
-	settingsButton->setProperty("themeID", "configIconSmall");
-	settingsButton->setProperty("class", "icon-gear");
-	controlsToolBar->widgetForAction(settingsButton)->setProperty("themeID", "configIconSmall");
-	controlsToolBar->widgetForAction(settingsButton)->setProperty("class", "icon-gear");
-	((QToolButton *)controlsToolBar->widgetForAction(settingsButton))->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	QObject::connect(settingsButton, SIGNAL(triggered()), main_window, SLOT(on_action_Settings_triggered()));
-
-	//auto action = controlsToolBar->addAction("");
-	//action->setCheckable(true);
-	//action->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::InsertLink));
-	//action->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::CameraWeb));
-	//action->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::EditUndo));
-
+	/* OBS owns dock placement. Settings stay in the Stream Suite dialog and in OBS Settings. */
 	auto cw = main_window->centralWidget();
 	if (cw && cw->objectName() == "centralwidget" && cw->findChild<QWidget *>("canvasEditor") != nullptr) {
 		obs_frontend_add_dock_by_id("AitumStreamSuiteMainCanvas", obs_module_text("AitumStreamSuiteMainCanvas"), cw);

@@ -219,7 +219,8 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	l2->setSpacing(kRowSpacing);
 	l2->addWidget(makeIconSlot(nullptr), 0, Qt::AlignVCenter);
 	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinRecord"))), 2, Qt::AlignVCenter);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("MainCanvas"))), 1, Qt::AlignVCenter);
+	mainRecordCanvasLabel = new QLabel(QString::fromUtf8(obs_module_text("MainCanvas")));
+	l2->addWidget(mainRecordCanvasLabel, 1, Qt::AlignVCenter);
 	mainRecordButton = new QPushButton;
 	mainRecordButton->setObjectName(QStringLiteral("canvasRecord"));
 	styleActionButton(mainRecordButton);
@@ -231,7 +232,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 		mainRecordButton->style()->unpolish(mainRecordButton);
 		mainRecordButton->style()->polish(mainRecordButton);
 	});
-	QObject::connect(mainRecordButton, SIGNAL(clicked()), main_window, SLOT(RecordActionTriggered()));
+	QObject::connect(mainRecordButton, &QPushButton::clicked, [this] { ToggleMainRecord(); });
 
 	l2->addWidget(mainRecordButton, 0, Qt::AlignVCenter);
 
@@ -269,7 +270,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 		}
 
 		if (mainRecordEnabled) {
-			auto active = obs_frontend_recording_active();
+			auto active = CanvasRecordActive() || (!RecordUsesCanvas() && obs_frontend_recording_active());
 			if (mainRecordButton->isChecked() != active) {
 				mainRecordButton->setChecked(active);
 				if (!active) {
@@ -345,6 +346,7 @@ void RemoveWidget(QWidget *widget);
 
 OutputDock::~OutputDock()
 {
+	StopCanvasRecord();
 	if (StartStopHotkey != OBS_INVALID_HOTKEY_PAIR_ID) {
 		obs_hotkey_pair_unregister(StartStopHotkey);
 	}
@@ -373,6 +375,7 @@ void OutputDock::LoadSettings()
 
 	mainRecordEnabled = obs_data_get_bool(current_profile_config, "main_record_output_show");
 	mainRecordGroup->setVisible(mainRecordEnabled);
+	RefreshRecordCanvasLabel();
 
 	auto outputs2 = obs_data_get_array(current_profile_config, "outputs");
 	for (auto it = outputWidgets.begin(); it != outputWidgets.end();) {
@@ -557,6 +560,252 @@ void OutputDock::UpdateMainStreamStatus(bool active)
 	}
 }
 
+bool OutputDock::RecordUsesCanvas() const
+{
+	if (!current_profile_config) {
+		return false;
+	}
+	const char *name = obs_data_get_string(current_profile_config, "main_record_canvas");
+	if (!name || !name[0]) {
+		return false;
+	}
+	obs_canvas_t *mainCanvas = obs_get_main_canvas();
+	const char *mainName = mainCanvas ? obs_canvas_get_name(mainCanvas) : nullptr;
+	const bool other = !mainName || strcmp(name, mainName) != 0;
+	obs_canvas_release(mainCanvas);
+	return other;
+}
+
+bool OutputDock::CanvasRecordActive() const
+{
+	return canvasRecordOutput && obs_output_active(canvasRecordOutput);
+}
+
+void OutputDock::RefreshRecordCanvasLabel()
+{
+	if (!mainRecordCanvasLabel) {
+		return;
+	}
+	QString name;
+	if (current_profile_config) {
+		name = QString::fromUtf8(obs_data_get_string(current_profile_config, "main_record_canvas"));
+	}
+	if (name.isEmpty()) {
+		name = QString::fromUtf8(obs_module_text("MainCanvas"));
+	}
+	mainRecordCanvasLabel->setText(name);
+}
+
+void OutputDock::StopCanvasRecord()
+{
+	if (!canvasRecordOutput) {
+		return;
+	}
+	if (obs_output_active(canvasRecordOutput)) {
+		obs_output_stop(canvasRecordOutput);
+	}
+	obs_output_release(canvasRecordOutput);
+	canvasRecordOutput = nullptr;
+}
+
+bool OutputDock::StartCanvasRecord()
+{
+	if (CanvasRecordActive()) {
+		return true;
+	}
+	StopCanvasRecord();
+	if (!current_profile_config) {
+		return false;
+	}
+	const char *canvasName = obs_data_get_string(current_profile_config, "main_record_canvas");
+	obs_canvas_t *canvas = (canvasName && canvasName[0]) ? obs_get_canvas_by_name(canvasName) : nullptr;
+	if (!canvas) {
+		QMessageBox::warning(this, QString::fromUtf8(obs_module_text("CanvasNotFound")),
+				     QString::fromUtf8(obs_module_text("CanvasNotFound")));
+		return false;
+	}
+	video_t *video = obs_canvas_get_video(canvas);
+	if (!video) {
+		obs_canvas_release(canvas);
+		return false;
+	}
+
+	const char *encoderIds[] = {"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc", "obs_qsv11_v2", "h264_texture_amf",
+				    "obs_x264"};
+	const char *vencId = "obs_x264";
+	for (const char *id : encoderIds) {
+		const char *val = nullptr;
+		for (int i = 0; obs_enum_encoder_types(i, &val); i++) {
+			if (val && strcmp(val, id) == 0) {
+				vencId = id;
+				break;
+			}
+		}
+		if (strcmp(vencId, id) == 0) {
+			break;
+		}
+	}
+
+	std::string vencName = "Aitum Stream Suite Builtin Record ";
+	vencName += canvasName;
+	obs_encoder_t *venc = obs_video_encoder_create(vencId, vencName.c_str(), nullptr, nullptr);
+	if (!venc) {
+		obs_canvas_release(canvas);
+		return false;
+	}
+	obs_encoder_set_video(venc, video);
+	obs_data_t *videoSettings = obs_data_create();
+	obs_data_set_string(videoSettings, "rate_control", "CBR");
+	obs_data_set_int(videoSettings, "bitrate", 6000);
+	obs_encoder_update(venc, videoSettings);
+	obs_data_release(videoSettings);
+
+	std::string aencName = vencName + " Audio";
+	obs_encoder_t *aenc = obs_audio_encoder_create("ffmpeg_aac", aencName.c_str(), nullptr, 0, nullptr);
+	if (!aenc) {
+		obs_encoder_release(venc);
+		obs_canvas_release(canvas);
+		return false;
+	}
+	obs_encoder_set_audio(aenc, obs_get_audio());
+
+	config_t *config = obs_frontend_get_profile_config();
+	const char *mode = config ? config_get_string(config, "Output", "Mode") : nullptr;
+	const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+	const char *dir = config ? config_get_string(config, advanced ? "AdvOut" : "SimpleOutput",
+						     advanced ? "RecFilePath" : "FilePath")
+				 : nullptr;
+	const char *format = config ? config_get_string(config, advanced ? "AdvOut" : "SimpleOutput", "RecFormat2") : nullptr;
+	const char *filenameFormat = config ? config_get_string(config, "Output", "FilenameFormatting") : nullptr;
+	if (!format || !format[0]) {
+		format = "hybrid_mp4";
+	}
+	std::string pattern = (filenameFormat && filenameFormat[0]) ? filenameFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
+	pattern += " ";
+	for (const char *c = canvasName; *c; c++) {
+		const char ch = *c;
+		if (ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '/' || ch == '\\' || ch == '|' || ch == '?' ||
+		    ch == '*') {
+			continue;
+		}
+		pattern.push_back(ch);
+	}
+	std::string ext = format;
+	if (ext == "fragmented_mp4" || ext == "hybrid_mp4") {
+		ext = "mp4";
+	} else if (ext == "fragmented_mov" || ext == "hybrid_mov") {
+		ext = "mov";
+	} else if (ext == "hls") {
+		ext = "m3u8";
+	} else if (ext == "mpegts") {
+		ext = "ts";
+	}
+	char *filename = os_generate_formatted_filename(ext.c_str(), true, pattern.c_str());
+	char path[512];
+	if (dir && dir[0]) {
+		snprintf(path, sizeof(path), "%s/%s", dir, filename ? filename : "recording.mp4");
+		size_t cut = 0;
+		bool foundSep = false;
+		for (size_t i = 0; path[i]; i++) {
+			if (path[i] == '/' || path[i] == '\\') {
+				cut = i;
+				foundSep = true;
+			}
+		}
+		if (foundSep) {
+			const char saved = path[cut];
+			path[cut] = 0;
+			os_mkdirs(path);
+			path[cut] = saved;
+		}
+	} else {
+		snprintf(path, sizeof(path), "%s", filename ? filename : "recording.mp4");
+	}
+	bfree(filename);
+
+	const char *outputId = "ffmpeg_muxer";
+	if (strcmp(format, "hybrid_mp4") == 0) {
+		outputId = "mp4_output";
+	} else if (strcmp(format, "hybrid_mov") == 0) {
+		outputId = "mov_output";
+	} else if (strcmp(format, "flv") == 0) {
+		outputId = "flv_output";
+	}
+	obs_output_t *output = obs_output_create(outputId, "Aitum Stream Suite Builtin Record", nullptr, nullptr);
+	if (!output) {
+		obs_encoder_release(venc);
+		obs_encoder_release(aenc);
+		obs_canvas_release(canvas);
+		return false;
+	}
+	obs_data_t *outputSettings = obs_data_create();
+	obs_data_set_string(outputSettings, "path", path);
+	if (dir) {
+		obs_data_set_string(outputSettings, "directory", dir);
+	}
+	obs_data_set_string(outputSettings, "format", pattern.c_str());
+	obs_data_set_string(outputSettings, "extension", ext.c_str());
+	obs_output_update(output, outputSettings);
+	obs_data_release(outputSettings);
+	obs_output_set_video_encoder(output, venc);
+	obs_output_set_audio_encoder(output, aenc, 0);
+	obs_encoder_release(venc);
+	obs_encoder_release(aenc);
+	obs_canvas_release(canvas);
+
+	if (!obs_output_start(output)) {
+		const char *error = obs_output_get_last_error(output);
+		blog(LOG_WARNING, "[Aitum Stream Suite] canvas recording failed to start%s%s", error ? ": " : "",
+		     error ? error : "");
+		obs_output_release(output);
+		QMessageBox::warning(this, QString::fromUtf8(obs_frontend_get_locale_string("Output.StartRecordingFailed")),
+				     error && error[0] ? QString::fromUtf8(error)
+						       : QString::fromUtf8(obs_frontend_get_locale_string("Output.StartFailedGeneric")));
+		return false;
+	}
+	canvasRecordOutput = output;
+	mainRecordStartTime = QDateTime::currentDateTime();
+	blog(LOG_INFO, "[Aitum Stream Suite] recording canvas '%s' to %s", canvasName, path);
+	return true;
+}
+
+void OutputDock::ToggleMainRecord()
+{
+	const bool canvas = RecordUsesCanvas();
+	const bool active = canvas ? CanvasRecordActive() : obs_frontend_recording_active();
+	if (active) {
+		bool warn = config_get_bool(obs_frontend_get_user_config(), "BasicWindow", "WarnBeforeStoppingRecord");
+		if (canvas && warn && isVisible()) {
+			auto button = QMessageBox::question(
+				this, QString::fromUtf8(obs_frontend_get_locale_string("ConfirmStopRecord.Title")),
+				QString::fromUtf8(obs_frontend_get_locale_string("ConfirmStopRecord.Text")),
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+			if (button == QMessageBox::No) {
+				mainRecordButton->setChecked(true);
+				return;
+			}
+		}
+		if (canvas) {
+			StopCanvasRecord();
+		} else {
+			obs_frontend_recording_stop();
+		}
+		mainRecordButton->setChecked(false);
+		mainRecordButton->setText("");
+		return;
+	}
+	if (canvas) {
+		const bool started = StartCanvasRecord();
+		mainRecordButton->setChecked(started);
+		if (!started) {
+			mainRecordButton->setText("");
+		}
+		return;
+	}
+	obs_frontend_recording_start();
+	mainRecordButton->setChecked(true);
+}
+
 void OutputDock::UpdateMainRecordingStatus(bool active)
 {
 	mainRecordButton->setChecked(active);
@@ -690,6 +939,13 @@ void OutputDock::StartAll(bool streamOnly, bool recordOnly)
 	}
 	if (mainRecordEnabled && !streamOnly) {
 		outputsToStart.push_back([this](std::function<void()> onStarted) {
+			if (RecordUsesCanvas()) {
+				if (!CanvasRecordActive() && !StartCanvasRecord()) {
+					blog(LOG_INFO, "[Aitum Stream Suite] Canvas recording did not start");
+				}
+				onStarted();
+				return true;
+			}
 			if (obs_frontend_recording_active()) {
 				blog(LOG_INFO, "[Aitum Stream Suite] Skipped starting main recording, already active");
 				onStarted();
@@ -735,7 +991,8 @@ void OutputDock::StopAll(bool streamOnly, bool recordOnly)
 		if (button == QMessageBox::No) {
 			return;
 		}
-	} else if (warnRecord && mainRecordEnabled && !streamOnly && obs_frontend_recording_active() && isVisible()) {
+	} else if (warnRecord && mainRecordEnabled && !streamOnly &&
+		   (obs_frontend_recording_active() || CanvasRecordActive()) && isVisible()) {
 		auto button = QMessageBox::question(this,
 						    QString::fromUtf8(obs_frontend_get_locale_string("ConfirmStopRecord.Title")),
 						    QString::fromUtf8(obs_frontend_get_locale_string("ConfirmStopRecord.Text")),
@@ -748,8 +1005,13 @@ void OutputDock::StopAll(bool streamOnly, bool recordOnly)
 	if (mainStreamEnabled && !recordOnly && obs_frontend_streaming_active()) {
 		obs_frontend_streaming_stop();
 	}
-	if (mainRecordEnabled && !streamOnly && obs_frontend_recording_active()) {
-		obs_frontend_recording_stop();
+	if (mainRecordEnabled && !streamOnly) {
+		if (CanvasRecordActive()) {
+			StopCanvasRecord();
+		}
+		if (obs_frontend_recording_active()) {
+			obs_frontend_recording_stop();
+		}
 	}
 	for (auto &ow : outputWidgets) {
 		if (streamOnly && !ow->IsStream()) {

@@ -77,6 +77,7 @@ private:
 
 	QCheckBox *mainStream;
 	QCheckBox *mainRecord;
+	QComboBox *mainRecordCanvas;
 
 	std::vector<OBSHotkeyWidget *> hotkeys;
 

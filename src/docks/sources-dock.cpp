@@ -5,6 +5,7 @@
 #include <obs-module.h>
 #include <QColorDialog>
 #include <QGuiApplication>
+#include <QItemSelectionModel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
@@ -18,16 +19,23 @@ static void StyleDockToolbar(QToolBar *toolbar)
 {
 	if (!toolbar)
 		return;
-	/* Same metrics as Yami's OBSDock QToolBar. A widget sheet is required
-	 * because these bars are built outside the dock and keep the generic
-	 * QToolButton padding after they move in. */
+	/* Same as OBSBasic.ui sourcesToolbar. Leave styling to Yami
+	 * "OBSDock QToolBar QToolButton" once this bar lives in the dock. */
 	toolbar->setIconSize(QSize(16, 16));
-	toolbar->setFixedHeight(32);
-	toolbar->setStyleSheet(QString::fromUtf8(
-		"QToolBar { border: none; border-top: 1px solid palette(mid); background: transparent; spacing: 0px; padding: 1px; margin: 0px; }"
-		"QToolButton { background: transparent; border: 1px solid transparent; margin: 1px; margin-top: 2px; padding: 4px; min-width: 16px; min-height: 16px; }"
-		"QToolButton:hover { border-color: palette(mid); }"
-		"QToolButton:pressed { background: palette(mid); }"));
+	toolbar->setFloatable(false);
+	toolbar->setMovable(false);
+	toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+}
+
+static void SetToolbarClass(QToolBar *toolbar, QAction *action, const char *cls)
+{
+	if (!action)
+		return;
+	action->setProperty("class", QString::fromUtf8(cls));
+	QWidget *button = toolbar ? toolbar->widgetForAction(action) : nullptr;
+	if (!button)
+		return;
+	button->setProperty("class", QString::fromUtf8(cls));
 }
 
 SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
@@ -87,17 +95,17 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	toolbar->setIconSize(QSize(16, 16));
 	toolbar->setFloatable(false);
 	toolbar->setMovable(false);
-	auto a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/plus.svg")),
-				    QString::fromUtf8(obs_frontend_get_locale_string("AddSource")), [this] {
+	auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/plus.svg")),
+				    QString::fromUtf8(obs_frontend_get_locale_string("Add")), [this] {
 					    OBSSourceAutoRelease sceneSource = obs_weak_source_get_source(scene);
 					    OpenSourceSelectDialog(this, obs_scene_from_source(sceneSource));
 				    });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("AddSource")));
+	SetToolbarClass(toolbar, a, "icon-plus");
 
 	a = toolbar->addAction(
-		QIcon(QString::fromUtf8("theme:Dark/trash.svg")),
-		QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")), [this] {
+		QIcon(QString::fromUtf8(":/res/images/minus.svg")),
+		QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
 			auto scene_source = obs_weak_source_get_source(scene);
 			auto s = obs_scene_from_source(scene_source);
 			obs_source_release(scene_source);
@@ -178,9 +186,9 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 			obs_frontend_add_undo_redo_action(action_name.toUtf8().constData(), CanvasDock::undo_redo_scene,
 							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
 		});
-	a->setProperty("class", QString::fromUtf8("icon-trash"));
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", QString::fromUtf8("icon-trash"));
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")));
+	SetToolbarClass(toolbar, a, "icon-trash");
+	removeAction = a;
 	a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 #ifdef __APPLE__
 	a->setShortcut({Qt::Key_Backspace});
@@ -189,20 +197,21 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 #endif
 	sourceList->addAction(a);
 	toolbar->addSeparator();
-	a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/settings/general.svg")),
-			       QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")), [this] {
+	a = toolbar->addAction(QIcon(QString::fromUtf8(":/settings/images/settings/general.svg")),
+			       QString::fromUtf8(obs_frontend_get_locale_string("Properties")), [this] {
 				       auto item = GetCurrentSceneItem();
 				       auto source = obs_sceneitem_get_source(item);
 				       if (source) {
 					       obs_frontend_open_source_properties(source);
 				       }
 			       });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("propertiesIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-gear");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")));
+	SetToolbarClass(toolbar, a, "icon-gear");
+	propertiesAction = a;
 
 	toolbar->addSeparator();
 	a = toolbar->addAction(
-		QIcon(QString::fromUtf8("theme:Dark/up.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")), [this] {
+		QIcon(QString::fromUtf8(":/res/images/up.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveUp")), [this] {
 			auto item = GetCurrentSceneItem();
 			if (!item) {
 				return;
@@ -220,10 +229,11 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), CanvasDock::undo_redo_scene,
 							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
 		});
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("upArrowIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-up");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")));
+	SetToolbarClass(toolbar, a, "icon-up");
+	moveUpAction = a;
 	a = toolbar->addAction(
-		QIcon(QString::fromUtf8("theme:Dark/down.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")), [this] {
+		QIcon(QString::fromUtf8(":/res/images/down.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveDown")), [this] {
 			auto item = GetCurrentSceneItem();
 			if (!item) {
 				return;
@@ -241,23 +251,18 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), CanvasDock::undo_redo_scene,
 							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
 		});
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("downArrowIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-down");
+	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")));
+	SetToolbarClass(toolbar, a, "icon-down");
+	moveDownAction = a;
 
 	StyleDockToolbar(toolbar);
+	sourceToolbar = toolbar;
 	sourcesGroupLayout->addWidget(toolbar);
-	/* Class icons and OBSDock toolbar padding are applied at polish time.
-	 * The button is created before the class property exists, so polish again. */
-	toolbar->style()->unpolish(toolbar);
-	toolbar->style()->polish(toolbar);
-	const auto buttons = toolbar->findChildren<QWidget *>();
-	for (QWidget *button : buttons) {
-		if (!button->style()) {
-			continue;
-		}
-		button->style()->unpolish(button);
-		button->style()->polish(button);
-	}
+	connect(sourceList->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+		[this](const QItemSelection &, const QItemSelection &) { UpdateSourceToolbar(); });
+	/* No selection yet: remove, properties and move match the native
+	 * disabled look (softer icon, grey7 button). */
+	UpdateSourceToolbar();
 }
 
 SourcesDock::~SourcesDock()
@@ -282,6 +287,46 @@ SourcesDock::~SourcesDock()
 obs_sceneitem_t *SourcesDock::GetCurrentSceneItem()
 {
 	return sourceList->Get(GetTopSelectedSourceItem());
+}
+
+void SourcesDock::UpdateSourceToolbar()
+{
+	obs_sceneitem_t *item = GetCurrentSceneItem();
+	bool enable = item != nullptr;
+	bool props = enable;
+	if (item) {
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		if (!source || !obs_source_configurable(source)) {
+			props = false;
+		}
+	}
+	if (removeAction) {
+		removeAction->setEnabled(enable);
+	}
+	if (propertiesAction) {
+		propertiesAction->setEnabled(props);
+	}
+	if (moveUpAction) {
+		moveUpAction->setEnabled(enable);
+	}
+	if (moveDownAction) {
+		moveDownAction->setEnabled(enable);
+	}
+	/* Same as OBS RefreshToolBarStyling: the :disabled dock rule
+	 * (grey7 button, faded icon) is applied at polish time. */
+	if (!sourceToolbar || !sourceToolbar->style()) {
+		return;
+	}
+	sourceToolbar->style()->unpolish(sourceToolbar);
+	sourceToolbar->style()->polish(sourceToolbar);
+	const auto buttons = sourceToolbar->findChildren<QWidget *>();
+	for (QWidget *button : buttons) {
+		if (!button->style()) {
+			continue;
+		}
+		button->style()->unpolish(button);
+		button->style()->polish(button);
+	}
 }
 
 int SourcesDock::GetTopSelectedSourceItem()
@@ -314,6 +359,7 @@ void SourcesDock::SetScene(obs_source_t *s)
 		signal_handler_connect(sh, "refresh", SceneRefreshed, this);
 	}
 	sourceList->GetStm()->SceneChanged();
+	UpdateSourceToolbar();
 }
 
 void SourcesDock::SceneItemAdded(void *data, calldata_t *params)

@@ -168,13 +168,15 @@ ScenesDock::ScenesDock(QWidget *parent) : QFrame(parent)
 	toolbar->setObjectName(QStringLiteral("scenesToolbar"));
 	toolbar->setIconSize(QSize(16, 16));
 	toolbar->setFloatable(false);
+	toolbar->setMovable(false);
+	toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 	auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/plus.svg")),
 				    QString::fromUtf8(obs_frontend_get_locale_string("Add")), [this] { AddScene(); });
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
 
-	a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/trash.svg")),
-			       QString::fromUtf8(obs_frontend_get_locale_string("RemoveScene")),
+	a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/minus.svg")),
+			       QString::fromUtf8(obs_frontend_get_locale_string("Remove")),
 			       [this] { RemoveCurrentScene(); });
 	a->setProperty("class", QString::fromUtf8("icon-trash"));
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
