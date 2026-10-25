@@ -35,7 +35,7 @@ private:
 	void validateOutputs(QPushButton *confirmButton);
 
 public:
-	FfmpegOutputDialog(QDialog *parent, QStringList otherNames, obs_data_t* settings = nullptr);
+	FfmpegOutputDialog(QDialog *parent, QStringList otherNames, obs_data_t *settings);
 
 	void SaveSettings(obs_data_t *settings);
 };

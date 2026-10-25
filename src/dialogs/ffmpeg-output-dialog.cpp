@@ -133,44 +133,38 @@ FfmpegOutputDialog::FfmpegOutputDialog(QDialog *parent, QStringList _otherNames,
 	: QDialog(parent),
 	  otherNames(_otherNames)
 {
-	if (settings) {
-		outputName = QString::fromUtf8(obs_data_get_string(settings, "name"));
-		saveFile = obs_data_get_bool(settings, "save_file");
-		path = QString::fromUtf8(obs_data_get_string(settings, "directory"));
-		extension = obs_data_get_string(settings, "extension");
-		filenameFormat = QString::fromUtf8(obs_data_get_string(settings, "format"));
-		allowSpaces = obs_data_get_bool(settings, "allow_spaces");
-		url = QString::fromUtf8(obs_data_get_string(settings, "url"));
-		formatName = obs_data_get_string(settings, "format_name");
-		mimeType = obs_data_get_string(settings, "format_mime_type");
-		muxCustom = QString::fromUtf8(obs_data_get_string(settings, "muxer_settings"));
-		gopSize = obs_data_get_int(settings, "gop_size");
-		rescale = obs_data_get_bool(settings, "rescale");
-		scaleWidth = obs_data_get_int(settings, "scale_width");
-		scaleHeight = obs_data_get_int(settings, "scale_height");
-		vBitrate = obs_data_get_int(settings, "video_bitrate");
-		vEncoder = obs_data_get_string(settings, "video_encoder");
-		vEncoderId = obs_data_get_int(settings, "video_encoder_id");
-		vEncCustom = QString::fromUtf8(obs_data_get_string(settings, "video_settings"));
-		aBitrate = obs_data_get_int(settings, "audio_bitrate");
-		aEncoder = obs_data_get_string(settings, "audio_encoder");
-		aEncoderId = obs_data_get_int(settings, "audio_encoder_id");
-		aEncCustom = QString::fromUtf8(obs_data_get_string(settings, "audio_settings"));
-		aMixes = obs_data_get_int(settings, "audio_mixes");
+	outputName = QString::fromUtf8(obs_data_get_string(settings, "name"));
+	saveFile = obs_data_get_bool(settings, "save_file");
+	path = QString::fromUtf8(obs_data_get_string(settings, "directory"));
+	extension = obs_data_get_string(settings, "extension");
+	filenameFormat = QString::fromUtf8(obs_data_get_string(settings, "format"));
+	allowSpaces = obs_data_get_bool(settings, "allow_spaces");
+	url = QString::fromUtf8(obs_data_get_string(settings, "url"));
+	formatName = obs_data_get_string(settings, "format_name");
+	mimeType = obs_data_get_string(settings, "format_mime_type");
+	muxCustom = QString::fromUtf8(obs_data_get_string(settings, "muxer_settings"));
+	gopSize = obs_data_get_int(settings, "gop_size");
+	rescale = obs_data_get_bool(settings, "rescale");
+	scaleWidth = obs_data_get_int(settings, "scale_width");
+	scaleHeight = obs_data_get_int(settings, "scale_height");
+	vBitrate = obs_data_get_int(settings, "video_bitrate");
+	vEncoder = obs_data_get_string(settings, "video_encoder");
+	vEncoderId = obs_data_get_int(settings, "video_encoder_id");
+	vEncCustom = QString::fromUtf8(obs_data_get_string(settings, "video_settings"));
+	aBitrate = obs_data_get_int(settings, "audio_bitrate");
+	aEncoder = obs_data_get_string(settings, "audio_encoder");
+	aEncoderId = obs_data_get_int(settings, "audio_encoder_id");
+	aEncCustom = QString::fromUtf8(obs_data_get_string(settings, "audio_settings"));
+	aMixes = obs_data_get_int(settings, "audio_mixes");
 
-		setWindowTitle(obs_module_text("EditFfmpegOutputWindowTitle"));
-	} else {
-		outputName = QString::fromUtf8(obs_module_text("FfmpegOutput"));
-		setWindowTitle(QString::fromUtf8(obs_module_text("NewFfmpegOutputWindowTitle")));
-	}
+	setWindowTitle(obs_module_text("EditFfmpegOutputWindowTitle"));
 
 	auto pageLayout = new QVBoxLayout;
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
 	setMinimumSize(400, 120);
 
-	auto confirmButton =
-		new QPushButton(QString::fromUtf8(obs_module_text(settings ? "SaveFfmpegOutput" : "CreateFfmpegOutput")));
+	auto confirmButton = new QPushButton(QString::fromUtf8(obs_module_text("SaveFfmpegOutput")));
 	confirmButton->setEnabled(false);
 
 	auto formLayout = new QFormLayout;
