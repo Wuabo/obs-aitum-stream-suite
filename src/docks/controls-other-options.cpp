@@ -7,6 +7,7 @@
 #include <QDockWidget>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QMainWindow>
 #include <QMetaObject>
 #include <QPointer>
@@ -26,7 +27,9 @@ QPointer<QWidget> tabHost;
 QPointer<QTabBar> tabs;
 QPointer<QWidget> otherPage;
 QPointer<QWidget> controlsFrame;
+QPointer<QPushButton> startStreamsBtn;
 QPointer<QPushButton> stopStreamsBtn;
+QPointer<QPushButton> startRecordsBtn;
 QPointer<QPushButton> stopRecordsBtn;
 QPointer<QTimer> refreshTimer;
 bool installed = false;
@@ -59,12 +62,18 @@ void InvokeOutput(const char *method, bool streamOnly, bool recordOnly)
 	QMetaObject::invokeMethod(output_dock, method, Q_ARG(bool, streamOnly), Q_ARG(bool, recordOnly));
 }
 
-void RefreshStopButtons()
+void RefreshActionButtons()
 {
 	const bool streams = output_dock && output_dock->HasActiveStreams();
 	const bool records = output_dock && output_dock->HasActiveRecordings();
+	if (startStreamsBtn) {
+		startStreamsBtn->setEnabled(!streams);
+	}
 	if (stopStreamsBtn) {
 		stopStreamsBtn->setEnabled(streams);
+	}
+	if (startRecordsBtn) {
+		startRecordsBtn->setEnabled(!records);
 	}
 	if (stopRecordsBtn) {
 		stopRecordsBtn->setEnabled(records);
@@ -80,8 +89,13 @@ void Polish(QWidget *w)
 	w->style()->polish(w);
 }
 
-/* Match streamButton from OBSBasicControls.ui + Yami #streamButton padding. */
-QPushButton *MakePrimaryControlButton(QWidget *parent, const char *objectName, const char *textKey)
+/*
+ * Match streamButton from OBSBasicControls.ui + Yami #streamButton padding.
+ * Icons: aitum SVGs are already light; stop uses class icon-media-stop so
+ * Yami qproperty-icon swaps in theme:Dark/media/media_stop.svg (same as native).
+ */
+QPushButton *MakePrimaryControlButton(QWidget *parent, const char *objectName, const char *textKey,
+				      const QString &iconPath, const char *iconClass = nullptr)
 {
 	auto *btn = new QPushButton(QString::fromUtf8(obs_module_text(textKey)), parent);
 	btn->setObjectName(QString::fromUtf8(objectName));
@@ -89,6 +103,12 @@ QPushButton *MakePrimaryControlButton(QWidget *parent, const char *objectName, c
 	btn->setMinimumWidth(150);
 	btn->setAutoDefault(false);
 	btn->setDefault(false);
+	if (!iconPath.isEmpty()) {
+		btn->setIcon(QIcon(iconPath));
+	}
+	if (iconClass) {
+		btn->setProperty("class", QVariant(QString::fromUtf8(iconClass)));
+	}
 	Polish(btn);
 	return btn;
 }
@@ -115,34 +135,40 @@ QWidget *BuildOtherPage(QWidget *parent)
 	layout->setSpacing(0);
 
 	/* objectNames from Yami primary-control padding list */
-	auto *startStreams = MakePrimaryControlButton(frame, "streamButton", "StartAllStreams");
-	stopStreamsBtn = MakePrimaryControlButton(frame, "recordButton", "StopAllStreams");
-	auto *startRecords = MakePrimaryControlButton(frame, "replayBufferButton", "StartAllRecordings");
-	stopRecordsBtn = MakePrimaryControlButton(frame, "broadcastButton", "StopAllRecordings");
+	startStreamsBtn = MakePrimaryControlButton(frame, "streamButton", "StartAllStreams",
+						   QStringLiteral(":/aitum/media/streaming.svg"));
+	stopStreamsBtn = MakePrimaryControlButton(frame, "recordButton", "StopAllStreams",
+						  QStringLiteral(":/res/images/media/media_stop.svg"),
+						  "icon-media-stop");
+	startRecordsBtn = MakePrimaryControlButton(frame, "replayBufferButton", "StartAllRecordings",
+						   QStringLiteral(":/aitum/media/recording.svg"));
+	stopRecordsBtn = MakePrimaryControlButton(frame, "broadcastButton", "StopAllRecordings",
+						  QStringLiteral(":/res/images/media/media_stop.svg"),
+						  "icon-media-stop");
 
 	stopStreamsBtn->setEnabled(false);
 	stopRecordsBtn->setEnabled(false);
 
-	QObject::connect(startStreams, &QPushButton::clicked, frame, [] {
+	QObject::connect(startStreamsBtn, &QPushButton::clicked, frame, [] {
 		InvokeOutput("StartAll", true, false);
-		RefreshStopButtons();
+		RefreshActionButtons();
 	});
 	QObject::connect(stopStreamsBtn, &QPushButton::clicked, frame, [] {
 		InvokeOutput("StopAll", true, false);
-		RefreshStopButtons();
+		RefreshActionButtons();
 	});
-	QObject::connect(startRecords, &QPushButton::clicked, frame, [] {
+	QObject::connect(startRecordsBtn, &QPushButton::clicked, frame, [] {
 		InvokeOutput("StartAll", false, true);
-		RefreshStopButtons();
+		RefreshActionButtons();
 	});
 	QObject::connect(stopRecordsBtn, &QPushButton::clicked, frame, [] {
 		InvokeOutput("StopAll", false, true);
-		RefreshStopButtons();
+		RefreshActionButtons();
 	});
 
-	AddStreamLikeRow(layout, startStreams);
+	AddStreamLikeRow(layout, startStreamsBtn);
 	AddStreamLikeRow(layout, stopStreamsBtn);
-	AddStreamLikeRow(layout, startRecords);
+	AddStreamLikeRow(layout, startRecordsBtn);
 	AddStreamLikeRow(layout, stopRecordsBtn);
 	layout->addStretch(1);
 
@@ -150,9 +176,9 @@ QWidget *BuildOtherPage(QWidget *parent)
 
 	refreshTimer = new QTimer(frame);
 	refreshTimer->setInterval(400);
-	QObject::connect(refreshTimer, &QTimer::timeout, frame, [] { RefreshStopButtons(); });
+	QObject::connect(refreshTimer, &QTimer::timeout, frame, [] { RefreshActionButtons(); });
 	refreshTimer->start();
-	RefreshStopButtons();
+	RefreshActionButtons();
 
 	frame->hide();
 	return frame;
@@ -163,7 +189,7 @@ QWidget *BuildOtherPage(QWidget *parent)
 void install_controls_other_options_tab()
 {
 	if (installed && tabHost && tabs && otherPage && controlsFrame) {
-		RefreshStopButtons();
+		RefreshActionButtons();
 		return;
 	}
 
@@ -266,7 +292,9 @@ void shutdown_controls_other_options_tab()
 		refreshTimer->stop();
 		refreshTimer = nullptr;
 	}
+	startStreamsBtn = nullptr;
 	stopStreamsBtn = nullptr;
+	startRecordsBtn = nullptr;
 	stopRecordsBtn = nullptr;
 	if (controlsFrame) {
 		controlsFrame->setVisible(true);
