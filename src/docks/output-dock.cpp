@@ -1,8 +1,10 @@
 #include "output-dock.hpp"
 
+#include "../dialogs/recording-names-dialog.hpp"
 #include "../version.h"
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <QMap>
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QIcon>
@@ -358,6 +360,56 @@ OutputDock::~OutputDock()
 
 extern obs_data_t *current_profile_config;
 
+void OutputDock::ReorderOutputRows()
+{
+	if (!mainLayout) {
+		return;
+	}
+
+	while (QLayoutItem *item = mainLayout->takeAt(0)) {
+		QWidget *w = item->widget();
+		delete item;
+		if (!w) {
+			continue;
+		}
+		if (w == mainRecordGroup || w == mainStreamGroup) {
+			continue;
+		}
+		bool isOutput = false;
+		for (auto *ow : outputWidgets) {
+			if (ow == w) {
+				isOutput = true;
+				break;
+			}
+		}
+		if (!isOutput) {
+			w->deleteLater();
+		}
+	}
+
+	/* Records first (builtin + extras), then streams. */
+	if (mainRecordGroup) {
+		mainLayout->addWidget(mainRecordGroup);
+	}
+	for (auto *ow : outputWidgets) {
+		if (ow && ow->IsRecord()) {
+			mainLayout->addWidget(ow);
+		}
+	}
+	if (mainStreamGroup) {
+		mainLayout->addWidget(mainStreamGroup);
+	}
+	for (auto *ow : outputWidgets) {
+		if (ow && !ow->IsRecord()) {
+			mainLayout->addWidget(ow);
+		}
+	}
+
+	auto *spacer = new QWidget();
+	spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	mainLayout->addWidget(spacer);
+}
+
 void OutputDock::LoadSettings()
 {
 	mainStreamEnabled = obs_data_get_bool(current_profile_config, "main_stream_output_show");
@@ -381,11 +433,6 @@ void OutputDock::LoadSettings()
 			auto name = QString::fromUtf8(obs_data_get_string(data2, "name"));
 			if (name == (*it)->objectName()) {
 				(*it)->UpdateSettings(data2);
-				auto j = mainLayout->indexOf(*it);
-				if (j >= 0 && i + 2 != (size_t)j) {
-					mainLayout->takeAt(j);
-					mainLayout->insertWidget((int)i + 2, (*it));
-				}
 				found = true;
 				obs_data_release(data2);
 				break;
@@ -402,7 +449,6 @@ void OutputDock::LoadSettings()
 	}
 
 	auto count = obs_data_array_count(outputs2);
-	size_t visibleIdx = 0;
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *data2 = obs_data_array_item(outputs2, i);
 		auto type = obs_data_get_string(data2, "type");
@@ -415,17 +461,13 @@ void OutputDock::LoadSettings()
 				 [&name](OutputWidget *ow) { return ow->objectName() == name; }) == outputWidgets.end()) {
 			auto outputWidget = new OutputWidget(data2, this);
 			outputWidgets.push_back(outputWidget);
-			mainLayout->insertWidget((int)visibleIdx + 2, outputWidget);
 		}
-		visibleIdx++;
 		obs_data_release(data2);
 	}
 
 	obs_data_array_release(outputs2);
 
-	QWidget *spacer = new QWidget();
-	spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	mainLayout->addWidget(spacer);
+	ReorderOutputRows();
 
 	auto start_hotkey = obs_data_get_array(current_profile_config, "start_all_outputs_hotkey");
 	auto stop_hotkey = obs_data_get_array(current_profile_config, "stop_all_outputs_hotkey");
@@ -629,7 +671,113 @@ void OutputDock::StopCanvasRecord()
 	canvasRecordOutput = nullptr;
 }
 
-bool OutputDock::StartCanvasRecord()
+QString OutputDock::SuggestRecordingBasename(const QString &suffix) const
+{
+	config_t *config = obs_frontend_get_profile_config();
+	const char *filenameFormat = config ? config_get_string(config, "Output", "FilenameFormatting") : nullptr;
+	std::string pattern = (filenameFormat && filenameFormat[0]) ? filenameFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
+	if (!suffix.isEmpty()) {
+		pattern += " ";
+		for (QChar ch : suffix) {
+			const char c = ch.toLatin1();
+			if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' ||
+			    c == '*') {
+				continue;
+			}
+			pattern.push_back(c ? c : '_');
+		}
+	}
+	char *generated = os_generate_formatted_filename("mp4", true, pattern.c_str());
+	QString result = generated ? QString::fromUtf8(generated) : QString::fromUtf8(pattern.c_str());
+	bfree(generated);
+	if (result.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive)) {
+		result.chop(4);
+	}
+	return result.trimmed();
+}
+
+bool OutputDock::PromptAndStartRecordings(bool includeBuiltin, bool includeExtraOutputs)
+{
+	std::vector<RecordingNameEntry> entries;
+	QMap<QString, OutputWidget *> widgetById;
+
+	if (includeBuiltin && mainRecordEnabled) {
+		const bool canvas = RecordUsesCanvas();
+		const bool active = canvas ? CanvasRecordActive() : obs_frontend_recording_active();
+		if (!active) {
+			RecordingNameEntry entry;
+			entry.id = QStringLiteral("builtin");
+			QString canvasLabel = mainRecordCanvasLabel ? mainRecordCanvasLabel->text()
+								    : QString::fromUtf8(obs_module_text("MainCanvas"));
+			entry.label = QString::fromUtf8(obs_module_text("BuiltinRecord"));
+			if (!canvasLabel.isEmpty()) {
+				entry.label += QStringLiteral(" (") + canvasLabel + QLatin1Char(')');
+			}
+			entry.suggested = SuggestRecordingBasename(canvas ? canvasLabel : QString());
+			entries.push_back(entry);
+		}
+	}
+
+	if (includeExtraOutputs) {
+		for (auto *ow : outputWidgets) {
+			if (!ow || !ow->IsFileRecord()) {
+				continue;
+			}
+			obs_output_t *out = ow->GetOutput();
+			if (out && obs_output_active(out)) {
+				continue;
+			}
+			RecordingNameEntry entry;
+			entry.id = QStringLiteral("out:") + ow->GetDisplayName();
+			entry.label = ow->GetDisplayName();
+			entry.suggested = SuggestRecordingBasename(ow->GetDisplayName());
+			entries.push_back(entry);
+			widgetById.insert(entry.id, ow);
+		}
+	}
+
+	if (entries.empty()) {
+		return true;
+	}
+	if (!RecordingNamesDialog::Ask(this, entries)) {
+		return false;
+	}
+
+	QMap<QString, QString> names;
+	for (const RecordingNameEntry &entry : entries) {
+		names.insert(entry.id, entry.suggested);
+	}
+
+	if (includeBuiltin && names.contains(QStringLiteral("builtin"))) {
+		const QString name = names.value(QStringLiteral("builtin"));
+		if (RecordUsesCanvas()) {
+			if (!StartCanvasRecord(name)) {
+				blog(LOG_INFO, "[Aitum Stream Suite] Canvas recording did not start");
+			}
+		} else if (!obs_frontend_recording_active()) {
+			config_t *config = obs_frontend_get_profile_config();
+			const char *oldFormat = config ? config_get_string(config, "Output", "FilenameFormatting") : nullptr;
+			const std::string restore = oldFormat ? oldFormat : "";
+			if (config) {
+				config_set_string(config, "Output", "FilenameFormatting", name.toUtf8().constData());
+			}
+			obs_frontend_recording_start();
+			if (config) {
+				config_set_string(config, "Output", "FilenameFormatting", restore.c_str());
+			}
+		}
+	}
+
+	if (includeExtraOutputs) {
+		for (auto it = widgetById.begin(); it != widgetById.end(); ++it) {
+			const QString name = names.value(it.key());
+			it.value()->StartOutput([] {}, name);
+		}
+	}
+	return true;
+}
+
+bool OutputDock::StartCanvasRecord(const QString &filenameOverride)
 {
 	if (CanvasRecordActive()) {
 		return true;
@@ -701,15 +849,20 @@ bool OutputDock::StartCanvasRecord()
 	if (!format || !format[0]) {
 		format = "hybrid_mp4";
 	}
-	std::string pattern = (filenameFormat && filenameFormat[0]) ? filenameFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
-	pattern += " ";
-	for (const char *c = canvasName; *c; c++) {
-		const char ch = *c;
-		if (ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '/' || ch == '\\' || ch == '|' || ch == '?' ||
-		    ch == '*') {
-			continue;
+	std::string pattern;
+	if (!filenameOverride.isEmpty()) {
+		pattern = filenameOverride.toStdString();
+	} else {
+		pattern = (filenameFormat && filenameFormat[0]) ? filenameFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
+		pattern += " ";
+		for (const char *c = canvasName; *c; c++) {
+			const char ch = *c;
+			if (ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '/' || ch == '\\' || ch == '|' ||
+			    ch == '?' || ch == '*') {
+				continue;
+			}
+			pattern.push_back(ch);
 		}
-		pattern.push_back(ch);
 	}
 	std::string ext = format;
 	if (ext == "fragmented_mp4" || ext == "hybrid_mp4") {
@@ -816,16 +969,15 @@ void OutputDock::ToggleMainRecord()
 		SetTimerText(mainRecordTimerLabel, false, mainRecordStartTime);
 		return;
 	}
-	if (canvas) {
-		const bool started = StartCanvasRecord();
-		mainRecordButton->setChecked(started);
-		if (!started) {
-			SetTimerText(mainRecordTimerLabel, false, mainRecordStartTime);
-		}
+	if (!PromptAndStartRecordings(true, false)) {
+		mainRecordButton->setChecked(false);
 		return;
 	}
-	obs_frontend_recording_start();
-	mainRecordButton->setChecked(true);
+	const bool started = canvas ? CanvasRecordActive() : obs_frontend_recording_active();
+	mainRecordButton->setChecked(started);
+	if (!started) {
+		SetTimerText(mainRecordTimerLabel, false, mainRecordStartTime);
+	}
 }
 
 void OutputDock::UpdateMainRecordingStatus(bool active)
@@ -933,6 +1085,51 @@ void OutputDock::frontend_event(enum obs_frontend_event event, void *private_dat
 void OutputDock::StartAll(bool streamOnly, bool recordOnly)
 {
 	outputsToStart.clear();
+
+	QMap<QString, QString> recordNames;
+	if (!streamOnly) {
+		std::vector<RecordingNameEntry> entries;
+
+		if (mainRecordEnabled) {
+			const bool canvas = RecordUsesCanvas();
+			const bool active = canvas ? CanvasRecordActive() : obs_frontend_recording_active();
+			if (!active) {
+				RecordingNameEntry entry;
+				entry.id = QStringLiteral("builtin");
+				QString canvasLabel = mainRecordCanvasLabel ? mainRecordCanvasLabel->text()
+									    : QString::fromUtf8(obs_module_text("MainCanvas"));
+				entry.label = QString::fromUtf8(obs_module_text("BuiltinRecord"));
+				if (!canvasLabel.isEmpty()) {
+					entry.label += QStringLiteral(" (") + canvasLabel + QLatin1Char(')');
+				}
+				entry.suggested = SuggestRecordingBasename(canvas ? canvasLabel : QString());
+				entries.push_back(entry);
+			}
+		}
+		for (auto *ow : outputWidgets) {
+			if (!ow || !ow->IsFileRecord()) {
+				continue;
+			}
+			obs_output_t *out = ow->GetOutput();
+			if (out && obs_output_active(out)) {
+				continue;
+			}
+			RecordingNameEntry entry;
+			entry.id = QStringLiteral("out:") + ow->GetDisplayName();
+			entry.label = ow->GetDisplayName();
+			entry.suggested = SuggestRecordingBasename(ow->GetDisplayName());
+			entries.push_back(entry);
+		}
+		if (!entries.empty()) {
+			if (!RecordingNamesDialog::Ask(this, entries)) {
+				return;
+			}
+			for (const RecordingNameEntry &entry : entries) {
+				recordNames.insert(entry.id, entry.suggested);
+			}
+		}
+	}
+
 	if (mainStreamEnabled && !recordOnly) {
 		bool warnBeforeStreamStart =
 			config_get_bool(obs_frontend_get_user_config(), "BasicWindow", "WarnBeforeStartingStream");
@@ -957,10 +1154,11 @@ void OutputDock::StartAll(bool streamOnly, bool recordOnly)
 			return true;
 		});
 	}
-	if (mainRecordEnabled && !streamOnly) {
-		outputsToStart.push_back([this](std::function<void()> onStarted) {
+	if (mainRecordEnabled && !streamOnly && recordNames.contains(QStringLiteral("builtin"))) {
+		const QString recName = recordNames.value(QStringLiteral("builtin"));
+		outputsToStart.push_back([this, recName](std::function<void()> onStarted) {
 			if (RecordUsesCanvas()) {
-				if (!CanvasRecordActive() && !StartCanvasRecord()) {
+				if (!CanvasRecordActive() && !StartCanvasRecord(recName)) {
 					blog(LOG_INFO, "[Aitum Stream Suite] Canvas recording did not start");
 				}
 				onStarted();
@@ -972,7 +1170,16 @@ void OutputDock::StartAll(bool streamOnly, bool recordOnly)
 				return true;
 			}
 			this->mainRecordOnStarted = onStarted;
+			config_t *config = obs_frontend_get_profile_config();
+			const char *oldFormat = config ? config_get_string(config, "Output", "FilenameFormatting") : nullptr;
+			const std::string restore = oldFormat ? oldFormat : "";
+			if (config && !recName.isEmpty()) {
+				config_set_string(config, "Output", "FilenameFormatting", recName.toUtf8().constData());
+			}
 			obs_frontend_recording_start();
+			if (config && !recName.isEmpty()) {
+				config_set_string(config, "Output", "FilenameFormatting", restore.c_str());
+			}
 			auto output = obs_frontend_get_recording_output();
 			if (!output) {
 				blog(LOG_INFO, "[Aitum Stream Suite] No main recording output found");
@@ -990,7 +1197,17 @@ void OutputDock::StartAll(bool streamOnly, bool recordOnly)
 		if (recordOnly && !ow->IsRecord()) {
 			continue;
 		}
-		outputsToStart.push_back([this, ow](std::function<void()> onStarted) { return ow->StartOutput(onStarted); });
+		if (!streamOnly && ow->IsFileRecord()) {
+			const QString key = QStringLiteral("out:") + ow->GetDisplayName();
+			if (!recordNames.contains(key)) {
+				continue;
+			}
+			const QString recName = recordNames.value(key);
+			outputsToStart.push_back(
+				[ow, recName](std::function<void()> onStarted) { return ow->StartOutput(onStarted, recName); });
+		} else if (!recordOnly || ow->IsRecord()) {
+			outputsToStart.push_back([ow](std::function<void()> onStarted) { return ow->StartOutput(onStarted); });
+		}
 	}
 	if (outputsToStart.empty()) {
 		return;

@@ -1,30 +1,42 @@
 #include "record-output-dialog.hpp"
 #include <obs-frontend-api.h>
 #include <obs-module.h>
-#include <QCheckBox>
-#include <QComboBox>
-#include <QCompleter>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QRegularExpression>
-#include <QSpinBox>
 #include <QVBoxLayout>
+#include <util/config-file.h>
 #include "../utils/widgets/focus-scroll-spinbox.hpp"
+
+namespace {
+
+QString ObsRecordingPath()
+{
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config) {
+		return {};
+	}
+	const char *mode = config_get_string(config, "Output", "Mode");
+	const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+	const char *dir = config_get_string(config, advanced ? "AdvOut" : "SimpleOutput",
+					    advanced ? "RecFilePath" : "FilePath");
+	return dir ? QString::fromUtf8(dir) : QString();
+}
+
+} // namespace
 
 RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames, bool backtrack_)
 	: QDialog(parent),
 	  otherNames(_otherNames),
 	  backtrack(backtrack_)
 {
-
 	setWindowTitle(QString::fromUtf8(obs_module_text(backtrack ? "NewBacktrackOutputWindowTitle" : "NewRecordOutputWindowTitle")));
 
 	auto pageLayout = new QVBoxLayout;
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
-	setMinimumSize(650, 400);
+	setMinimumSize(520, backtrack ? 280 : 200);
 
 	auto confirmButton =
 		new QPushButton(QString::fromUtf8(obs_module_text(backtrack ? "CreateBacktrackOutput" : "CreateRecordOutput")));
@@ -35,19 +47,9 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 	formLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 	formLayout->setSpacing(12);
 
-	auto filenameFormatEdit = new QLineEdit;
-
 	auto nameField = new QLineEdit;
-	connect(nameField, &QLineEdit::textEdited, [this, nameField, confirmButton, filenameFormatEdit] {
-		auto oldName = outputName;
+	connect(nameField, &QLineEdit::textEdited, [this, nameField, confirmButton] {
 		outputName = nameField->text();
-		auto spec = QString::fromUtf8(obs_frontend_get_locale_string("FilenameFormatting.completer"))
-				    .split(QRegularExpression("\n"))
-				    .first();
-		if (filenameFormat.isEmpty() || filenameFormat == spec || filenameFormat == spec + " " + oldName) {
-			filenameFormat = spec + " " + outputName;
-			filenameFormatEdit->setText(filenameFormat);
-		}
 		validateOutputs(confirmButton);
 	});
 	nameField->setText(QString::fromUtf8(obs_module_text(backtrack ? "BacktrackOutput" : "RecordOutput")));
@@ -57,6 +59,8 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 	QLayout *recordPathLayout = new QHBoxLayout();
 	auto recordPathEdit = new QLineEdit();
 	recordPathEdit->setReadOnly(true);
+	recordPath = ObsRecordingPath();
+	recordPathEdit->setText(recordPath);
 
 	auto recordPathbutton = new QPushButton(QString::fromUtf8(obs_frontend_get_locale_string("Browse")));
 	recordPathbutton->setProperty("themeID", "settingsButtons");
@@ -77,98 +81,40 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Simple.SavePath")),
 			   recordPathLayout);
 
-	QStringList specList =
-		QString::fromUtf8(obs_frontend_get_locale_string("FilenameFormatting.completer")).split(QRegularExpression("\n"));
-	filenameFormatEdit->setText(specList.first() + " " + outputName);
-	QCompleter *specCompleter = new QCompleter(specList);
-	specCompleter->setCaseSensitivity(Qt::CaseSensitive);
-	specCompleter->setFilterMode(Qt::MatchContains);
-	filenameFormatEdit->setCompleter(specCompleter);
-	filenameFormatEdit->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("FilenameFormatting.TT")));
+	/* Format, filename pattern and auto-split follow OBS Settings → Output. */
+	filenameFormat.clear();
+	fileFormat.clear();
+	maxSize = 0;
+	maxTime = 0;
 
-	connect(filenameFormatEdit, &QLineEdit::textEdited, [this, filenameFormatEdit, confirmButton](const QString &text) {
-		QString safeStr = text;
-
-#ifdef __APPLE__
-		safeStr.replace(QRegularExpression("[:]"), "");
-#elif defined(_WIN32)
-	safeStr.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
-#else
-		// TODO: Add filtering for other platforms
-#endif
-		if (text != safeStr)
-			filenameFormatEdit->setText(safeStr);
-		filenameFormat = safeStr;
-		validateOutputs(confirmButton);
-	});
-	filenameFormat = specList.first();
-
-	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Adv.Recording.Filename")),
-			   filenameFormatEdit);
-
-	auto fileFormatCombo = new QComboBox;
-	fileFormatCombo->addItem(QString::fromUtf8("mp4"));
-	fileFormatCombo->addItem(QString::fromUtf8("hybrid_mp4"));
-	fileFormatCombo->addItem(QString::fromUtf8("fragmented_mp4"));
-	fileFormatCombo->addItem(QString::fromUtf8("mov"));
-	fileFormatCombo->addItem(QString::fromUtf8("hybrid_mov"));
-	fileFormatCombo->addItem(QString::fromUtf8("fragmented_mov"));
-	fileFormatCombo->addItem(QString::fromUtf8("mkv"));
-	fileFormatCombo->addItem(QString::fromUtf8("ts"));
-	fileFormatCombo->addItem(QString::fromUtf8("mp3u8"));
-	connect(fileFormatCombo, &QComboBox::currentTextChanged, [this, fileFormatCombo, confirmButton] {
-		fileFormat = fileFormatCombo->currentText();
-		validateOutputs(confirmButton);
-	});
-	fileFormatCombo->setCurrentText(QString::fromUtf8("hybrid_mp4"));
-
-	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Format")), fileFormatCombo);
-
-	auto maxTime = new FocusScrollSpinBox();
-	maxTime->setMinimum(0);
-	maxTime->setMaximum(31536000);
-	maxTime->setSuffix(" s");
-	connect(maxTime, &QSpinBox::valueChanged, [this](int value) { this->maxTime = value; });
-	if (backtrack)
-		maxTime->setValue(30);
-
-	auto maxSize = new FocusScrollSpinBox();
-	maxSize->setMinimum(0);
-	maxSize->setMaximum(1073741824);
-	maxSize->setSuffix(" MB");
-	connect(maxSize, &QSpinBox::valueChanged, [this](int value) { this->maxSize = value; });
-
-	if (!backtrack) {
-		auto enableSplitFile =
-			new QCheckBox(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.EnableSplitFile")));
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		connect(enableSplitFile, &QCheckBox::checkStateChanged, [this, maxTime, maxSize, enableSplitFile] {
-#else
-		connect(enableSplitFile, &QCheckBox::stateChanged, [this, maxTime, maxSize, enableSplitFile] {
-#endif
-			maxTime->setEnabled(enableSplitFile->isChecked());
-			maxSize->setEnabled(enableSplitFile->isChecked());
-			if (enableSplitFile->isChecked()) {
-				this->maxTime = maxTime->value();
-				this->maxSize = maxSize->value();
-			} else {
-				this->maxTime = 0;
-				this->maxSize = 0;
-			}
+	if (backtrack) {
+		auto maxTimeSpin = new FocusScrollSpinBox();
+		maxTimeSpin->setMinimum(0);
+		maxTimeSpin->setMaximum(31536000);
+		maxTimeSpin->setSuffix(" s");
+		maxTimeSpin->setValue(30);
+		maxTime = 30;
+		connect(maxTimeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
+			this->maxTime = value;
+			validateOutputs(confirmButton);
 		});
 
-		formLayout->addRow(enableSplitFile);
+		auto maxSizeSpin = new FocusScrollSpinBox();
+		maxSizeSpin->setMinimum(0);
+		maxSizeSpin->setMaximum(1073741824);
+		maxSizeSpin->setSuffix(" MB");
+		connect(maxSizeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
+			this->maxSize = value;
+			validateOutputs(confirmButton);
+		});
+
+		formLayout->addRow(
+			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.SecondsMax")),
+			maxTimeSpin);
+		formLayout->addRow(
+			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.MegabytesMax")),
+			maxSizeSpin);
 	}
-
-	formLayout->addRow(
-		QString::fromUtf8(obs_frontend_get_locale_string(backtrack ? "Basic.Settings.Output.ReplayBuffer.SecondsMax"
-									   : "Basic.Settings.Output.SplitFile.Time")),
-		maxTime);
-
-	formLayout->addRow(
-		QString::fromUtf8(obs_frontend_get_locale_string(backtrack ? "Basic.Settings.Output.ReplayBuffer.MegabytesMax"
-									   : "Basic.Settings.Output.SplitFile.Size")),
-		maxSize);
 
 	auto controlsLayout = new QHBoxLayout;
 	controlsLayout->setSpacing(0);
@@ -181,6 +127,7 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 	pageLayout->addLayout(controlsLayout);
 
 	setLayout(pageLayout);
+	validateOutputs(confirmButton);
 }
 
 RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString path, QString filename, QString format,
@@ -191,17 +138,19 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString pa
 {
 	outputName = name;
 	recordPath = path;
-	filenameFormat = filename;
-	fileFormat = format;
-	maxSize = max_size;
-	maxTime = max_time;
+	filenameFormat.clear();
+	fileFormat.clear();
+	maxSize = backtrack_ ? max_size : 0;
+	maxTime = backtrack_ ? max_time : 0;
+	UNUSED_PARAMETER(filename);
+	UNUSED_PARAMETER(format);
 
 	setWindowTitle(obs_module_text(backtrack ? "EditBacktrackOutputWindowTitle" : "EditRecordOutputWindowTitle"));
 
 	auto pageLayout = new QVBoxLayout;
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
-	setMinimumSize(650, 400);
+	setMinimumSize(520, backtrack ? 280 : 200);
 
 	auto confirmButton =
 		new QPushButton(QString::fromUtf8(obs_module_text(backtrack ? "SaveBacktrackOutput" : "SaveRecordOutput")));
@@ -212,20 +161,10 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString pa
 	formLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 	formLayout->setSpacing(12);
 
-	auto filenameFormatEdit = new QLineEdit;
-
 	auto nameField = new QLineEdit;
 	nameField->setText(outputName);
-	connect(nameField, &QLineEdit::textEdited, [this, nameField, filenameFormatEdit, confirmButton] {
-		auto oldName = outputName;
+	connect(nameField, &QLineEdit::textEdited, [this, nameField, confirmButton] {
 		outputName = nameField->text();
-		auto spec = QString::fromUtf8(obs_frontend_get_locale_string("FilenameFormatting.completer"))
-				    .split(QRegularExpression("\n"))
-				    .first();
-		if (filenameFormat.isEmpty() || filenameFormat == spec || filenameFormat == spec + " " + oldName) {
-			filenameFormat = spec + " " + outputName;
-			filenameFormatEdit->setText(filenameFormat);
-		}
 		validateOutputs(confirmButton);
 	});
 	formLayout->addRow(QString::fromUtf8(obs_module_text("OutputName")), nameField);
@@ -254,115 +193,34 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString pa
 	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Simple.SavePath")),
 			   recordPathLayout);
 
-	QStringList specList =
-		QString::fromUtf8(obs_frontend_get_locale_string("FilenameFormatting.completer")).split(QRegularExpression("\n"));
-	if (filenameFormat.isEmpty())
-		fileFormat = specList.first() + " " + outputName;
-
-	filenameFormatEdit->setText(filenameFormat);
-
-	QCompleter *specCompleter = new QCompleter(specList);
-	specCompleter->setCaseSensitivity(Qt::CaseSensitive);
-	specCompleter->setFilterMode(Qt::MatchContains);
-	filenameFormatEdit->setCompleter(specCompleter);
-	filenameFormatEdit->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("FilenameFormatting.TT")));
-
-	connect(filenameFormatEdit, &QLineEdit::textEdited, [this, filenameFormatEdit, confirmButton](const QString &text) {
-		QString safeStr = text;
-
-#ifdef __APPLE__
-		safeStr.replace(QRegularExpression("[:]"), "");
-#elif defined(_WIN32)
-	safeStr.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
-#else
-		// TODO: Add filtering for other platforms
-#endif
-		if (text != safeStr)
-			filenameFormatEdit->setText(safeStr);
-		filenameFormat = safeStr;
-		validateOutputs(confirmButton);
-	});
-
-	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Adv.Recording.Filename")),
-			   filenameFormatEdit);
-
-	auto fileFormatCombo = new QComboBox;
-	fileFormatCombo->addItem(QString::fromUtf8("mp4"));
-	fileFormatCombo->addItem(QString::fromUtf8("hybrid_mp4"));
-	fileFormatCombo->addItem(QString::fromUtf8("fragmented_mp4"));
-	fileFormatCombo->addItem(QString::fromUtf8("mov"));
-	fileFormatCombo->addItem(QString::fromUtf8("hybrid_mov"));
-	fileFormatCombo->addItem(QString::fromUtf8("fragmented_mov"));
-	fileFormatCombo->addItem(QString::fromUtf8("mkv"));
-	fileFormatCombo->addItem(QString::fromUtf8("ts"));
-	fileFormatCombo->addItem(QString::fromUtf8("mp3u8"));
-	if (filenameFormat.isEmpty())
-		fileFormat = QString::fromUtf8("hybrid_mp4");
-	fileFormatCombo->setCurrentText(fileFormat);
-	connect(fileFormatCombo, &QComboBox::currentTextChanged, [this, fileFormatCombo, confirmButton] {
-		fileFormat = fileFormatCombo->currentText();
-		validateOutputs(confirmButton);
-	});
-
-	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Format")), fileFormatCombo);
-
-	auto maxTime = new FocusScrollSpinBox();
-	maxTime->setMinimum(0);
-	maxTime->setMaximum(31536000);
-	maxTime->setSuffix(" s");
-	maxTime->setValue(max_time);
-	connect(maxTime, &QSpinBox::valueChanged, [this, confirmButton](int value) {
-		this->maxTime = value;
-		validateOutputs(confirmButton);
-	});
-
-	auto maxSize = new FocusScrollSpinBox();
-	maxSize->setMinimum(0);
-	maxSize->setMaximum(1073741824);
-	maxSize->setSuffix(" MB");
-	maxSize->setValue(max_size);
-	connect(maxSize, &QSpinBox::valueChanged, [this, confirmButton](int value) {
-		this->maxSize = value;
-		validateOutputs(confirmButton);
-	});
-
-	if (!backtrack) {
-		auto enableSplitFile =
-			new QCheckBox(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.EnableSplitFile")));
-		enableSplitFile->setChecked(max_size > 0 || max_time > 0);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		connect(enableSplitFile, &QCheckBox::checkStateChanged, [this, maxTime, maxSize, enableSplitFile, confirmButton] {
-#else
-		connect(enableSplitFile, &QCheckBox::stateChanged, [this, maxTime, maxSize, enableSplitFile, confirmButton] {
-#endif
-			maxTime->setEnabled(enableSplitFile->isChecked());
-			maxSize->setEnabled(enableSplitFile->isChecked());
-			if (enableSplitFile->isChecked()) {
-				this->maxTime = maxTime->value();
-				this->maxSize = maxSize->value();
-			} else {
-				this->maxTime = 0;
-				this->maxSize = 0;
-			}
+	if (backtrack) {
+		auto maxTimeSpin = new FocusScrollSpinBox();
+		maxTimeSpin->setMinimum(0);
+		maxTimeSpin->setMaximum(31536000);
+		maxTimeSpin->setSuffix(" s");
+		maxTimeSpin->setValue(maxTime);
+		connect(maxTimeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
+			this->maxTime = value;
 			validateOutputs(confirmButton);
 		});
-		if (!enableSplitFile->isChecked()) {
-			maxTime->setEnabled(false);
-			maxSize->setEnabled(false);
-		}
 
-		formLayout->addRow(enableSplitFile);
+		auto maxSizeSpin = new FocusScrollSpinBox();
+		maxSizeSpin->setMinimum(0);
+		maxSizeSpin->setMaximum(1073741824);
+		maxSizeSpin->setSuffix(" MB");
+		maxSizeSpin->setValue(maxSize);
+		connect(maxSizeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
+			this->maxSize = value;
+			validateOutputs(confirmButton);
+		});
+
+		formLayout->addRow(
+			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.SecondsMax")),
+			maxTimeSpin);
+		formLayout->addRow(
+			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.MegabytesMax")),
+			maxSizeSpin);
 	}
-
-	formLayout->addRow(
-		QString::fromUtf8(obs_frontend_get_locale_string(backtrack ? "Basic.Settings.Output.ReplayBuffer.SecondsMax"
-									   : "Basic.Settings.Output.SplitFile.Time")),
-		maxTime);
-
-	formLayout->addRow(
-		QString::fromUtf8(obs_frontend_get_locale_string(backtrack ? "Basic.Settings.Output.ReplayBuffer.MegabytesMax"
-									   : "Basic.Settings.Output.SplitFile.Size")),
-		maxSize);
 
 	auto controlsLayout = new QHBoxLayout;
 	controlsLayout->setSpacing(0);
@@ -375,14 +233,14 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString pa
 	pageLayout->addLayout(controlsLayout);
 
 	setLayout(pageLayout);
+	validateOutputs(confirmButton);
 }
 
 void RecordOutputDialog::validateOutputs(QPushButton *confirmButton)
 {
-
 	if (outputName.isEmpty() || otherNames.contains(outputName)) {
 		confirmButton->setEnabled(false);
-	} else if (recordPath.isEmpty() || filenameFormat.isEmpty() || fileFormat.isEmpty()) {
+	} else if (recordPath.isEmpty()) {
 		confirmButton->setEnabled(false);
 	} else if (backtrack && maxSize == 0 && maxTime == 0) {
 		confirmButton->setEnabled(false);

@@ -1315,10 +1315,15 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 				// Set the info from the output dialog
 				obs_data_set_string(settings, "name", outputDialog->outputName.toUtf8().constData());
 				obs_data_set_string(settings, "path", outputDialog->recordPath.toUtf8().constData());
-				obs_data_set_string(settings, "filename", outputDialog->filenameFormat.toUtf8().constData());
-				obs_data_set_string(settings, "format", outputDialog->fileFormat.toUtf8().constData());
-				obs_data_set_int(settings, "max_size_mb", outputDialog->maxSize);
-				obs_data_set_int(settings, "max_time_sec", outputDialog->maxTime);
+				obs_data_erase(settings, "filename");
+				obs_data_erase(settings, "format");
+				if (strcmp(output_type, "backtrack") == 0) {
+					obs_data_set_int(settings, "max_size_mb", outputDialog->maxSize);
+					obs_data_set_int(settings, "max_time_sec", outputDialog->maxTime);
+				} else {
+					obs_data_erase(settings, "max_size_mb");
+					obs_data_erase(settings, "max_time_sec");
+				}
 
 				// Reload
 				LoadSettings(main_settings);
@@ -1428,10 +1433,20 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 	canvasSubLayout->addWidget(canvasCombo, 0);
 	QToolButton *add = nullptr;
 	auto streamServer = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
-	auto format = obs_data_get_string(settings, "format");
 	auto output_type = obs_data_get_string(settings, "type");
-	if (((strcmp(output_type, "record") == 0) &&
-	     ((strcmp(format, "hybrid_mp4") == 0) || (strcmp(format, "hybrid_mov") == 0) || (strcmp(format, "flv") == 0))) ||
+	const char *recFormat = nullptr;
+	if (strcmp(output_type, "record") == 0) {
+		config_t *profile = obs_frontend_get_profile_config();
+		const char *mode = profile ? config_get_string(profile, "Output", "Mode") : nullptr;
+		const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+		recFormat = profile ? config_get_string(profile, advanced ? "AdvOut" : "SimpleOutput", "RecFormat2") : nullptr;
+		if (!recFormat || !recFormat[0]) {
+			recFormat = "hybrid_mp4";
+		}
+	}
+	if (((strcmp(output_type, "record") == 0) && recFormat &&
+	     ((strcmp(recFormat, "hybrid_mp4") == 0) || (strcmp(recFormat, "hybrid_mov") == 0) ||
+	      (strcmp(recFormat, "flv") == 0))) ||
 	    ((output_type[0] == '\0' || strcmp(output_type, "stream") == 0) &&
 	     (streamServer.startsWith("srt://", Qt::CaseInsensitive) || streamServer.startsWith("rist://", Qt::CaseInsensitive) ||
 	      streamServer.contains("whip", Qt::CaseInsensitive)))) {
@@ -2449,10 +2464,6 @@ void OBSBasicSettings::AddRecord()
 		obs_data_set_string(s, "type", "record");
 		obs_data_set_string(s, "name", outputDialog->outputName.toUtf8().constData());
 		obs_data_set_string(s, "path", outputDialog->recordPath.toUtf8().constData());
-		obs_data_set_string(s, "filename", outputDialog->filenameFormat.toUtf8().constData());
-		obs_data_set_string(s, "format", outputDialog->fileFormat.toUtf8().constData());
-		obs_data_set_int(s, "max_size_mb", outputDialog->maxSize);
-		obs_data_set_int(s, "max_time_sec", outputDialog->maxTime);
 		obs_data_array_push_back(extra_outputs, s);
 		AddOutput(outputsLayout, s, extra_outputs, true);
 		obs_data_release(s);

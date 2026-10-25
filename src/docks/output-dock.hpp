@@ -57,10 +57,13 @@ private:
 
 	bool RecordUsesCanvas() const;
 	bool CanvasRecordActive() const;
-	bool StartCanvasRecord();
+	bool StartCanvasRecord(const QString &filenameOverride = QString());
 	void StopCanvasRecord();
 	void ToggleMainRecord();
 	void RefreshRecordCanvasLabel();
+	void ReorderOutputRows();
+	QString SuggestRecordingBasename(const QString &suffix) const;
+	bool PromptAndStartRecordings(bool includeBuiltin, bool includeExtraOutputs);
 
 	static void frontend_event(enum obs_frontend_event event, void *private_data);
 

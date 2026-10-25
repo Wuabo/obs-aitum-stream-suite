@@ -5,7 +5,9 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPushButton>
+#include <QString>
 #include <QTimer>
+#include <functional>
 
 class OutputWidget : public QFrame {
 	Q_OBJECT
@@ -23,6 +25,7 @@ private:
 	obs_output_t *output = nullptr;
 
 	std::function<void()> onStarted = nullptr;
+	QString pendingFilenameOverride;
 
 	QTimer activeTimer;
 	QDateTime startTime;
@@ -54,9 +57,11 @@ public:
 	void SaveSettings();
 	void UpdateSettings(obs_data_t *data);
 	bool AddChapter(const char *chapter_name);
-	bool StartOutput(std::function<void()> onStarted);
+	bool StartOutput(std::function<void()> onStarted, const QString &filenameOverride = QString());
 	void StopOutput();
 	bool IsStream() const;
 	bool IsRecord() const;
+	bool IsFileRecord() const;
 	const char* GetOutputType() const;
+	QString GetDisplayName() const;
 };

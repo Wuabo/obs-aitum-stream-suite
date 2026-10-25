@@ -46,15 +46,27 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	iconSlotLayout->setSpacing(0);
 
 	auto output_type = obs_data_get_string(settings, "type");
-	if (output_type[0] == '\0' || strcmp(output_type, "stream") == 0) {
+	auto platformIconLabel = new QLabel;
+	platformIconLabel->setFixedSize(outputPlatformIconSize, outputPlatformIconSize);
+	platformIconLabel->setScaledContents(true);
+	if (strcmp(output_type, "record") == 0) {
+		platformIconLabel->setPixmap(
+			QIcon(QStringLiteral(":/aitum/media/record.svg")).pixmap(outputPlatformIconSize, outputPlatformIconSize));
+	} else if (strcmp(output_type, "backtrack") == 0) {
+		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/backtrack_off.svg"))
+						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
+	} else if (strcmp(output_type, "ffmpeg") == 0) {
+		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/ffmpeg_off.svg"))
+						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
+	} else if (strcmp(output_type, "virtual_cam") == 0) {
+		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/virtual_cam_off.svg"))
+						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
+	} else {
 		auto endpoint = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
-		auto platformIconLabel = new QLabel;
-		platformIconLabel->setFixedSize(outputPlatformIconSize, outputPlatformIconSize);
-		platformIconLabel->setScaledContents(true);
 		platformIconLabel->setPixmap(
 			getPlatformIconFromEndpoint(endpoint).pixmap(outputPlatformIconSize, outputPlatformIconSize));
-		iconSlotLayout->addWidget(platformIconLabel, 0, Qt::AlignVCenter);
 	}
+	iconSlotLayout->addWidget(platformIconLabel, 0, Qt::AlignVCenter);
 	outputLayout->addWidget(iconSlot, 0, Qt::AlignVCenter);
 	outputLayout->addWidget(new QLabel(name), 2, Qt::AlignVCenter);
 
@@ -900,22 +912,32 @@ bool OutputWidget::StartOutput(bool automated)
 	}
 
 	if (is_record) {
-		std::string filenameFormat = obs_data_get_string(settings, "filename");
-		if (filenameFormat.empty()) {
-			filenameFormat = "%CCYY-%MM-%DD %hh-%mm-%ss";
-			filenameFormat += " ";
-			QString safeName = QString::fromUtf8(name);
+		config_t *profile = obs_frontend_get_profile_config();
+		const char *mode = profile ? config_get_string(profile, "Output", "Mode") : nullptr;
+		const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+
+		std::string filenameFormat;
+		if (!pendingFilenameOverride.isEmpty()) {
+			filenameFormat = pendingFilenameOverride.toStdString();
+		} else {
+			const char *obsFormat =
+				profile ? config_get_string(profile, "Output", "FilenameFormatting") : nullptr;
+			filenameFormat = (obsFormat && obsFormat[0]) ? obsFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
+			if (strcmp(output_type, "backtrack") != 0) {
+				filenameFormat += " ";
+				QString safeName = QString::fromUtf8(name);
 #ifdef __APPLE__
-			safeName.replace(QRegularExpression("[:]"), "");
+				safeName.replace(QRegularExpression("[:]"), "");
 #elif defined(_WIN32)
-			safeName.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
-#else
-			// TODO: Add filtering for other platforms
+				safeName.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
 #endif
-			filenameFormat += safeName.toStdString();
+				filenameFormat += safeName.toStdString();
+			}
 		}
-		auto format = obs_data_get_string(settings, "format");
-		if (format[0] == '\0') {
+
+		const char *format =
+			profile ? config_get_string(profile, advanced ? "AdvOut" : "SimpleOutput", "RecFormat2") : nullptr;
+		if (!format || !format[0]) {
 			format = "hybrid_mp4";
 		}
 		std::string ext = format;
@@ -961,11 +983,30 @@ bool OutputWidget::StartOutput(bool automated)
 		obs_data_set_string(ps, "directory", dir);
 		obs_data_set_string(ps, "format", filenameFormat.c_str());
 		obs_data_set_string(ps, "extension", ext.c_str());
-		obs_data_set_bool(ps, "split_file", true);
-		auto max_size = obs_data_get_int(settings, "max_size_mb");
-		obs_data_set_int(ps, "max_size_mb", max_size > 0 ? max_size : 0);
-		auto max_sec = obs_data_get_int(settings, "max_time_sec");
-		obs_data_set_int(ps, "max_time_sec", max_sec > 0 ? max_sec : 0);
+
+		if (strcmp(output_type, "backtrack") == 0) {
+			obs_data_set_bool(ps, "split_file", true);
+			auto max_size = obs_data_get_int(settings, "max_size_mb");
+			obs_data_set_int(ps, "max_size_mb", max_size > 0 ? max_size : 0);
+			auto max_sec = obs_data_get_int(settings, "max_time_sec");
+			obs_data_set_int(ps, "max_time_sec", max_sec > 0 ? max_sec : 0);
+		} else {
+			const bool splitFile =
+				advanced ? config_get_bool(profile, "AdvOut", "RecSplitFile") : false;
+			obs_data_set_bool(ps, "split_file", splitFile);
+			long long max_size = 0;
+			long long max_sec = 0;
+			if (splitFile && profile) {
+				const char *splitType = config_get_string(profile, "AdvOut", "RecSplitFileType");
+				if (splitType && strcmp(splitType, "Size") == 0) {
+					max_size = config_get_int(profile, "AdvOut", "RecSplitFileSize");
+				} else if (splitType && strcmp(splitType, "Time") == 0) {
+					max_sec = config_get_int(profile, "AdvOut", "RecSplitFileTime") * 60;
+				}
+			}
+			obs_data_set_int(ps, "max_size_mb", max_size > 0 ? max_size : 0);
+			obs_data_set_int(ps, "max_time_sec", max_sec > 0 ? max_sec : 0);
+		}
 		obs_output_update(output, ps);
 		obs_data_release(ps);
 	} else {
@@ -1501,15 +1542,16 @@ bool OutputWidget::AddChapter(const char *chapter_name)
 	return result;
 }
 
-bool OutputWidget::StartOutput(std::function<void()> onStarted)
+bool OutputWidget::StartOutput(std::function<void()> onStarted, const QString &filenameOverride)
 {
 	if (output && obs_output_active(output)) {
 		onStarted();
 		return true;
 	}
-	auto name = this->objectName();
+	pendingFilenameOverride = filenameOverride;
 	this->onStarted = onStarted;
 	auto starting = StartOutput(true);
+	pendingFilenameOverride.clear();
 	if (!starting) {
 		this->onStarted = nullptr;
 	}
@@ -1545,6 +1587,21 @@ bool OutputWidget::IsRecord() const
 		return obs_data_get_bool(settings, "save_file");
 	}
 	return (strcmp(output_type, "record") == 0 || strcmp(output_type, "backtrack") == 0);
+}
+
+bool OutputWidget::IsFileRecord() const
+{
+	const auto output_type = obs_data_get_string(settings, "type");
+	return strcmp(output_type, "record") == 0;
+}
+
+QString OutputWidget::GetDisplayName() const
+{
+	const char *name = obs_data_get_string(settings, "name");
+	if (name && name[0]) {
+		return QString::fromUtf8(name);
+	}
+	return objectName();
 }
 
 const char *OutputWidget::GetOutputType() const
