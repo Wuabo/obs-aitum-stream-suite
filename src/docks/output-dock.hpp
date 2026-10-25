@@ -79,6 +79,8 @@ public:
 	void LoadSettings();
 	void SaveSettings();
 	bool AddChapterToOutput(const char *output_name, const char *chapter_name);
+	bool HasActiveStreams() const;
+	bool HasActiveRecordings() const;
 
 public slots:
 	void UpdateMainStreamStatus(bool active);

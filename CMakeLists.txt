@@ -68,6 +68,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/canvas-previews-dock.hpp
   src/docks/native-dock-tabs.cpp
   src/docks/native-dock-tabs.hpp
+  src/docks/controls-other-options.cpp
+  src/docks/controls-other-options.hpp
   src/docks/filters-dock.cpp
   src/docks/filters-dock.hpp
   src/docks/output-dock.cpp

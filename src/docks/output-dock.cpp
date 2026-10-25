@@ -93,44 +93,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
 
-	toolbar->addSeparator();
-
-	auto styleLabeledAction = [toolbar](QAction *action, const QString &tooltip) {
-		action->setToolTip(tooltip);
-		auto *btn = qobject_cast<QToolButton *>(toolbar->widgetForAction(action));
-		if (btn) {
-			btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-			btn->setAutoRaise(true);
-		}
-	};
-
-	const QIcon stopIcon =
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStop, QIcon(":/res/images/media/media_stop.svg"));
-#else
-		QIcon(":/res/images/media/media_stop.svg");
-#endif
-
-	a = toolbar->addAction(QIcon(QStringLiteral(":/aitum/media/streaming.svg")),
-			       QString::fromUtf8(obs_module_text("Stream")), [this] { StartAll(true, false); });
-	styleLabeledAction(a, QString::fromUtf8(obs_module_text("StartAllStreams")));
-
-	a = toolbar->addAction(stopIcon, QString::fromUtf8(obs_module_text("StopAllStreams")),
-			       [this] { StopAll(true, false); });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("stopIcon")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-media-stop");
-
-	toolbar->addSeparator();
-
-	a = toolbar->addAction(QIcon(QStringLiteral(":/aitum/media/recording.svg")),
-			       QString::fromUtf8(obs_module_text("Record")), [this] { StartAll(false, true); });
-	styleLabeledAction(a, QString::fromUtf8(obs_module_text("StartAllRecordings")));
-
-	a = toolbar->addAction(stopIcon, QString::fromUtf8(obs_module_text("StopAllRecordings")),
-			       [this] { StopAll(false, true); });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("stopIcon")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-media-stop");
-
 	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/stream.svg")), QString::fromUtf8(obs_module_text("Stream")),
 			       [this] { open_config_dialog(1, "stream"); });
 
@@ -604,6 +566,40 @@ bool OutputDock::RecordUsesCanvas() const
 bool OutputDock::CanvasRecordActive() const
 {
 	return canvasRecordOutput && obs_output_active(canvasRecordOutput);
+}
+
+bool OutputDock::HasActiveStreams() const
+{
+	if (mainStreamEnabled && obs_frontend_streaming_active()) {
+		return true;
+	}
+	for (const auto &ow : outputWidgets) {
+		if (!ow || !ow->IsStream()) {
+			continue;
+		}
+		obs_output_t *out = ow->GetOutput();
+		if (out && obs_output_active(out)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool OutputDock::HasActiveRecordings() const
+{
+	if (mainRecordEnabled && (obs_frontend_recording_active() || CanvasRecordActive())) {
+		return true;
+	}
+	for (const auto &ow : outputWidgets) {
+		if (!ow || !ow->IsRecord()) {
+			continue;
+		}
+		obs_output_t *out = ow->GetOutput();
+		if (out && obs_output_active(out)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void OutputDock::RefreshRecordCanvasLabel()

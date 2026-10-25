@@ -1,4 +1,5 @@
 #include "native-dock-tabs.hpp"
+#include "controls-other-options.hpp"
 #include "canvas-dock.hpp"
 #include "sources-dock.hpp"
 #include <obs-frontend-api.h>
@@ -531,6 +532,7 @@ void shutdown_native_canvas_tabs()
 {
 	nativeTabsStopped = true;
 	alive = false;
+	shutdown_controls_other_options_tab();
 	ClearPages();
 	delete scenesTabHost;
 	delete sourcesTabHost;
@@ -558,6 +560,7 @@ void refresh_native_canvas_tabs()
 	if (nativeTabsStopped || !main) {
 		return;
 	}
+	install_controls_other_options_tab();
 	alive = true;
 	QString keep;
 	if (scenesTabs && scenesTabs->currentIndex() > 0 && scenesTabs->currentIndex() - 1 < int(pages.size())) {
