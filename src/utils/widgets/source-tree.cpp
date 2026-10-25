@@ -11,8 +11,10 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPushButton>
 #include <QSpacerItem>
+#include <QStyle>
 #include <QStyleOptionFocusRect>
 #include <QStylePainter>
 #include <QTimer>
@@ -27,6 +29,37 @@
 #endif
 
 /* ========================================================================= */
+
+static void PolishWidget(QWidget *widget)
+{
+	if (!widget || !widget->style()) {
+		return;
+	}
+	widget->style()->unpolish(widget);
+	widget->style()->polish(widget);
+}
+
+/* Same tint OBS applies in idian::Utils::applyColorToIcon: theme icons
+ * follow the label text color (white on Yami, muted when hidden). */
+static void ApplyIconColor(QLabel *label)
+{
+	if (!label) {
+		return;
+	}
+	const QPixmap source = label->property("suiteIcon").value<QPixmap>();
+	if (source.isNull()) {
+		return;
+	}
+	QStyleOptionFrame opt;
+	opt.initFrom(label);
+	const QColor color = opt.palette.color(QPalette::Text);
+	QImage img = source.toImage();
+	QPainter p(&img);
+	p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+	p.fillRect(img.rect(), color);
+	p.end();
+	label->setPixmap(QPixmap::fromImage(img));
+}
 
 SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tree(tree_), sceneitem(sceneitem_)
 {
@@ -70,25 +103,23 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 
 		iconLabel = new QLabel();
 		iconLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
-		iconLabel->setPixmap(pixmap);
-		iconLabel->setEnabled(sourceVisible);
-		iconLabel->setStyleSheet("background: none");
-		iconLabel->setProperty("class", "source-icon");
+		iconLabel->setProperty("suiteIcon", pixmap);
+		iconLabel->setStyleSheet(QString::fromUtf8("background: none"));
+		iconLabel->setProperty("class", sourceVisible ? QString::fromUtf8("source-icon")
+							      : QString::fromUtf8("source-icon text-muted"));
 	}
 
 	vis = new VisibilityCheckBox();
-	vis->setProperty("class", "checkbox-icon indicator-visibility");
+	vis->setProperty("class", QString::fromUtf8("checkbox-icon indicator-visibility"));
 	vis->setChecked(sourceVisible);
-	vis->setStyleSheet("background: none");
 	vis->setAccessibleName(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.Sources.Visibility")));
 	vis->setAccessibleDescription(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.Sources.VisibilityDescription")).arg(name));
 	vis->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
 
 	lock = new LockedCheckBox();
-	lock->setProperty("class", "checkbox-icon indicator-lock");
+	lock->setProperty("class", QString::fromUtf8("checkbox-icon indicator-lock"));
 	lock->setChecked(obs_sceneitem_locked(sceneitem));
-	lock->setStyleSheet("background: none");
 	lock->setAccessibleName(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.Sources.Lock")));
 	lock->setAccessibleDescription(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.Sources.LockDescription")).arg(name));
@@ -107,6 +138,7 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 	boxLayout = new QHBoxLayout();
 
 	boxLayout->setContentsMargins(0, 0, 0, 0);
+	boxLayout->setSpacing(0);
 	if (iconLabel) {
 		boxLayout->addWidget(iconLabel);
 		boxLayout->addSpacing(2);
@@ -122,6 +154,13 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 	Update(false);
 
 	setLayout(boxLayout);
+	if (iconLabel) {
+		PolishWidget(iconLabel);
+		ApplyIconColor(iconLabel);
+	}
+	PolishWidget(vis);
+	PolishWidget(lock);
+	PolishWidget(expand);
 
 	/* --------------------------------------------------------- */
 
@@ -461,7 +500,10 @@ bool SourceTreeItem::eventFilter(QObject *object, QEvent *event)
 void SourceTreeItem::VisibilityChanged(bool visible)
 {
 	if (iconLabel) {
-		iconLabel->setEnabled(visible);
+		iconLabel->setProperty("class", visible ? QString::fromUtf8("source-icon")
+							 : QString::fromUtf8("source-icon text-muted"));
+		PolishWidget(iconLabel);
+		ApplyIconColor(iconLabel);
 	}
 	label->setEnabled(visible);
 	vis->setChecked(visible);
@@ -534,12 +576,13 @@ void SourceTreeItem::Update(bool force)
 
 	} else if (type == Type::Group) {
 		expand = new SourceTreeSubItemCheckBox();
-		expand->setProperty("class", "checkbox-icon indicator-expand");
+		expand->setProperty("class", QString::fromUtf8("checkbox-icon indicator-expand"));
 		expand->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 #ifdef __APPLE__
 		expand->setAttribute(Qt::WA_LayoutUsesWidgetRect);
 #endif
 		boxLayout->insertWidget(0, expand);
+		PolishWidget(expand);
 
 		OBSDataAutoRelease private_settings = obs_sceneitem_get_private_settings(sceneitem);
 		expand->blockSignals(true);
@@ -640,7 +683,9 @@ void SourceTreeModel::SceneChanged()
 
 	beginResetModel();
 	items.clear();
-	obs_scene_enum_items(scene, enumItem, &items);
+	if (scene) {
+		obs_scene_enum_items(scene, enumItem, &items);
+	}
 	endResetModel();
 
 	UpdateGroupState(false);

@@ -1,4 +1,5 @@
 #include "../dialogs/name-dialog.hpp"
+#include "../dialogs/source-select-dialog.hpp"
 #include "canvas-dock.hpp"
 #include "sources-dock.hpp"
 #include <obs-module.h>
@@ -13,11 +14,31 @@
 
 extern SourcesDock *sources_dock;
 
+static void StyleDockToolbar(QToolBar *toolbar)
+{
+	if (!toolbar)
+		return;
+	/* Same metrics as Yami's OBSDock QToolBar. A widget sheet is required
+	 * because these bars are built outside the dock and keep the generic
+	 * QToolButton padding after they move in. */
+	toolbar->setIconSize(QSize(16, 16));
+	toolbar->setFixedHeight(32);
+	toolbar->setStyleSheet(QString::fromUtf8(
+		"QToolBar { border: none; border-top: 1px solid palette(mid); background: transparent; spacing: 0px; padding: 1px; margin: 0px; }"
+		"QToolButton { background: transparent; border: 1px solid transparent; margin: 1px; margin-top: 2px; padding: 4px; min-width: 16px; min-height: 16px; }"
+		"QToolButton:hover { border-color: palette(mid); }"
+		"QToolButton:pressed { background: palette(mid); }"));
+}
+
 SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 {
-	setObjectName("AitumStreamSuiteSourcesDock");
+	setObjectName(QString::fromUtf8("AitumStreamSuiteSourcesDock"));
+	setFrameShape(QFrame::NoFrame);
+	setAutoFillBackground(false);
 
 	auto sourcesGroupLayout = new QVBoxLayout(this);
+	sourcesGroupLayout->setContentsMargins(0, 0, 0, 0);
+	sourcesGroupLayout->setSpacing(0);
 	setLayout(sourcesGroupLayout);
 
 	sourceList = new SourceTree(
@@ -33,6 +54,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 		},
 		this, nullptr, this);
 
+	sourceList->setObjectName(QString::fromUtf8("sources"));
 	sourceList->setContentsMargins(0, 0, 0, 0);
 	sourceList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 	sourceList->setFrameShape(QFrame::NoFrame);
@@ -44,6 +66,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	sourceList->setDragEnabled(true);
 	sourceList->setDragDropMode(QAbstractItemView::InternalMove);
 	sourceList->setDefaultDropAction(Qt::TargetMoveAction);
+	sourceList->setSpacing(0);
 
 	connect(sourceList, &SourceTree::customContextMenuRequested, [this] { ShowSourcesContextMenu(GetCurrentSceneItem()); });
 
@@ -54,51 +77,27 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	renameAction->setShortcut({Qt::Key_F2});
 #endif
 	renameAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-	connect(renameAction, &QAction::triggered, [this]() {
-		obs_sceneitem_t *sceneItem = GetCurrentSceneItem();
-		if (!sceneItem) {
-			return;
-		}
-		obs_source_t *source = obs_source_get_ref(obs_sceneitem_get_source(sceneItem));
-		if (!source) {
-			return;
-		}
-		obs_canvas_t *canvas = obs_source_get_canvas(source);
-		std::string name = obs_source_get_name(source);
-		obs_source_t *s = nullptr;
-		do {
-			obs_source_release(s);
-			if (!NameDialog::AskForName(this, QString::fromUtf8(obs_module_text("SourceName")), name)) {
-				break;
-			}
-
-			s = canvas ? obs_canvas_get_source_by_name(canvas, name.c_str()) : obs_get_source_by_name(name.c_str());
-			if (s) {
-				continue;
-			}
-			obs_source_set_name(source, name.c_str());
-		} while (s);
-		obs_source_release(source);
-	});
+	connect(renameAction, &QAction::triggered, [this]() { sourceList->Edit(GetTopSelectedSourceItem()); });
 	sourceList->addAction(renameAction);
 
 	sourcesGroupLayout->addWidget(sourceList);
 
 	auto toolbar = new QToolBar();
-	toolbar->setContentsMargins(0, 0, 0, 0);
 	toolbar->setObjectName(QStringLiteral("sourcesToolbar"));
 	toolbar->setIconSize(QSize(16, 16));
 	toolbar->setFloatable(false);
-	auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/plus.svg")),
+	toolbar->setMovable(false);
+	auto a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/plus.svg")),
 				    QString::fromUtf8(obs_frontend_get_locale_string("AddSource")), [this] {
-					    const auto menu = CanvasDock::CreateAddSourcePopupMenu(this);
-					    menu->exec(QCursor::pos());
+					    OBSSourceAutoRelease sceneSource = obs_weak_source_get_source(scene);
+					    OpenSourceSelectDialog(this, obs_scene_from_source(sceneSource));
 				    });
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
 
 	a = toolbar->addAction(
-		QIcon(":/res/images/minus.svg"), QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")), [this] {
+		QIcon(QString::fromUtf8("theme:Dark/trash.svg")),
+		QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")), [this] {
 			auto scene_source = obs_weak_source_get_source(scene);
 			auto s = obs_scene_from_source(scene_source);
 			obs_source_release(scene_source);
@@ -179,8 +178,9 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 			obs_frontend_add_undo_redo_action(action_name.toUtf8().constData(), CanvasDock::undo_redo_scene,
 							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
 		});
+	a->setProperty("class", QString::fromUtf8("icon-trash"));
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-minus");
+	toolbar->widgetForAction(a)->setProperty("class", QString::fromUtf8("icon-trash"));
 	a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 #ifdef __APPLE__
 	a->setShortcut({Qt::Key_Backspace});
@@ -189,18 +189,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 #endif
 	sourceList->addAction(a);
 	toolbar->addSeparator();
-	a = toolbar->addAction(QIcon(":/res/images/filter.svg"), QString::fromUtf8(obs_frontend_get_locale_string("SourceFilters")),
-			       [this] {
-				       auto item = GetCurrentSceneItem();
-				       auto source = obs_sceneitem_get_source(item);
-				       if (source) {
-					       obs_frontend_open_source_filters(source);
-				       }
-			       });
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("filtersIcon")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-filter");
-
-	a = toolbar->addAction(QIcon(":/settings/images/settings/general.svg"),
+	a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/settings/general.svg")),
 			       QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")), [this] {
 				       auto item = GetCurrentSceneItem();
 				       auto source = obs_sceneitem_get_source(item);
@@ -213,7 +202,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 
 	toolbar->addSeparator();
 	a = toolbar->addAction(
-		QIcon(":/res/images/up.svg"), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")), [this] {
+		QIcon(QString::fromUtf8("theme:Dark/up.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")), [this] {
 			auto item = GetCurrentSceneItem();
 			if (!item) {
 				return;
@@ -234,7 +223,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("upArrowIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-up");
 	a = toolbar->addAction(
-		QIcon(":/res/images/down.svg"), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")), [this] {
+		QIcon(QString::fromUtf8("theme:Dark/down.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")), [this] {
 			auto item = GetCurrentSceneItem();
 			if (!item) {
 				return;
@@ -255,7 +244,20 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("downArrowIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-down");
 
+	StyleDockToolbar(toolbar);
 	sourcesGroupLayout->addWidget(toolbar);
+	/* Class icons and OBSDock toolbar padding are applied at polish time.
+	 * The button is created before the class property exists, so polish again. */
+	toolbar->style()->unpolish(toolbar);
+	toolbar->style()->polish(toolbar);
+	const auto buttons = toolbar->findChildren<QWidget *>();
+	for (QWidget *button : buttons) {
+		if (!button->style()) {
+			continue;
+		}
+		button->style()->unpolish(button);
+		button->style()->polish(button);
+	}
 }
 
 SourcesDock::~SourcesDock()
@@ -272,7 +274,9 @@ SourcesDock::~SourcesDock()
 	}
 	obs_weak_source_release(scene);
 	scene = nullptr;
-	sources_dock = nullptr;
+	if (sources_dock == this) {
+		sources_dock = nullptr;
+	}
 }
 
 obs_sceneitem_t *SourcesDock::GetCurrentSceneItem()
@@ -375,12 +379,21 @@ void SourcesDock::ReorderSources(OBSScene order_scene)
 void SourcesDock::ShowSourcesContextMenu(obs_sceneitem_t *item)
 {
 	QMenu menu(this);
-	menu.addMenu(CanvasDock::CreateAddSourcePopupMenu(this));
-	auto s = obs_weak_source_get_source(scene);
-	CanvasDock::AddGroupMenuItems(sourceList, &menu);
-	CanvasDock::AddCopyPasteMenuItems(&menu, item, obs_scene_from_source(s));
-	obs_source_release(s);
-	if (item) {
+	menu.addAction(QString::fromUtf8(obs_frontend_get_locale_string("AddSource")), [this] {
+		OBSSourceAutoRelease sceneSource = obs_weak_source_get_source(scene);
+		OpenSourceSelectDialog(this, obs_scene_from_source(sceneSource));
+	});
+	menu.addSeparator();
+	auto sceneSource = obs_weak_source_get_source(scene);
+	auto itemScene = obs_scene_from_source(sceneSource);
+	if (!item) {
+		menu.addAction(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.NewGroup")), sourceList,
+			       &SourceTree::AddGroup);
+		CanvasDock::AddCopyPasteMenuItems(&menu, nullptr, itemScene);
+		obs_source_release(sceneSource);
+		menu.exec(QCursor::pos());
+		return;
+	}
 		auto colorMenu = menu.addMenu(QString::fromUtf8(obs_frontend_get_locale_string("ChangeBG")));
 		colorMenu->setStyleSheet(QString("*[bgColor=\"1\"]{background-color:rgba(255,68,68,33%);}"
 						 "*[bgColor=\"2\"]{background-color:rgba(255,255,68,33%);}"
@@ -434,60 +447,93 @@ void SourcesDock::ShowSourcesContextMenu(obs_sceneitem_t *item)
 		colorMenu->addAction(colorWidgetAction);
 
 		CanvasDock::AddSceneItemMenuItems(&menu, item);
-	}
+	obs_source_release(sceneSource);
 	menu.exec(QCursor::pos());
 }
 
-void SourcesDock::AddSourceFromAction()
+void SourcesDock::AddSourceFromAction(QString idText)
 {
-	QAction *a = qobject_cast<QAction *>(sender());
-	if (!a) {
+	QByteArray idUtf8 = idText.toUtf8();
+	const char *id = idUtf8.constData();
+	OBSSourceAutoRelease canvas_scene = obs_weak_source_get_source(scene);
+	obs_scene_t *item_scene = obs_scene_from_source(canvas_scene);
+	if (!id || !*id || !item_scene) {
+		blog(LOG_WARNING, "[Stream Suite] Cannot add source: canvas scene is not selected");
 		return;
 	}
 
-	auto t = a->data().toString();
-	auto idUtf8 = t.toUtf8();
-	const char *id = idUtf8.constData();
-	if (id && *id && strlen(id)) {
-		const char *v_id = obs_get_latest_input_type_id(id);
-		QString placeHolderText = QString::fromUtf8(obs_source_get_display_name(v_id));
-		QString text = placeHolderText;
-		int i = 2;
-		OBSSourceAutoRelease s = nullptr;
-		obs_source_t *created_source = nullptr;
-		auto canvas_scene = obs_weak_source_get_source(scene);
-		if (obs_get_source_output_flags(id) & OBS_SOURCE_REQUIRES_CANVAS) {
-			auto c = canvas_scene ? obs_source_get_canvas(canvas_scene) : nullptr;
-			if (c) {
-				while ((s = obs_canvas_get_source_by_name(c, text.toUtf8().constData()))) {
-					text = QString("%1 %2").arg(placeHolderText).arg(i++);
-				}
-				created_source = obs_scene_get_source(obs_canvas_scene_create(c, text.toUtf8().constData()));
-				obs_canvas_release(c);
-			}
-		} else {
-			while ((s = obs_get_source_by_name(text.toUtf8().constData()))) {
+	const char *v_id = obs_get_latest_input_type_id(id);
+	if (!v_id || !*v_id) {
+		v_id = id;
+	}
+	QString placeHolderText = QString::fromUtf8(obs_source_get_display_name(v_id));
+	if (placeHolderText.isEmpty()) {
+		placeHolderText = idText;
+	}
+	QString text = placeHolderText;
+	int i = 2;
+	obs_source_t *created_source = nullptr;
+	obs_canvas_t *canvas = obs_source_get_canvas(canvas_scene);
+	if (strcmp(id, "group") == 0) {
+		OBSSourceAutoRelease existing = nullptr;
+		while (canvas && (existing = obs_canvas_get_source_by_name(canvas, text.toUtf8().constData()))) {
+			text = QString("%1 %2").arg(placeHolderText).arg(i++);
+		}
+		if (!canvas) {
+			OBSSourceAutoRelease global = nullptr;
+			while ((global = obs_get_source_by_name(text.toUtf8().constData()))) {
 				text = QString("%1 %2").arg(placeHolderText).arg(i++);
 			}
-			created_source = obs_source_create(v_id, text.toUtf8().constData(), nullptr, nullptr);
 		}
-		obs_scene_add(obs_scene_from_source(canvas_scene), created_source);
-		obs_source_release(canvas_scene);
-		if (obs_source_configurable(created_source)) {
-			obs_frontend_open_source_properties(created_source);
+		obs_sceneitem_t *group = obs_scene_add_group(item_scene, text.toUtf8().constData());
+		obs_canvas_release(canvas);
+		if (!group) {
+			blog(LOG_WARNING, "[Stream Suite] Failed to add group '%s' to canvas scene", text.toUtf8().constData());
 		}
-		obs_source_release(created_source);
+		return;
 	}
+	if ((obs_get_source_output_flags(id) & OBS_SOURCE_REQUIRES_CANVAS) && canvas) {
+		OBSSourceAutoRelease existing = nullptr;
+		while ((existing = obs_canvas_get_source_by_name(canvas, text.toUtf8().constData()))) {
+			text = QString("%1 %2").arg(placeHolderText).arg(i++);
+		}
+		created_source = obs_scene_get_source(obs_canvas_scene_create(canvas, text.toUtf8().constData()));
+	} else {
+		OBSSourceAutoRelease existing = nullptr;
+		while ((existing = obs_get_source_by_name(text.toUtf8().constData()))) {
+			text = QString("%1 %2").arg(placeHolderText).arg(i++);
+		}
+		created_source = obs_source_create(v_id, text.toUtf8().constData(), nullptr, nullptr);
+	}
+	obs_canvas_release(canvas);
+	if (!created_source) {
+		blog(LOG_WARNING, "[Stream Suite] Failed to create source '%s'", text.toUtf8().constData());
+		return;
+	}
+	obs_sceneitem_t *item = obs_scene_add(item_scene, created_source);
+	if (!item) {
+		blog(LOG_WARNING, "[Stream Suite] Failed to add source '%s' to canvas scene", obs_source_get_name(created_source));
+		obs_source_remove(created_source);
+		obs_source_release(created_source);
+		return;
+	}
+	if (obs_source_configurable(created_source)) {
+		obs_frontend_open_source_properties(created_source);
+	}
+	obs_source_release(created_source);
 }
 
 void SourcesDock::AddSourceToScene(OBSSource source)
 {
-	auto s = obs_weak_source_get_source(scene);
-	if (!s) {
+	OBSSourceAutoRelease s = obs_weak_source_get_source(scene);
+	obs_scene_t *item_scene = obs_scene_from_source(s);
+	if (!item_scene || !source) {
+		blog(LOG_WARNING, "[Stream Suite] Cannot add existing source: canvas scene is not selected");
 		return;
 	}
-	obs_scene_add(obs_scene_from_source(s), source);
-	obs_source_release(s);
+	if (!obs_scene_add(item_scene, source)) {
+		blog(LOG_WARNING, "[Stream Suite] Failed to add existing source '%s' to canvas scene", obs_source_get_name(source));
+	}
 }
 
 void SourcesDock::OpenSourceProjector()

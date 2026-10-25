@@ -1,6 +1,8 @@
 #include "dialogs/config-dialog.hpp"
 #include "dialogs/name-dialog.hpp"
+#include "dialogs/source-select-dialog.hpp"
 #include "docks/canvas-clone-dock.hpp"
+#include "docks/native-dock-tabs.hpp"
 #include "docks/canvas-dock.hpp"
 #include "docks/canvas-previews-dock.hpp"
 #include "docks/filters-dock.hpp"
@@ -157,6 +159,7 @@ void load_outputs()
 void load_canvas(bool check_new_canvas)
 {
 	UNUSED_PARAMETER(check_new_canvas);
+	detach_native_canvas_tabs();
 	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	if (!main_window) {
 		return;
@@ -312,6 +315,9 @@ void load_canvas(bool check_new_canvas)
 	for (const auto &it : canvas_clone_docks) {
 		it->UpdateSettings(nullptr);
 	}
+	refresh_native_canvas_tabs();
+	/* Run again after the main window finishes its own layout pass. */
+	QTimer::singleShot(0, [] { refresh_native_canvas_tabs(); });
 }
 
 void save_current_profile_config(bool save_docks)
@@ -526,6 +532,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
+		CancelSourcePreviews();
 		if (current_profile_config) {
 			obs_data_release(current_profile_config);
 			current_profile_config = nullptr;
@@ -539,6 +546,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		/* Disconnect libobs signal handlers before ClearSceneData
 		 * (SCRIPTING_SHUTDOWN runs first) so callbacks never hit
 		 * destroyed docks during scene teardown. */
+		shutdown_native_canvas_tabs();
 		if (scenes_dock) {
 			scenes_dock->Shutdown();
 		}
@@ -792,9 +800,6 @@ bool obs_module_load(void)
 	aitumSettingsWidget->setObjectName("AitumStreamSuiteSettingsButton");
 	QObject::connect(aitumSettingsAction, &QAction::triggered, [] { open_config_dialog(0, nullptr); });
 
-	auto addCanvas = toolbar->addAction(QString::fromUtf8(obs_module_text("AddCanvas")));
-	QAction::connect(addCanvas, &QAction::triggered, [] { open_config_dialog(0, nullptr); });
-
 	//tb->addAction(QString::fromUtf8(obs_module_text("Reset")));
 	//tb->layout()->addItem(new QSpacerItem(0, 0));
 	QWidget *spacer = new QWidget();
@@ -803,24 +808,6 @@ bool obs_module_load(void)
 
 	//auto controlsToolBar = main_window->addToolBar(QString::fromUtf8(obs_module_text("Controls")));
 	auto controlsToolBar = toolbar;
-
-	studioModeAction = controlsToolBar->addAction(QString::fromUtf8(obs_module_text("StudioMode")));
-
-	studioModeAction->setCheckable(true);
-	studioModeAction->setIcon(create2StateIcon(":/aitum/media/studio_mode_on.svg", ":/aitum/media/studio_mode_off.svg"));
-	auto *studioModeButton = qobject_cast<QToolButton *>(controlsToolBar->widgetForAction(studioModeAction));
-	if (studioModeButton) {
-		studioModeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-		QObject::connect(studioModeAction, &QAction::toggled, studioModeButton, [studioModeButton](bool checked) {
-			studioModeButton->setProperty("class",
-						      checked ? QStringLiteral("state-active") : QStringLiteral(""));
-			studioModeButton->style()->unpolish(studioModeButton);
-			studioModeButton->style()->polish(studioModeButton);
-		});
-	}
-	QObject::connect(studioModeAction, SIGNAL(triggered()), main_window, SLOT(TogglePreviewProgramMode()));
-
-	//https://coolors.co/00d299-ff0000-1a57ff-c08000-9e0059
 
 	auto settingsButton = controlsToolBar->addAction(QString::fromUtf8(obs_module_text("Settings")));
 	settingsButton->setProperty("themeID", "configIconSmall");

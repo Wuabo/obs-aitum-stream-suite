@@ -15,6 +15,7 @@
 #include <QLayout>
 #include <QListWidget>
 #include <QMouseEvent>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QWheelEvent>
 #include <util/config-file.h>
@@ -89,12 +90,16 @@ private:
 
 	SourceTree *sourceList = nullptr;
 	QListWidget *sceneList = nullptr;
+	QWidget *scenesGroup = nullptr;
+	QWidget *transitionsGroup = nullptr;
 	QComboBox *sceneCombo = nullptr;
 	bool hideScenes = true;
 	QString currentSceneName;
 	OBSWeakSource source;
 	std::vector<OBSSource> transitions;
 	QComboBox *transition = nullptr;
+	QSpinBox *transitionDurationBox = nullptr;
+	int transitionDurationMs = 300;
 	std::vector<OBSProjector *> projectors;
 
 	bool mouseDown = false;
@@ -173,9 +178,9 @@ private:
 	QListWidget *GetGlobalScenesList();
 	void LoadScenes();
 	void LoadTransitions();
+	void RefreshTransition(obs_source_t *transition);
+	void EnsureOutputTransition();
 	void UpdateLinkedScenes();
-	void AddScene(QString duplicate = "", bool ask_name = true);
-	void RemoveScene(const QString &sceneName);
 	void SetLinkedScene(obs_source_t *scene, const QString &linkedScene);
 	obs_source_t *GetTransition(const char *transition_name);
 	bool SwapTransition(obs_source_t *transition);
@@ -189,6 +194,7 @@ private:
 	static void LoadSourceTypeMenu(QMenu *menu, const char *type);
 	static void AddSourceTypeToMenu(QMenu *popup, const char *source_type, const char *name);
 	void ShowScenesContextMenu(QListWidgetItem *widget_item);
+	void EditSceneName();
 	void SetGridMode(bool checked);
 	bool IsGridMode();
 
@@ -271,7 +277,7 @@ private:
 	static void undo_redo_scene(const char *json);
 	static std::string backup_scene(obs_scene_t *scene);
 private slots:
-	void AddSourceFromAction();
+	void AddSourceFromAction(QString id);
 	void AddSourceToScene(OBSSource source);
 	void SceneAdded(const QString name);
 	void SceneRemoved(const QString name);
@@ -285,6 +291,7 @@ private slots:
 	void SaveSettings(bool closing = false, QString mode = "");
 	void OpenPreviewProjector();
 	void OpenSourceProjector();
+	void OpenSceneProjector();
 
 public:
 	CanvasDock(obs_data_t *settings, QWidget *parent = nullptr);
@@ -292,6 +299,16 @@ public:
 	~CanvasDock();
 
 	obs_canvas_t *GetCanvas() const { return canvas; }
+	obs_source_t *GetEditingSceneSource() const;
+signals:
+	void editingSceneChanged();
+public:
+	QWidget *BorrowScenesPane();
+	void ReturnScenesPane();
+	QWidget *BorrowTransitionsPane();
+	void ReturnTransitionsPane();
+	void AddScene(QString duplicate = "", bool ask_name = true);
+	void RemoveScene(const QString &sceneName);
 	void UpdateSettings(obs_data_t *settings);
 
 	uint32_t GetCanvasWidth() { return canvas_width; };

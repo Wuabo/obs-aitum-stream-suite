@@ -173,10 +173,12 @@ ScenesDock::ScenesDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
 
-	a = toolbar->addAction(QIcon(":/res/images/minus.svg"), QString::fromUtf8(obs_frontend_get_locale_string("RemoveScene")),
+	a = toolbar->addAction(QIcon(QString::fromUtf8("theme:Dark/trash.svg")),
+			       QString::fromUtf8(obs_frontend_get_locale_string("RemoveScene")),
 			       [this] { RemoveCurrentScene(); });
+	a->setProperty("class", QString::fromUtf8("icon-trash"));
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-minus");
+	toolbar->widgetForAction(a)->setProperty("class", QString::fromUtf8("icon-trash"));
 	a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 #ifdef __APPLE__
 	a->setShortcut({Qt::Key_Backspace});
@@ -1112,34 +1114,8 @@ void ScenesDock::transition_action(void *data, calldata_t *cd)
 
 void ScenesDock::FinishedLoading()
 {
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	QMenu *dockMenu = main_window->menuBar()->findChild<QMenu *>("menuDocks");
-	QMenu *dockSubMenu = nullptr;
-	if (dockMenu) {
-		auto actions = dockMenu->actions();
-		for (qsizetype i = 0; i < actions.count(); ++i) {
-			if (actions[i]->objectName() == "resetDocks") {
-				dockSubMenu = new QMenu(obs_module_text("OriginalDocks"), dockMenu);
-				dockMenu->insertSeparator(actions[i + 1]);
-				dockMenu->insertMenu(actions[i + 1], dockSubMenu);
-				break;
-			}
-		}
-	}
-	QList<QString> dockNames = {"scenesDock", "sourcesDock", "transitionsDock", "controlsDock"};
-	for (auto &dockName : dockNames) {
-		auto dock = main_window->findChild<QDockWidget *>(dockName);
-		if (!dock) {
-			continue;
-		}
-		dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetFloatable |
-				  QDockWidget::DockWidgetMovable);
-		auto dockAction = dock ? dock->toggleViewAction() : nullptr;
-		if (dockAction && dockSubMenu) {
-			dockMenu->removeAction(dockAction);
-			dockSubMenu->addAction(dockAction);
-		}
-	}
+	/* Leave OBS dock menu and visibility alone. Moving the Scenes/Sources
+	 * toggle actions out of the Docks menu cleared them on every launch. */
 	if (canvas) {
 		return;
 	}

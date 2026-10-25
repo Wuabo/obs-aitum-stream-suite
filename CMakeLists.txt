@@ -66,6 +66,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/canvas-clone-dock.hpp
   src/docks/canvas-previews-dock.cpp
   src/docks/canvas-previews-dock.hpp
+  src/docks/native-dock-tabs.cpp
+  src/docks/native-dock-tabs.hpp
   src/docks/filters-dock.cpp
   src/docks/filters-dock.hpp
   src/docks/output-dock.cpp
@@ -90,6 +92,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/dialogs/ffmpeg-output-dialog.hpp
   src/dialogs/name-dialog.cpp
   src/dialogs/name-dialog.hpp
+  src/dialogs/source-select-dialog.cpp
+  src/dialogs/source-select-dialog.hpp
   src/dialogs/record-output-dialog.cpp
   src/dialogs/record-output-dialog.hpp
   src/dialogs/stream-output-dialog.cpp
@@ -109,6 +113,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/widgets/locked-checkbox.cpp
   src/utils/widgets/output-widget.cpp
   src/utils/widgets/slider-ignore-scroll.cpp
+  src/utils/widgets/scene-tree.cpp
+  src/utils/widgets/scene-tree.hpp
   src/utils/widgets/source-tree.cpp
   src/utils/widgets/stream-key-input.cpp
   src/utils/widgets/switching-splitter.cpp
