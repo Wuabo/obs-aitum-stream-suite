@@ -6,12 +6,17 @@
 
 #include <QMetaObject>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 
 #include <graphics/vec4.h>
 
 CanvasPreviewsDock::CanvasPreviewsDock(QWidget *parent) : QFrame(parent)
 {
+	/* Accept whatever height DockState restored; never force the dock taller. */
+	setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+	setMinimumSize(0, 0);
+
 	auto *outer = new QVBoxLayout(this);
 	outer->setContentsMargins(2, 2, 2, 2);
 	outer->setSpacing(2);
@@ -90,7 +95,8 @@ void CanvasPreviewsDock::AddMainSlot()
 	layout->addWidget(label);
 
 	auto *display = new OBSQTDisplay(container);
-	display->setMinimumSize(96, 54);
+	/* Keep mins tiny so Rebuild cannot override the saved dock height. */
+	display->setMinimumSize(24, 24);
 	display->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	layout->addWidget(display, 1);
 
@@ -139,7 +145,7 @@ void CanvasPreviewsDock::AddCanvasSlot(obs_canvas_t *canvas)
 	layout->addWidget(label);
 
 	auto *display = new OBSQTDisplay(container);
-	display->setMinimumSize(54, 96);
+	display->setMinimumSize(24, 24);
 	display->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	layout->addWidget(display, 1);
 

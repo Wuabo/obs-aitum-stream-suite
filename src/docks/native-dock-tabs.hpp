@@ -6,3 +6,7 @@
 void refresh_native_canvas_tabs();
 void detach_native_canvas_tabs();
 void shutdown_native_canvas_tabs();
+/* Canvas docks are created after OBS restoreState. Re-apply the saved
+ * BasicWindow DockState so bottom strip and Canvas Previews sizes stick. */
+void restore_obs_dock_layout();
+void schedule_restore_obs_dock_layout();

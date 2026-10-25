@@ -311,8 +311,9 @@ void load_canvas(bool check_new_canvas)
 		it->UpdateSettings(nullptr);
 	}
 	refresh_native_canvas_tabs();
-	/* Run again after the main window finishes its own layout pass. */
-	QTimer::singleShot(0, [] { refresh_native_canvas_tabs(); });
+	/* Canvas docks / preview rebuild land after OBS's first restoreState.
+	 * Re-apply DockState on a short schedule so sizes stick. */
+	schedule_restore_obs_dock_layout();
 }
 
 void save_current_profile_config(bool save_docks)

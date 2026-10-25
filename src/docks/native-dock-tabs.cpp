@@ -3,6 +3,9 @@
 #include "sources-dock.hpp"
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <util/config-file.h>
+#include <QApplication>
+#include <QByteArray>
 #include <QHBoxLayout>
 #include <QDockWidget>
 #include <QListWidget>
@@ -12,6 +15,7 @@
 #include <QStyle>
 #include <QTabBar>
 #include <QToolBar>
+#include <QTimer>
 #include <QVBoxLayout>
 
 extern std::list<CanvasDock *> canvas_docks;
@@ -656,21 +660,87 @@ void refresh_native_canvas_tabs()
 	sourcesTabs->setCurrentIndex(restore);
 	scenesTabs->blockSignals(false);
 	sourcesTabs->blockSignals(false);
-	if (show) {
-		if (scenesDock && !scenesDock->isVisible()) {
-			scenesDock->show();
-		}
-		if (sourcesDock && !sourcesDock->isVisible()) {
-			sourcesDock->show();
-		}
-		if (transitionsDock && !transitionsDock->isVisible()) {
-			transitionsDock->show();
-		}
-	}
+	/* Do not force-show docks here: OBS DockState owns visibility and size. */
 	ApplyIndex(restore);
 	blog(LOG_INFO, "[Stream Suite] Native canvas tabs: %d extra canvas(es), host %dx%d dock %s", (int)pages.size(),
 	     scenesTabHost ? scenesTabHost->width() : -1, scenesTabHost ? scenesTabHost->height() : -1,
 	     scenesDock && scenesDock->isVisible() ? "shown" : "hidden");
+}
+
+static QByteArray ReadObsDockState()
+{
+	config_t *userConfig = obs_frontend_get_user_config();
+	if (!userConfig) {
+		return {};
+	}
+	const char *dockStateStr = config_get_string(userConfig, "BasicWindow", "DockState");
+	if (!dockStateStr || !*dockStateStr) {
+		return {};
+	}
+	return QByteArray::fromBase64(QByteArray(dockStateStr));
+}
+
+static const char *kSuiteDockIds[] = {"AitumStreamSuiteScenes", "AitumStreamSuiteSources",
+				      "AitumStreamSuiteTransitions"};
+
+/* Rename suite docks so restoreState skips them. Never call setFloating here —
+ * doing that while the main window is still settling can crash OBS. */
+static void ParkSuiteDocks(QMainWindow *main, bool park)
+{
+	const QString suffix = QString::fromUtf8("__aitum_parked");
+	for (const char *id : kSuiteDockIds) {
+		const QString name = QString::fromUtf8(id);
+		QDockWidget *dock = main->findChild<QDockWidget *>(park ? name : name + suffix);
+		if (!dock) {
+			continue;
+		}
+		dock->hide();
+		if (auto *action = dock->toggleViewAction()) {
+			action->setVisible(false);
+		}
+		dock->setObjectName(park ? name + suffix : name);
+	}
+}
+
+void restore_obs_dock_layout()
+{
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main || nativeTabsStopped || !main->isVisible()) {
+		return;
+	}
+	static bool restoring = false;
+	if (restoring) {
+		return;
+	}
+	const QByteArray dockState = ReadObsDockState();
+	if (dockState.isEmpty()) {
+		return;
+	}
+	restoring = true;
+	ParkSuiteDocks(main, true);
+	const bool ok = main->restoreState(dockState);
+	ParkSuiteDocks(main, false);
+	HideSuiteDocks();
+	restoring = false;
+	if (!ok) {
+		blog(LOG_WARNING, "[Stream Suite] restoreState(DockState) failed");
+	}
+}
+
+void schedule_restore_obs_dock_layout()
+{
+	if (nativeTabsStopped) {
+		return;
+	}
+	/* One delayed pass after canvas docks + preview rebuild finish. */
+	static int generation = 0;
+	const int gen = ++generation;
+	QTimer::singleShot(250, qApp, [gen] {
+		if (nativeTabsStopped || gen != generation) {
+			return;
+		}
+		restore_obs_dock_layout();
+	});
 }
 
 #include "native-dock-tabs.moc"
