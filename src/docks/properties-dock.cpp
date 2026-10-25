@@ -66,8 +66,35 @@ PropertiesDock::PropertiesDock(QWidget *parent) : QFrame(parent)
 	//vl->addWidget(spacer);
 }
 
+void PropertiesDock::DisconnectCanvasSignals()
+{
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) {
+			auto sh = obs_canvas_get_signal_handler(canvas);
+			if (sh) {
+				signal_handler_disconnect(sh, "channel_change", canvas_channel_change, param);
+			}
+			return true;
+		},
+		this);
+	auto sh = obs_get_signal_handler();
+	if (sh) {
+		signal_handler_disconnect(sh, "canvas_create", canvas_create, this);
+	}
+}
+
+void PropertiesDock::Exiting()
+{
+	exiting = true;
+	/* Must disconnect before ClearSceneData (after SCRIPTING_SHUTDOWN)
+	 * or channel_change will invoke Qt methods on a dying/deleted dock. */
+	DisconnectCanvasSignals();
+}
+
 PropertiesDock::~PropertiesDock()
 {
+	exiting = true;
+	DisconnectCanvasSignals();
 	if (current_source) {
 		auto prev_source = obs_weak_source_get_source(current_source);
 		if (prev_source) {
@@ -88,30 +115,33 @@ PropertiesDock::~PropertiesDock()
 		}
 		obs_weak_source_release(current_properties);
 	}
-	auto sh = obs_get_signal_handler();
-	signal_handler_disconnect(sh, "canvas_create", canvas_create, this);
 }
 
 void PropertiesDock::canvas_create(void *param, calldata_t *cd)
 {
 	auto this_ = static_cast<PropertiesDock *>(param);
+	if (!this_ || this_->exiting) {
+		return;
+	}
 	auto canvas = (obs_canvas_t *)calldata_ptr(cd, "canvas");
-	signal_handler_connect(obs_canvas_get_signal_handler(canvas), "channel_change", canvas_channel_change, this_);
+	auto sh = obs_canvas_get_signal_handler(canvas);
+	if (sh) {
+		signal_handler_connect(sh, "channel_change", canvas_channel_change, this_);
+	}
 }
 
 void PropertiesDock::canvas_channel_change(void *param, calldata_t *cd)
 {
 	auto this_ = static_cast<PropertiesDock *>(param);
+	if (!this_ || this_->exiting) {
+		return;
+	}
 
-	//auto canvas = (obs_canvas_t *)calldata_ptr(cd, "canvas");
 	auto channel = calldata_int(cd, "channel");
 	if (channel != 0)
 		return;
-	//auto prev_source = (obs_source_t *)calldata_ptr(cd, "prev_source");
 	auto source = (obs_source_t *)calldata_ptr(cd, "source");
 	if (!source) {
-		QMetaObject::invokeMethod(this_, "SceneChanged", Qt::QueuedConnection, Q_ARG(OBSSource, OBSSource(nullptr)));
-		QMetaObject::invokeMethod(this_, "TransitionChanged", Qt::QueuedConnection, Q_ARG(OBSSource, OBSSource(nullptr)));
 		return;
 	}
 	auto source_type = obs_source_get_type(source);

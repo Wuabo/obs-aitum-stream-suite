@@ -10,6 +10,7 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QTime>
 #include <src/utils/color.hpp>
 #include <src/utils/icon.hpp>
 #include <src/utils/obs-websocket-api.h>
@@ -296,6 +297,13 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	canvasLabel = new QLabel;
 	UpdateCanvas();
 	outputLayout->addWidget(canvasLabel, 1, Qt::AlignVCenter);
+
+	timerLabel = new QLabel;
+	timerLabel->setMinimumWidth(kTimerMinWidth);
+	timerLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	timerLabel->setText(QString());
+	outputLayout->addWidget(timerLabel, 0, Qt::AlignVCenter);
+
 	if (extraButton) {
 		auto l3 = new QHBoxLayout;
 		l3->setContentsMargins(0, 0, 0, 0);
@@ -354,6 +362,13 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	obs_data_array_release(start_hotkey);
 	obs_data_array_release(stop_hotkey);
 
+	connect(&activeTimer, &QTimer::timeout, this, [this] {
+		if (!timerLabel) {
+			return;
+		}
+		const auto t = QTime::fromMSecsSinceStartOfDay(startTime.msecsTo(QDateTime::currentDateTime()));
+		timerLabel->setText(t.toString(t.hour() ? QStringLiteral("hh:mm:ss") : QStringLiteral("mm:ss")));
+	});
 }
 
 OutputWidget::~OutputWidget()
@@ -1348,6 +1363,20 @@ void OutputWidget::CheckActive()
 	bool active = obs_output_active(output);
 	if (outputButton->isChecked() != active) {
 		outputButton->setChecked(active);
+	}
+	if (activeTimer.isActive() != active) {
+		if (active) {
+			startTime = QDateTime::currentDateTime();
+			if (timerLabel) {
+				timerLabel->setText(QStringLiteral("00:00"));
+			}
+			activeTimer.start(500);
+		} else {
+			activeTimer.stop();
+			if (timerLabel) {
+				timerLabel->setText(QString());
+			}
+		}
 	}
 }
 

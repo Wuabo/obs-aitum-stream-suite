@@ -14,6 +14,7 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QScrollArea>
+#include <QTime>
 #include <QToolBar>
 #include <QToolButton>
 #include <src/utils/color.hpp>
@@ -22,6 +23,38 @@
 #include <util/platform.h>
 
 void open_config_dialog(int tab, const char *create_type);
+
+QLabel *OutputDock::MakeTimerLabel(QWidget *parent)
+{
+	auto label = new QLabel(parent);
+	label->setMinimumWidth(kTimerMinWidth);
+	label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	label->setText(QString());
+	return label;
+}
+
+QString OutputDock::FormatElapsed(const QDateTime &start)
+{
+	const auto t = QTime::fromMSecsSinceStartOfDay(start.msecsTo(QDateTime::currentDateTime()));
+	return t.toString(t.hour() ? QStringLiteral("hh:mm:ss") : QStringLiteral("mm:ss"));
+}
+
+void OutputDock::SetTimerText(QLabel *label, bool active, QDateTime &startTime)
+{
+	if (!label) {
+		return;
+	}
+	if (!active) {
+		if (!label->text().isEmpty()) {
+			label->setText(QString());
+		}
+		return;
+	}
+	if (!startTime.isValid()) {
+		startTime = QDateTime::currentDateTime();
+	}
+	label->setText(FormatElapsed(startTime));
+}
 
 OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 {
@@ -160,6 +193,8 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinRecord"))), 2, Qt::AlignVCenter);
 	mainRecordCanvasLabel = new QLabel(QString::fromUtf8(obs_module_text("MainCanvas")));
 	l2->addWidget(mainRecordCanvasLabel, 1, Qt::AlignVCenter);
+	mainRecordTimerLabel = MakeTimerLabel(this);
+	l2->addWidget(mainRecordTimerLabel, 0, Qt::AlignVCenter);
 	mainRecordButton = new QPushButton;
 	mainRecordButton->setObjectName(QStringLiteral("canvasRecord"));
 	styleActionButton(mainRecordButton);
@@ -187,6 +222,8 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinStream"))), 2, Qt::AlignVCenter);
 	mainStreamCanvasLabel = new QLabel(QString::fromUtf8(obs_module_text("MainCanvas")));
 	l2->addWidget(mainStreamCanvasLabel, 1, Qt::AlignVCenter);
+	mainStreamTimerLabel = MakeTimerLabel(this);
+	l2->addWidget(mainStreamTimerLabel, 0, Qt::AlignVCenter);
 	mainStreamButton = new QPushButton;
 	mainStreamButton->setObjectName(QStringLiteral("canvasStream"));
 	styleActionButton(mainStreamButton);
@@ -265,14 +302,22 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 			auto active = obs_frontend_streaming_active();
 			if (mainStreamButton->isChecked() != active) {
 				mainStreamButton->setChecked(active);
+				if (active) {
+					mainStreamStartTime = QDateTime::currentDateTime();
+				}
 			}
+			SetTimerText(mainStreamTimerLabel, active, mainStreamStartTime);
 		}
 
 		if (mainRecordEnabled) {
 			auto active = CanvasRecordActive() || (!RecordUsesCanvas() && obs_frontend_recording_active());
 			if (mainRecordButton->isChecked() != active) {
 				mainRecordButton->setChecked(active);
+				if (active) {
+					mainRecordStartTime = QDateTime::currentDateTime();
+				}
 			}
+			SetTimerText(mainRecordTimerLabel, active, mainRecordStartTime);
 		}
 
 		for (auto it = outputWidgets.begin(); it != outputWidgets.end(); it++) {
@@ -475,6 +520,10 @@ void OutputDock::SaveSettings()
 void OutputDock::UpdateMainStreamStatus(bool active)
 {
 	mainStreamButton->setChecked(active);
+	if (active) {
+		mainStreamStartTime = QDateTime::currentDateTime();
+	}
+	SetTimerText(mainStreamTimerLabel, active, mainStreamStartTime);
 	if (!active || !current_profile_config) {
 		return;
 	}
@@ -750,6 +799,8 @@ bool OutputDock::StartCanvasRecord()
 		return false;
 	}
 	canvasRecordOutput = output;
+	mainRecordStartTime = QDateTime::currentDateTime();
+	SetTimerText(mainRecordTimerLabel, true, mainRecordStartTime);
 	blog(LOG_INFO, "[Aitum Stream Suite] recording canvas '%s' to %s", canvasName, path);
 	return true;
 }
@@ -776,10 +827,15 @@ void OutputDock::ToggleMainRecord()
 			obs_frontend_recording_stop();
 		}
 		mainRecordButton->setChecked(false);
+		SetTimerText(mainRecordTimerLabel, false, mainRecordStartTime);
 		return;
 	}
 	if (canvas) {
-		mainRecordButton->setChecked(StartCanvasRecord());
+		const bool started = StartCanvasRecord();
+		mainRecordButton->setChecked(started);
+		if (!started) {
+			SetTimerText(mainRecordTimerLabel, false, mainRecordStartTime);
+		}
 		return;
 	}
 	obs_frontend_recording_start();
@@ -789,6 +845,10 @@ void OutputDock::ToggleMainRecord()
 void OutputDock::UpdateMainRecordingStatus(bool active)
 {
 	mainRecordButton->setChecked(active);
+	if (active) {
+		mainRecordStartTime = QDateTime::currentDateTime();
+	}
+	SetTimerText(mainRecordTimerLabel, active, mainRecordStartTime);
 }
 
 obs_data_array_t *OutputDock::GetOutputsArray()

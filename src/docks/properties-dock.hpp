@@ -26,6 +26,7 @@ private:
 
 	void AddProperty(obs_properties_t *properties, obs_property_t *property, obs_data_t *settings, QFormLayout *layout);
 	void RefreshProperties(obs_properties_t *properties, QFormLayout *layout);
+	void DisconnectCanvasSignals();
 
 	static void canvas_create(void *param, calldata_t *cd);
 	static void canvas_channel_change(void *param, calldata_t *cd);
@@ -50,5 +51,5 @@ private slots:
 public:
 	PropertiesDock(QWidget *parent = nullptr);
 	~PropertiesDock();
-	void Exiting() { exiting = true; }
+	void Exiting();
 };

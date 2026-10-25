@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QGridLayout>
+#include <QDateTime>
 #include <QLabel>
 #include <QPushButton>
 #include <QTimer>
@@ -17,10 +18,13 @@ private:
 	int outputPlatformIconSize = 24;
 	static constexpr int kRowSpacing = 8;
 	static constexpr int kActionBtnWidth = 40;
+	static constexpr int kTimerMinWidth = 52;
 	QVBoxLayout *mainLayout = nullptr;
 	QLabel *mainPlatformIconLabel = nullptr;
 	QLabel *mainStreamCanvasLabel = nullptr;
 	QLabel *mainRecordCanvasLabel = nullptr;
+	QLabel *mainStreamTimerLabel = nullptr;
+	QLabel *mainRecordTimerLabel = nullptr;
 	QPushButton *mainStreamButton = nullptr;
 	QPushButton *mainRecordButton = nullptr;
 	obs_output_t *canvasRecordOutput = nullptr;
@@ -30,8 +34,14 @@ private:
 	bool exiting = false;
 	bool mainStreamEnabled = true;
 	bool mainRecordEnabled = true;
+	QDateTime mainStreamStartTime;
+	QDateTime mainRecordStartTime;
 
 	QTimer videoCheckTimer;
+
+	static QLabel *MakeTimerLabel(QWidget *parent);
+	static QString FormatElapsed(const QDateTime &start);
+	void SetTimerText(QLabel *label, bool active, QDateTime &startTime);
 
 	std::vector<OutputWidget *> outputWidgets;
 

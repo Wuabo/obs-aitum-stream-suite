@@ -1,9 +1,11 @@
 #pragma once
 
 #include <obs.h>
+#include <QDateTime>
 #include <QFrame>
 #include <QLabel>
 #include <QPushButton>
+#include <QTimer>
 
 class OutputWidget : public QFrame {
 	Q_OBJECT
@@ -12,13 +14,18 @@ private:
 	int outputPlatformIconSize = 24;
 	static constexpr int kRowSpacing = 8;
 	static constexpr int kActionBtnWidth = 40;
+	static constexpr int kTimerMinWidth = 52;
 
 	QPushButton *outputButton = nullptr;
 	QPushButton *extraButton = nullptr;
 	QLabel *canvasLabel = nullptr;
+	QLabel *timerLabel = nullptr;
 	obs_output_t *output = nullptr;
 
 	std::function<void()> onStarted = nullptr;
+
+	QTimer activeTimer;
+	QDateTime startTime;
 
 	obs_hotkey_pair_id StartStopHotkey = OBS_INVALID_HOTKEY_PAIR_ID;
 	obs_hotkey_pair_id PauseHotkey = OBS_INVALID_HOTKEY_PAIR_ID;
