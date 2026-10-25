@@ -11,7 +11,9 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QTabBar>
+#include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 extern std::list<CanvasDock *> canvas_docks;
@@ -43,6 +45,113 @@ std::vector<QPointer<QWidget>> nativeTransitionWidgets;
 std::vector<CanvasPages> pages;
 bool syncing = false;
 bool alive = false;
+
+/* Inserting tabs after OBS restoreState makes the dock layout snap back
+ * to the list's size hint, so a widened Scenes dock opens narrow again.
+ * Remember the restored size and put it back after the tabs are built. */
+struct DockSpan {
+	QPointer<QDockWidget> dock;
+	int w = 0;
+	int h = 0;
+};
+
+void RestoreNativeDockSizes(QMainWindow *main, const QList<DockSpan> &spans)
+{
+	if (!main) {
+		return;
+	}
+	QDockWidget *scenes = nullptr;
+	QDockWidget *sources = nullptr;
+	int scenesW = 0;
+	int scenesH = 0;
+	int sourcesH = 0;
+	for (const DockSpan &span : spans) {
+		if (!span.dock) {
+			continue;
+		}
+		if (span.dock->objectName() == QString::fromUtf8("scenesDock")) {
+			scenes = span.dock;
+			scenesW = span.w;
+			scenesH = span.h;
+		} else if (span.dock->objectName() == QString::fromUtf8("sourcesDock")) {
+			sources = span.dock;
+			sourcesH = span.h;
+		}
+	}
+	if (scenes && sources && scenesW > 40) {
+		main->resizeDocks({scenes, sources}, {scenesW, scenesW}, Qt::Horizontal);
+	} else if (scenes && scenesW > 40) {
+		main->resizeDocks({scenes}, {scenesW}, Qt::Horizontal);
+	}
+	if (scenes && sources && scenesH > 40 && sourcesH > 40) {
+		main->resizeDocks({scenes, sources}, {scenesH, sourcesH}, Qt::Vertical);
+	}
+}
+
+void KeepDockFromShrinking(QDockWidget *dock)
+{
+	if (!dock) {
+		return;
+	}
+	/* The contents must not pull the dock back to a default width. */
+	if (QWidget *contents = dock->widget()) {
+		contents->setMinimumSize(0, 0);
+		contents->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+	}
+}
+
+/* OBSDock QToolBar QToolButton uses margin 1px. A bar built outside the
+ * dock keeps the tighter spacing after polish, so the scenes actions sit
+ * closer together than the native bar. Keep the themed icon and add only
+ * that margin. */
+void MatchScenesToolbarSpacing(QWidget *pane)
+{
+	if (!pane) {
+		return;
+	}
+	auto *toolbar = pane->findChild<QToolBar *>(QString::fromUtf8("scenesToolbar"));
+	if (!toolbar) {
+		return;
+	}
+	toolbar->setContentsMargins(0, 0, 0, 0);
+	toolbar->setMaximumHeight(32);
+	const auto buttons = toolbar->findChildren<QToolButton *>();
+	for (QToolButton *button : buttons) {
+		const QIcon themed = button->icon();
+		const int hint = button->sizeHint().width();
+		const int icon = toolbar->iconSize().width();
+		int pad = hint > icon ? (hint - icon) / 2 : -1;
+		if (pad > 6) {
+			pad = -1;
+		}
+		QString sheet = QString::fromUtf8(
+			"QToolButton {"
+			"  margin-left: 1px;"
+			"  margin-right: 1px;"
+			"  background: transparent;"
+			"  border: 1px solid transparent;"
+			"}"
+			"QToolButton:hover { border-color: rgb(97, 97, 97); }"
+			"QToolButton:disabled { background: rgb(16, 16, 16); }");
+		if (pad >= 0) {
+			sheet = QString::fromUtf8(
+					"QToolButton {"
+					"  margin-left: 1px;"
+					"  margin-right: 1px;"
+					"  padding: %1px;"
+					"  background: transparent;"
+					"  border: 1px solid transparent;"
+					"}"
+					"QToolButton:hover { border-color: rgb(97, 97, 97); }"
+					"QToolButton:disabled { background: rgb(16, 16, 16); }")
+					.arg(pad);
+		}
+		button->setStyleSheet(sheet);
+		if (!themed.isNull()) {
+			button->setIcon(themed);
+		}
+	}
+}
 
 /* Toolbars are built inside the suite dock, so the first polish misses
  * OBSDock QToolBar metrics. Repolish once they live under the native dock. */
@@ -77,6 +186,7 @@ public:
 		if (pane) {
 			layout->addWidget(pane);
 			PolishDockWidgets(pane);
+			MatchScenesToolbarSpacing(pane);
 		}
 	}
 
@@ -406,6 +516,8 @@ void BindNative()
 	 * OBS 32 runs Qt 6.11. Literals can miss objectName comparisons. */
 	auto scenesDock = main->findChild<QDockWidget *>(QString::fromUtf8("scenesDock"));
 	auto sourcesDock = main->findChild<QDockWidget *>(QString::fromUtf8("sourcesDock"));
+	KeepDockFromShrinking(scenesDock);
+	KeepDockFromShrinking(sourcesDock);
 	auto scenesFrame = scenesDock ? scenesDock->findChild<QWidget *>(QString::fromUtf8("scenesFrame")) : nullptr;
 	auto sourcesFrame = sourcesDock ? sourcesDock->findChild<QWidget *>(QString::fromUtf8("sourcesFrame")) : nullptr;
 	if (!scenesFrame) {
@@ -513,10 +625,19 @@ void shutdown_native_canvas_tabs()
 
 void refresh_native_canvas_tabs()
 {
-	if (nativeTabsStopped || !obs_frontend_get_main_window()) {
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (nativeTabsStopped || !main) {
 		return;
 	}
 	alive = true;
+	QList<DockSpan> spans;
+	for (const char *id : {"scenesDock", "sourcesDock"}) {
+		auto *dock = main->findChild<QDockWidget *>(QString::fromUtf8(id));
+		if (!dock) {
+			continue;
+		}
+		spans.append({dock, dock->width(), dock->height()});
+	}
 	QString keep;
 	if (scenesTabs && scenesTabs->currentIndex() > 0 && scenesTabs->currentIndex() - 1 < int(pages.size())) {
 		keep = pages[scenesTabs->currentIndex() - 1].uuid;
@@ -639,6 +760,8 @@ void refresh_native_canvas_tabs()
 		}
 	}
 	ApplyIndex(restore);
+	RestoreNativeDockSizes(main, spans);
+	QTimer::singleShot(0, main, [main, spans] { RestoreNativeDockSizes(main, spans); });
 	blog(LOG_INFO, "[Stream Suite] Native canvas tabs: %d extra canvas(es), host %dx%d dock %s", (int)pages.size(),
 	     scenesTabHost ? scenesTabHost->width() : -1, scenesTabHost ? scenesTabHost->height() : -1,
 	     scenesDock && scenesDock->isVisible() ? "shown" : "hidden");
