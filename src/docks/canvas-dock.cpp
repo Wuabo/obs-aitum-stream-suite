@@ -456,8 +456,7 @@ void CanvasDock::LoadUI()
 		scenesGroup->setLayout(scenesGroupLayout);
 		sceneList = new SceneTree();
 		sceneList->setObjectName(QString::fromUtf8("scenes"));
-		sceneList->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-		sceneList->setMinimumWidth(0);
+		sceneList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 		sceneList->setSpacing(0);
 		sceneList->setFrameShape(QFrame::NoFrame);
 		sceneList->setFrameShadow(QFrame::Plain);
@@ -2312,8 +2311,7 @@ QWidget *CanvasDock::BorrowScenesPane()
 	if (!scenesGroup) {
 		return nullptr;
 	}
-	scenesGroup->setMinimumWidth(0);
-	scenesGroup->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+	scenesGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 	return scenesGroup;
 }
 

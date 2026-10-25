@@ -11,7 +11,6 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QTabBar>
-#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -44,60 +43,6 @@ std::vector<QPointer<QWidget>> nativeTransitionWidgets;
 std::vector<CanvasPages> pages;
 bool syncing = false;
 bool alive = false;
-
-/* Inserting tabs after OBS restoreState makes the dock layout snap back
- * to the list's size hint, so a widened Scenes dock opens narrow again.
- * Remember the restored size and put it back after the tabs are built. */
-struct DockSpan {
-	QPointer<QDockWidget> dock;
-	int w = 0;
-	int h = 0;
-};
-
-void RestoreNativeDockSizes(QMainWindow *main, const QList<DockSpan> &spans)
-{
-	if (!main) {
-		return;
-	}
-	QDockWidget *scenes = nullptr;
-	QDockWidget *sources = nullptr;
-	int scenesW = 0;
-	int scenesH = 0;
-	int sourcesH = 0;
-	for (const DockSpan &span : spans) {
-		if (!span.dock) {
-			continue;
-		}
-		if (span.dock->objectName() == QString::fromUtf8("scenesDock")) {
-			scenes = span.dock;
-			scenesW = span.w;
-			scenesH = span.h;
-		} else if (span.dock->objectName() == QString::fromUtf8("sourcesDock")) {
-			sources = span.dock;
-			sourcesH = span.h;
-		}
-	}
-	if (scenes && sources && scenesW > 40) {
-		main->resizeDocks({scenes, sources}, {scenesW, scenesW}, Qt::Horizontal);
-	} else if (scenes && scenesW > 40) {
-		main->resizeDocks({scenes}, {scenesW}, Qt::Horizontal);
-	}
-	if (scenes && sources && scenesH > 40 && sourcesH > 40) {
-		main->resizeDocks({scenes, sources}, {scenesH, sourcesH}, Qt::Vertical);
-	}
-}
-
-void KeepDockFromShrinking(QDockWidget *dock)
-{
-	if (!dock) {
-		return;
-	}
-	/* The contents must not pull the dock back to a default width. */
-	if (QWidget *contents = dock->widget()) {
-		contents->setMinimumSize(0, 0);
-		contents->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-	}
-}
 
 /* Same metrics as OBSBasic.ui scenesToolbar. A local stylesheet drops
  * Yami's max icon size and draws the actions larger than the native bar. */
@@ -498,8 +443,6 @@ void BindNative()
 	 * OBS 32 runs Qt 6.11. Literals can miss objectName comparisons. */
 	auto scenesDock = main->findChild<QDockWidget *>(QString::fromUtf8("scenesDock"));
 	auto sourcesDock = main->findChild<QDockWidget *>(QString::fromUtf8("sourcesDock"));
-	KeepDockFromShrinking(scenesDock);
-	KeepDockFromShrinking(sourcesDock);
 	auto scenesFrame = scenesDock ? scenesDock->findChild<QWidget *>(QString::fromUtf8("scenesFrame")) : nullptr;
 	auto sourcesFrame = sourcesDock ? sourcesDock->findChild<QWidget *>(QString::fromUtf8("sourcesFrame")) : nullptr;
 	if (!scenesFrame) {
@@ -612,14 +555,6 @@ void refresh_native_canvas_tabs()
 		return;
 	}
 	alive = true;
-	QList<DockSpan> spans;
-	for (const char *id : {"scenesDock", "sourcesDock"}) {
-		auto *dock = main->findChild<QDockWidget *>(QString::fromUtf8(id));
-		if (!dock) {
-			continue;
-		}
-		spans.append({dock, dock->width(), dock->height()});
-	}
 	QString keep;
 	if (scenesTabs && scenesTabs->currentIndex() > 0 && scenesTabs->currentIndex() - 1 < int(pages.size())) {
 		keep = pages[scenesTabs->currentIndex() - 1].uuid;
@@ -731,19 +666,8 @@ void refresh_native_canvas_tabs()
 		if (transitionsDock && !transitionsDock->isVisible()) {
 			transitionsDock->show();
 		}
-		if (scenesTabHost && scenesTabHost->parentWidget() && scenesTabHost->parentWidget()->layout()) {
-			scenesTabHost->parentWidget()->layout()->activate();
-		}
-		if (sourcesTabHost && sourcesTabHost->parentWidget() && sourcesTabHost->parentWidget()->layout()) {
-			sourcesTabHost->parentWidget()->layout()->activate();
-		}
-		if (transitionsTabHost && transitionsTabHost->parentWidget() && transitionsTabHost->parentWidget()->layout()) {
-			transitionsTabHost->parentWidget()->layout()->activate();
-		}
 	}
 	ApplyIndex(restore);
-	RestoreNativeDockSizes(main, spans);
-	QTimer::singleShot(0, main, [main, spans] { RestoreNativeDockSizes(main, spans); });
 	blog(LOG_INFO, "[Stream Suite] Native canvas tabs: %d extra canvas(es), host %dx%d dock %s", (int)pages.size(),
 	     scenesTabHost ? scenesTabHost->width() : -1, scenesTabHost ? scenesTabHost->height() : -1,
 	     scenesDock && scenesDock->isVisible() ? "shown" : "hidden");
