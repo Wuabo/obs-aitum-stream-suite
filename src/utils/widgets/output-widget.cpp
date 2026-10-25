@@ -53,9 +53,6 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	} else if (strcmp(output_type, "ffmpeg") == 0) {
 		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/ffmpeg_off.svg"))
 						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
-	} else if (strcmp(output_type, "virtual_cam") == 0) {
-		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/virtual_cam_off.svg"))
-						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
 	} else {
 		auto endpoint = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
 		platformIconLabel->setPixmap(
@@ -170,10 +167,6 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 		obs_data_array_release(pause_hotkey);
 		obs_data_array_release(unpause_hotkey);
 
-	} else if (strcmp(output_type, "virtual_cam") == 0) {
-		outputButton->setIcon(create2StateIcon(":/aitum/media/virtual_cam_on.svg", ":/aitum/media/virtual_cam_off.svg"));
-		outputButton->setObjectName(QStringLiteral("canvasVirtualCam"));
-		outputButton->setToolTip(QString::fromUtf8(obs_module_text("VirtualCamera")));
 	} else if (strcmp(output_type, "ffmpeg") == 0) {
 		outputButton->setIcon(create2StateIcon(":/aitum/media/ffmpeg_on.svg", ":/aitum/media/ffmpeg_off.svg"));
 		outputButton->setObjectName(QStringLiteral("canvasStream"));
@@ -316,9 +309,6 @@ OutputWidget::~OutputWidget()
 		signal_handler_t *signal = obs_output_get_signal_handler(output);
 		signal_handler_disconnect(signal, "start", output_start, this);
 		signal_handler_disconnect(signal, "stop", output_stop, this);
-		if (strcmp(obs_output_get_id(output), "virtualcam_output") == 0) {
-			obs_output_set_media(output, obs_get_video(), obs_get_audio());
-		}
 		obs_output_release(output);
 		output = nullptr;
 	}
@@ -372,9 +362,6 @@ void OutputWidget::output_stop(void *data, calldata_t *calldata)
 		QMetaObject::invokeMethod(
 			this_->outputButton,
 			[this_, last_error, code] {
-				if (this_->output && strcmp(obs_output_get_id(this_->output), "virtualcam_output") == 0) {
-					obs_output_set_media(this_->output, obs_get_video(), obs_get_audio());
-				}
 				obs_output_release(this_->output);
 				this_->output = nullptr;
 				if (vendor) {
@@ -426,43 +413,7 @@ bool OutputWidget::StartOutput(bool automated)
 		output = nullptr;
 	}
 
-	if (strcmp(output_type, "virtual_cam") == 0) {
-		const auto vco = obs_frontend_get_virtualcam_output();
-		if (obs_output_active(vco)) {
-			outputButton->setChecked(false);
-			obs_output_release(vco);
-			return false;
-		}
-
-		const char *canvas_name = obs_data_get_string(settings, "canvas");
-		auto canvas = (!canvas_name || canvas_name[0] == '\0') ? obs_get_main_canvas()
-								       : obs_get_canvas_by_name(canvas_name);
-		if (!canvas) {
-			return false;
-		}
-
-		signal_handler_t *signal = obs_output_get_signal_handler(vco);
-		signal_handler_disconnect(signal, "start", output_start, this);
-		signal_handler_disconnect(signal, "stop", output_stop, this);
-		signal_handler_connect(signal, "start", output_start, this);
-		signal_handler_connect(signal, "stop", output_stop, this);
-
-		obs_output_set_media(vco, obs_canvas_get_video(canvas), obs_get_audio());
-		if (!obs_output_start(vco)) {
-			obs_canvas_release(canvas);
-			return false;
-		}
-		output = vco;
-		if (vendor) {
-			const auto d = obs_data_create();
-			obs_data_set_string(d, "output", name);
-			obs_data_set_string(d, "canvas", obs_canvas_get_name(canvas));
-			obs_websocket_vendor_emit_event(vendor, "start_output", d);
-			obs_data_release(d);
-		}
-		obs_canvas_release(canvas);
-		return true;
-	} else if (strcmp(output_type, "ffmpeg") == 0) {
+	if (strcmp(output_type, "ffmpeg") == 0) {
 
 		const char *canvas_name = obs_data_get_string(settings, "canvas");
 		auto canvas = (!canvas_name || canvas_name[0] == '\0') ? obs_get_main_canvas()

@@ -4,7 +4,6 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QMainWindow>
-#include <QTextEdit>
 #include <obs-frontend-api.h>
 #include <QGroupBox>
 #include <QListWidget>
@@ -47,8 +46,6 @@ private:
 	QFormLayout *outputsLayout;
 	QLabel *newVersion;
 
-	QTextEdit *troubleshooterText;
-
 	QCheckBox *mainStream;
 	QCheckBox *mainRecord;
 	QComboBox *mainRecordCanvas;
@@ -57,7 +54,6 @@ private:
 
 	void AddStream();
 	void AddRecord();
-	void AddFfmpeg();
 	void LoadSourceCombos();
 	void StyleSettingsCard(QGroupBox *box);
 	QCheckBox *MakeExpandIndicator(bool expanded);

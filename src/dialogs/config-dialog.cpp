@@ -26,7 +26,6 @@
 #include <QVBoxLayout>
 #include <QStyle>
 #include <QTabWidget>
-#include <QTextEdit>
 #include <QSignalBlocker>
 #include <src/docks/canvas-dock.hpp>
 #include <src/utils/widgets/focus-scroll-spinbox.hpp>
@@ -103,11 +102,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	listwidgetitem->setIcon(QIcon(outputIconPath));
 	listwidgetitem->setText(QString::fromUtf8(obs_module_text("Output")));
 
-	listwidgetitem = new QListWidgetItem(listWidget);
-	listwidgetitem->setIcon(main_window->property("defaultIcon").value<QIcon>());
-	listwidgetitem->setText(QString::fromUtf8(obs_module_text("SetupTroubleshooter")));
-	listwidgetitem->setHidden(true);
-
 	listWidget->setCurrentRow(0);
 	listWidget->setSpacing(1);
 
@@ -135,16 +129,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	scrollArea = new QScrollArea;
 	scrollArea->setWidget(outputsPage);
-	scrollArea->setWidgetResizable(true);
-	scrollArea->setLineWidth(0);
-	scrollArea->setFrameShape(QFrame::NoFrame);
-	settingsPages->addWidget(scrollArea);
-
-	troubleshooterText = new QTextEdit;
-	troubleshooterText->setReadOnly(true);
-
-	scrollArea = new QScrollArea;
-	scrollArea->setWidget(troubleshooterText);
 	scrollArea->setWidgetResizable(true);
 	scrollArea->setLineWidth(0);
 	scrollArea->setFrameShape(QFrame::NoFrame);
@@ -745,7 +729,7 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 	for (size_t i = obs_data_array_count(extra_outputs); i > 0; i--) {
 		obs_data_t *item = obs_data_array_item(extra_outputs, i - 1);
 		const char *type = obs_data_get_string(item, "type");
-		const bool drop = strcmp(type, "backtrack") == 0;
+		const bool drop = strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0;
 		obs_data_release(item);
 		if (drop)
 			obs_data_array_erase(extra_outputs, i - 1);
@@ -753,9 +737,6 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 	obs_data_array_enum(
 		extra_outputs,
 		[](obs_data_t *data2, void *param) {
-			auto type = obs_data_get_string(data2, "type");
-			if (strcmp(type, "virtual_cam") == 0)
-				return;
 			auto d = (OBSBasicSettings *)param;
 			auto outputs2 = obs_data_get_array(d->main_settings, "outputs");
 			d->AddOutput(d->outputsLayout, data2, outputs2);
@@ -1098,8 +1079,6 @@ void OBSBasicSettings::SetCreateType(const char *create_type)
 		AddStream();
 	} else if (strcmp(create_type, "record") == 0) {
 		AddRecord();
-	} else if (strcmp(create_type, "ffmpeg") == 0) {
-		AddFfmpeg();
 	}
 }
 
@@ -1301,19 +1280,6 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 
 			delete outputDialog;
 
-		} else if (strcmp(output_type, "virtual_cam") == 0) {
-			std::string name = obs_module_text("VirtualCamera");
-			while (true) {
-				if (!NameDialog::AskForName(this, QString::fromUtf8(obs_module_text("OutputName")), name))
-					break;
-
-				if (otherNames.contains(QString::fromUtf8(name)))
-					continue;
-
-				obs_data_set_string(settings, "name", name.c_str());
-				LoadSettings(main_settings);
-				break;
-			}
 		} else if (strcmp(output_type, "ffmpeg") == 0) {
 			auto outputDialog = new FfmpegOutputDialog(this, otherNames, settings);
 
@@ -1542,7 +1508,7 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 		}
 	}
 
-	if (strcmp(output_type, "virtual_cam") == 0 || strcmp(output_type, "ffmpeg") == 0) {
+	if (strcmp(output_type, "ffmpeg") == 0) {
 		connect(canvasCombo, &QComboBox::currentTextChanged, [canvasCombo, settings] {
 			obs_data_set_string(settings, "canvas", canvasCombo->currentText().toUtf8().constData());
 		});
@@ -2064,7 +2030,6 @@ void OBSBasicSettings::AddVideoEncoderPage(QTabWidget *tabWidget, obs_data_t *se
 			auto output = obs_data_array_item(outputs, i);
 			auto name = obs_data_get_string(output, "name");
 			if (name && name[0] != '\0' && strcmp(obs_data_get_string(settings, "name"), name) != 0 &&
-			    strcmp(obs_data_get_string(output, "type"), "virtual_cam") != 0 &&
 			    strcmp(obs_data_get_string(output, "type"), "ffmpeg") != 0) {
 				outputVideoEncoder->addItem(QString::fromUtf8(name), QVariant(QString::fromUtf8(name)));
 			}
@@ -2419,39 +2384,6 @@ void OBSBasicSettings::AddRecord()
 		obs_data_set_string(s, "type", "record");
 		obs_data_set_string(s, "name", outputDialog->outputName.toUtf8().constData());
 		obs_data_set_string(s, "path", outputDialog->recordPath.toUtf8().constData());
-		obs_data_array_push_back(extra_outputs, s);
-		AddOutput(outputsLayout, s, extra_outputs, true);
-		obs_data_release(s);
-	}
-
-	delete outputDialog;
-}
-
-void OBSBasicSettings::AddFfmpeg()
-{
-	QStringList otherNames;
-	obs_data_array_enum(
-		extra_outputs,
-		[](obs_data_t *data2, void *param) {
-			((QStringList *)param)->append(QString::fromUtf8(obs_data_get_string(data2, "name")));
-		},
-		&otherNames);
-	otherNames.removeDuplicates();
-	auto outputDialog = new FfmpegOutputDialog(this, otherNames);
-
-	outputDialog->setWindowModality(Qt::WindowModal);
-	outputDialog->setModal(true);
-
-	if (outputDialog->exec() == QDialog::Accepted) {
-		// create a new output
-		if (!extra_outputs)
-			return;
-		auto s = obs_data_create();
-		obs_data_set_bool(s, "enabled", true);
-		obs_data_set_bool(s, "expanded", true);
-		obs_data_set_string(s, "type", "ffmpeg");
-		outputDialog->SaveSettings(s);
-
 		obs_data_array_push_back(extra_outputs, s);
 		AddOutput(outputsLayout, s, extra_outputs, true);
 		obs_data_release(s);

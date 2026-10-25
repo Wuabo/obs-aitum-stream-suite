@@ -5241,18 +5241,6 @@ void CanvasDock::CropItem(const vec2 &pos)
 	newPos.x = std::round(newPos.x);
 	newPos.y = std::round(newPos.y);
 
-#if 0
-	vec3 curPos;
-	vec3_zero(&curPos);
-	obs_sceneitem_get_pos(stretchItem, (vec2*)&curPos);
-	blog(LOG_DEBUG, "curPos {%d, %d} - newPos {%d, %d}",
-			int(curPos.x), int(curPos.y),
-			int(newPos.x), int(newPos.y));
-	blog(LOG_DEBUG, "crop {%d, %d, %d, %d}",
-			crop.left, crop.top,
-			crop.right, crop.bottom);
-#endif
-
 	obs_sceneitem_defer_update_begin(stretchItem);
 	obs_sceneitem_set_crop(stretchItem, &crop);
 	if (boundsType == OBS_BOUNDS_NONE) {
