@@ -93,51 +93,41 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
 
-	a = toolbar->addAction(
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStart, QIcon(":/res/images/media/media_play.svg")),
-#else
-		QIcon(":/res/images/media/media_play.svg"),
-#endif
-		QString::fromUtf8(obs_module_text("StartAll")));
-	connect(a, &QAction::triggered, [this] {
-		QMenu startMenu;
-		auto a2 = startMenu.addAction(
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-			QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStart, QIcon(":/res/images/media/media_play.svg")),
-#else
-			QIcon(":/res/images/media/media_play.svg"),
-#endif
-			QString::fromUtf8(obs_module_text("StartAllOutputs")), [this]() { StartAll(false, false); });
-		a2->setProperty("themeID", QVariant(QString::fromUtf8("playIcon")));
-		a2->setProperty("class", "icon-media-play");
-		if (mainStreamEnabled || std::find_if(outputWidgets.begin(), outputWidgets.end(),
-						      [](OutputWidget *w) { return w->IsStream(); }) != outputWidgets.end()) {
-			startMenu.addAction(QIcon(QString::fromUtf8(":/aitum/media/stream.svg")),
-					    QString::fromUtf8(obs_module_text("StartAllStreams")),
-					    [this]() { StartAll(true, false); });
-		}
-		if (mainRecordEnabled || std::find_if(outputWidgets.begin(), outputWidgets.end(),
-						      [](OutputWidget *w) { return w->IsRecord(); }) != outputWidgets.end()) {
-			startMenu.addAction(QIcon(QString::fromUtf8(":/aitum/media/record.svg")),
-					    QString::fromUtf8(obs_module_text("StartAllRecordings")),
-					    [this]() { StartAll(false, true); });
-		}
-		startMenu.exec(QCursor::pos());
-	});
-	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("playIcon")));
-	toolbar->widgetForAction(a)->setProperty("class", "icon-media-play");
-	a->setIconText(QString::fromUtf8(obs_module_text("StartAll")));
-	((QToolButton *)toolbar->widgetForAction(a))->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	toolbar->widgetForAction(a)->setMinimumWidth(80);
+	toolbar->addSeparator();
 
-	a = toolbar->addAction(
+	auto styleLabeledAction = [toolbar](QAction *action, const QString &tooltip) {
+		action->setToolTip(tooltip);
+		auto *btn = qobject_cast<QToolButton *>(toolbar->widgetForAction(action));
+		if (btn) {
+			btn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+			btn->setAutoRaise(true);
+		}
+	};
+
+	const QIcon stopIcon =
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStop, QIcon(":/res/images/media/media_stop.svg")),
+		QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStop, QIcon(":/res/images/media/media_stop.svg"));
 #else
-		QIcon(":/res/images/media/media_stop.svg"),
+		QIcon(":/res/images/media/media_stop.svg");
 #endif
-		QString::fromUtf8(obs_module_text("StopAllOutputs")), [this] { StopAll(false, false); });
+
+	a = toolbar->addAction(QIcon(QStringLiteral(":/aitum/media/streaming.svg")),
+			       QString::fromUtf8(obs_module_text("Stream")), [this] { StartAll(true, false); });
+	styleLabeledAction(a, QString::fromUtf8(obs_module_text("StartAllStreams")));
+
+	a = toolbar->addAction(stopIcon, QString::fromUtf8(obs_module_text("StopAllStreams")),
+			       [this] { StopAll(true, false); });
+	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("stopIcon")));
+	toolbar->widgetForAction(a)->setProperty("class", "icon-media-stop");
+
+	toolbar->addSeparator();
+
+	a = toolbar->addAction(QIcon(QStringLiteral(":/aitum/media/recording.svg")),
+			       QString::fromUtf8(obs_module_text("Record")), [this] { StartAll(false, true); });
+	styleLabeledAction(a, QString::fromUtf8(obs_module_text("StartAllRecordings")));
+
+	a = toolbar->addAction(stopIcon, QString::fromUtf8(obs_module_text("StopAllRecordings")),
+			       [this] { StopAll(false, true); });
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("stopIcon")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-media-stop");
 
