@@ -10,7 +10,6 @@
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QRegularExpression>
-#include <QTime>
 #include <src/utils/color.hpp>
 #include <src/utils/icon.hpp>
 #include <src/utils/obs-websocket-api.h>
@@ -355,10 +354,6 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	obs_data_array_release(start_hotkey);
 	obs_data_array_release(stop_hotkey);
 
-	connect(&activeTimer, &QTimer::timeout, this, [this] {
-		auto t = QTime::fromMSecsSinceStartOfDay(startTime.msecsTo(QDateTime::currentDateTime()));
-		(extraButton ? extraButton : outputButton)->setText(t.toString(t.hour() ? "hh:mm:ss" : "mm:ss"));
-	});
 }
 
 OutputWidget::~OutputWidget()
@@ -410,7 +405,6 @@ void OutputWidget::replay_saved(void *data, calldata_t *calldata)
 	UNUSED_PARAMETER(calldata);
 	auto this_ = (OutputWidget *)data;
 	QMetaObject::invokeMethod(this_->extraButton, [this_] {
-		this_->startTime = QDateTime::currentDateTime();
 		proc_handler_t *ph = obs_output_get_proc_handler(this_->output);
 		if (!ph) {
 			return;
@@ -1354,19 +1348,6 @@ void OutputWidget::CheckActive()
 	bool active = obs_output_active(output);
 	if (outputButton->isChecked() != active) {
 		outputButton->setChecked(active);
-	}
-	if (activeTimer.isActive() != active) {
-		if (active) {
-			startTime = QDateTime::currentDateTime();
-			activeTimer.start(500);
-		} else {
-			activeTimer.stop();
-			if (extraButton) {
-				extraButton->setText("");
-			} else {
-				outputButton->setText("");
-			}
-		}
 	}
 }
 

@@ -4,8 +4,6 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPushButton>
-#include <QTimer>
-#include <QDateTime>
 
 class OutputWidget : public QFrame {
 	Q_OBJECT
@@ -21,9 +19,6 @@ private:
 	obs_output_t *output = nullptr;
 
 	std::function<void()> onStarted = nullptr;
-
-	QTimer activeTimer;
-	QDateTime startTime;
 
 	obs_hotkey_pair_id StartStopHotkey = OBS_INVALID_HOTKEY_PAIR_ID;
 	obs_hotkey_pair_id PauseHotkey = OBS_INVALID_HOTKEY_PAIR_ID;

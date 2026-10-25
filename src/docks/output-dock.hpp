@@ -30,8 +30,6 @@ private:
 	bool exiting = false;
 	bool mainStreamEnabled = true;
 	bool mainRecordEnabled = true;
-	QDateTime mainStreamStartTime;
-	QDateTime mainRecordStartTime;
 
 	QTimer videoCheckTimer;
 

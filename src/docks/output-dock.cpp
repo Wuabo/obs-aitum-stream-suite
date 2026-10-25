@@ -4,7 +4,6 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <QCheckBox>
-#include <QDateTime>
 #include <QGroupBox>
 #include <QIcon>
 #include <QLabel>
@@ -148,7 +147,39 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 		btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 	};
 
+	auto recordIconLabel = new QLabel;
+	recordIconLabel->setFixedSize(outputPlatformIconSize, outputPlatformIconSize);
+	recordIconLabel->setScaledContents(true);
+	recordIconLabel->setPixmap(
+		QIcon(QStringLiteral(":/aitum/media/record.svg")).pixmap(outputPlatformIconSize, outputPlatformIconSize));
+
 	auto l2 = new QHBoxLayout;
+	l2->setContentsMargins(8, 4, 8, 4);
+	l2->setSpacing(kRowSpacing);
+	l2->addWidget(makeIconSlot(recordIconLabel), 0, Qt::AlignVCenter);
+	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinRecord"))), 2, Qt::AlignVCenter);
+	mainRecordCanvasLabel = new QLabel(QString::fromUtf8(obs_module_text("MainCanvas")));
+	l2->addWidget(mainRecordCanvasLabel, 1, Qt::AlignVCenter);
+	mainRecordButton = new QPushButton;
+	mainRecordButton->setObjectName(QStringLiteral("canvasRecord"));
+	styleActionButton(mainRecordButton);
+	mainRecordButton->setIcon(create2StateIcon(":/aitum/media/recording.svg", ":/aitum/media/record.svg"));
+	mainRecordButton->setCheckable(true);
+	mainRecordButton->setChecked(false);
+	connect(mainRecordButton, &QPushButton::toggled, [this](bool checked) {
+		mainRecordButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
+		mainRecordButton->style()->unpolish(mainRecordButton);
+		mainRecordButton->style()->polish(mainRecordButton);
+	});
+	QObject::connect(mainRecordButton, &QPushButton::clicked, [this] { ToggleMainRecord(); });
+
+	l2->addWidget(mainRecordButton, 0, Qt::AlignVCenter);
+
+	mainRecordGroup = new QFrame;
+	mainRecordGroup->setLayout(l2);
+	mainLayout->addWidget(mainRecordGroup);
+
+	l2 = new QHBoxLayout;
 	l2->setContentsMargins(8, 4, 8, 4);
 	l2->setSpacing(kRowSpacing);
 
@@ -214,32 +245,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 
 	mainLayout->addWidget(mainStreamGroup);
 
-	l2 = new QHBoxLayout;
-	l2->setContentsMargins(8, 4, 8, 4);
-	l2->setSpacing(kRowSpacing);
-	l2->addWidget(makeIconSlot(nullptr), 0, Qt::AlignVCenter);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinRecord"))), 2, Qt::AlignVCenter);
-	mainRecordCanvasLabel = new QLabel(QString::fromUtf8(obs_module_text("MainCanvas")));
-	l2->addWidget(mainRecordCanvasLabel, 1, Qt::AlignVCenter);
-	mainRecordButton = new QPushButton;
-	mainRecordButton->setObjectName(QStringLiteral("canvasRecord"));
-	styleActionButton(mainRecordButton);
-	mainRecordButton->setIcon(create2StateIcon(":/aitum/media/recording.svg", ":/aitum/media/record.svg"));
-	mainRecordButton->setCheckable(true);
-	mainRecordButton->setChecked(false);
-	connect(mainRecordButton, &QPushButton::toggled, [this](bool checked) {
-		mainRecordButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
-		mainRecordButton->style()->unpolish(mainRecordButton);
-		mainRecordButton->style()->polish(mainRecordButton);
-	});
-	QObject::connect(mainRecordButton, &QPushButton::clicked, [this] { ToggleMainRecord(); });
-
-	l2->addWidget(mainRecordButton, 0, Qt::AlignVCenter);
-
-	mainRecordGroup = new QFrame;
-	mainRecordGroup->setLayout(l2);
-	mainLayout->addWidget(mainRecordGroup);
-
 	connect(&videoCheckTimer, &QTimer::timeout, [this] {
 		if (exiting) {
 			return;
@@ -260,12 +265,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 			auto active = obs_frontend_streaming_active();
 			if (mainStreamButton->isChecked() != active) {
 				mainStreamButton->setChecked(active);
-				if (!active) {
-					mainStreamButton->setText("");
-				}
-			} else if (active) {
-				auto t = QTime::fromMSecsSinceStartOfDay(mainStreamStartTime.msecsTo(QDateTime::currentDateTime()));
-				mainStreamButton->setText(t.toString(t.hour() ? "hh:mm:ss" : "mm:ss"));
 			}
 		}
 
@@ -273,12 +272,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 			auto active = CanvasRecordActive() || (!RecordUsesCanvas() && obs_frontend_recording_active());
 			if (mainRecordButton->isChecked() != active) {
 				mainRecordButton->setChecked(active);
-				if (!active) {
-					mainRecordButton->setText("");
-				}
-			} else if (active) {
-				auto t = QTime::fromMSecsSinceStartOfDay(mainRecordStartTime.msecsTo(QDateTime::currentDateTime()));
-				mainRecordButton->setText(t.toString(t.hour() ? "hh:mm:ss" : "mm:ss"));
 			}
 		}
 
@@ -482,14 +475,7 @@ void OutputDock::SaveSettings()
 void OutputDock::UpdateMainStreamStatus(bool active)
 {
 	mainStreamButton->setChecked(active);
-	if (active) {
-		mainStreamStartTime = QDateTime::currentDateTime();
-		mainStreamButton->setText("00:00");
-	} else {
-		mainStreamButton->setText("");
-		return;
-	}
-	if (!current_profile_config) {
+	if (!active || !current_profile_config) {
 		return;
 	}
 
@@ -764,7 +750,6 @@ bool OutputDock::StartCanvasRecord()
 		return false;
 	}
 	canvasRecordOutput = output;
-	mainRecordStartTime = QDateTime::currentDateTime();
 	blog(LOG_INFO, "[Aitum Stream Suite] recording canvas '%s' to %s", canvasName, path);
 	return true;
 }
@@ -791,15 +776,10 @@ void OutputDock::ToggleMainRecord()
 			obs_frontend_recording_stop();
 		}
 		mainRecordButton->setChecked(false);
-		mainRecordButton->setText("");
 		return;
 	}
 	if (canvas) {
-		const bool started = StartCanvasRecord();
-		mainRecordButton->setChecked(started);
-		if (!started) {
-			mainRecordButton->setText("");
-		}
+		mainRecordButton->setChecked(StartCanvasRecord());
 		return;
 	}
 	obs_frontend_recording_start();
@@ -809,12 +789,6 @@ void OutputDock::ToggleMainRecord()
 void OutputDock::UpdateMainRecordingStatus(bool active)
 {
 	mainRecordButton->setChecked(active);
-	if (active) {
-		mainRecordStartTime = QDateTime::currentDateTime();
-		mainRecordButton->setText("00:00");
-	} else {
-		mainRecordButton->setText("");
-	}
 }
 
 obs_data_array_t *OutputDock::GetOutputsArray()
