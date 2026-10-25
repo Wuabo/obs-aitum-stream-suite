@@ -8,7 +8,6 @@
 #include <QLayout>
 #include <QMenu>
 #include <QScrollArea>
-#include <src/utils/color.hpp>
 #include <src/utils/widgets/switching-splitter.hpp>
 
 std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -35,9 +34,6 @@ CanvasCloneDock::CanvasCloneDock(obs_data_t *settings_, QWidget *parent)
 
 	canvas_split = new SwitchingSplitter;
 	canvas_split->setContentsMargins(0, 0, 0, 0);
-
-	auto c = color_from_int(obs_data_get_int(settings, "color"));
-	setStyleSheet(QString("QFrame{border: 2px solid %1;}").arg(c.name(QColor::HexRgb)));
 
 	auto l = new QBoxLayout(QBoxLayout::TopToBottom, this);
 	l->setContentsMargins(0, 0, 0, 0);
@@ -864,9 +860,6 @@ void CanvasCloneDock::UpdateSettings(obs_data_t *s)
 		obs_data_release(settings);
 		settings = s;
 	}
-
-	auto c = color_from_int(obs_data_get_int(settings, "color"));
-	setStyleSheet(QString("QFrame{border: 2px solid %1;}").arg(c.name(QColor::HexRgb)));
 
 	obs_weak_canvas_release(clone);
 	clone = nullptr;

@@ -50,9 +50,6 @@ CanvasDock::CanvasDock(obs_data_t *settings_, QWidget *parent)
 	  settings(settings_),
 	  eventFilter(BuildEventFilter())
 {
-	auto c = color_from_int(obs_data_get_int(settings, "color"));
-	setStyleSheet(QString::fromUtf8("#contextContainer { border: 2px solid %1}").arg(c.name(QColor::HexRgb)));
-
 	canvas_width = (uint32_t)obs_data_get_int(settings, "width");
 	if (canvas_width < 1) {
 		canvas_width = 1080;
@@ -6340,9 +6337,6 @@ void CanvasDock::UpdateSettings(obs_data_t *s)
 		obs_data_release(settings);
 		settings = s;
 	}
-
-	auto c = color_from_int(obs_data_get_int(settings, "color"));
-	setStyleSheet(QString::fromUtf8("#contextContainer { border: 2px solid %1}").arg(c.name(QColor::HexRgb)));
 
 	canvas_width = (uint32_t)obs_data_get_int(settings, "width");
 	if (canvas_width < 1) {

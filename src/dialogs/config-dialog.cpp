@@ -5,7 +5,6 @@
 #include "record-output-dialog.hpp"
 #include "stream-output-dialog.hpp"
 #include <QCheckBox>
-#include <QColorDialog>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDesktopServices>
@@ -33,7 +32,6 @@
 #include <QUrl>
 #include <QSignalBlocker>
 #include <src/docks/canvas-dock.hpp>
-#include <src/utils/color.hpp>
 #include <src/utils/widgets/focus-scroll-spinbox.hpp>
 #include <sstream>
 #include <util/config-file.h>
@@ -435,29 +433,6 @@ void OBSBasicSettings::AddCanvas(QFormLayout *canvasesLayout, obs_data_t *settin
 	canvas_title_layout->addWidget(canvas_title, 0, Qt::AlignVCenter);
 	canvas_title_layout->addStretch(1);
 
-	auto canvas_color = new QPushButton;
-	canvas_color->setFixedSize(22, 22);
-	canvas_color->setFlat(true);
-	canvas_color->setCursor(Qt::PointingHandCursor);
-	canvas_color->setToolTip(QString::fromUtf8(obs_module_text("SelectColor")));
-	auto c = color_from_int(obs_data_get_int(settings, "color"));
-	canvas_color->setStyleSheet(
-		QStringLiteral(
-			"QPushButton { background-color: %1; border: 2px solid #888888; border-radius: 3px; min-width: 22px; min-height: 22px; }")
-			.arg(c.name(QColor::HexRgb)));
-	canvas_title_layout->addWidget(canvas_color, 0, Qt::AlignVCenter);
-	connect(canvas_color, &QPushButton::clicked, [this, canvas_color, settings] {
-		auto currentColor = color_from_int(obs_data_get_int(settings, "color"));
-		QColor newColor = QColorDialog::getColor(currentColor, this, QString::fromUtf8(obs_module_text("SelectColor")));
-		if (newColor.isValid()) {
-			obs_data_set_int(settings, "color", color_to_int(newColor));
-			canvas_color->setStyleSheet(
-				QStringLiteral(
-					"QPushButton { background-color: %1; border: 2px solid #888888; border-radius: 3px; min-width: 22px; min-height: 22px; }")
-					.arg(newColor.name(QColor::HexRgb)));
-		}
-	});
-
 	auto advancedGroup = new QFrame;
 	advancedGroup->setContentsMargins(0, 0, 0, 0);
 	advancedGroup->setVisible(expanded);
@@ -666,7 +641,6 @@ void OBSBasicSettings::AddUnmanagedCanvas(std::string name)
 		auto s = obs_data_create();
 		// Set the info from the output dialog
 		obs_data_set_string(s, "name", name.c_str());
-		obs_data_set_int(s, "color", 0x1F1A17);
 		obs_data_set_bool(s, "expanded", true);
 
 		auto canvas = obs_get_canvas_by_name(name.c_str());
@@ -1116,7 +1090,6 @@ void OBSBasicSettings::AddCanvas()
 	auto s = obs_data_create();
 	// Set the info from the output dialog
 	obs_data_set_string(s, "name", newName.toUtf8().constData());
-	obs_data_set_int(s, "color", 0x1F1A17);
 	obs_data_set_bool(s, "expanded", true);
 	obs_data_array_push_back(canvases, s);
 	AddCanvas(canvasLayout, s, canvases);
