@@ -116,7 +116,6 @@ function PackagePlugin {
         }
     }
 
-    Copy-Item -Path "${ProjectRoot}/theme" -Destination "${ProjectRoot}/release/Package/data/obs-studio/themes" -Recurse
     Copy-Item "${IsccFile}" -Destination "${ProjectRoot}/release"
     Copy-Item "${ProjectRoot}/media/icon.ico" -Destination "${ProjectRoot}/release"
 

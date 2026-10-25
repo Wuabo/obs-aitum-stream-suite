@@ -3197,23 +3197,6 @@ void CanvasDock::ShowScenesContextMenu(QListWidgetItem *widget_item)
 		obs_frontend_source_list_free(&scenes);
 	});
 
-	menu.addAction(QString::fromUtf8(obs_module_text("OnMainCanvas")), [this] {
-		auto item = sceneList->currentItem();
-		if (!item) {
-			return;
-		}
-		auto s = obs_canvas_get_source_by_name(canvas, item->text().toUtf8().constData());
-		if (!s) {
-			return;
-		}
-
-		if (obs_frontend_preview_program_mode_active()) {
-			obs_frontend_set_current_preview_scene(s);
-		} else {
-			obs_frontend_set_current_scene(s);
-		}
-		obs_source_release(s);
-	});
 	menu.exec(QCursor::pos());
 }
 

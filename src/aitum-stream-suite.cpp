@@ -20,15 +20,10 @@
 #include <obs-module.h>
 #include <QApplication>
 #include <QDockWidget>
+#include <QLabel>
 #include <QMainWindow>
 #include <QMap>
-#include <QMenu>
-#include <QMenuBar>
-#include <QMessageBox>
-#include <QLabel>
-#include <QPlainTextEdit>
 #include <QPointer>
-#include <QStyle>
 #include <QTimer>
 #include <util/dstr.h>
 
@@ -38,14 +33,11 @@ OBS_MODULE_USE_DEFAULT_LOCALE("aitum-stream-suite", "en-US")
 
 obs_data_t *current_profile_config = nullptr;
 
-QAction *studioModeAction = nullptr;
-
 OBSBasicSettings *configDialog = nullptr;
 OutputDock *output_dock = nullptr;
 QPointer<PropertiesDock> properties_dock;
 QPointer<FiltersDock> filters_dock;
 QPointer<TransformDock> transform_dock;
-CanvasDock *component_dock = nullptr;
 StatsDock *stats_dock = nullptr;
 ScenesDock *scenes_dock = nullptr;
 SourcesDock *sources_dock = nullptr;
@@ -82,9 +74,6 @@ void save_dock_state(QString mode)
 	}
 	for (const auto &it : canvas_clone_docks) {
 		QMetaObject::invokeMethod(it, "SaveSettings", Q_ARG(bool, false), Q_ARG(QString, mode));
-	}
-	if (component_dock) {
-		QMetaObject::invokeMethod(component_dock, "SaveSettings", Q_ARG(bool, false), Q_ARG(QString, mode));
 	}
 	if (stats_dock) {
 		QMetaObject::invokeMethod(stats_dock, "SaveSettings", Q_ARG(bool, false), Q_ARG(QString, mode));
@@ -126,9 +115,6 @@ void load_dock_state(QString mode)
 			visible_canvas_docks.append(dw);
 		}
 		QMetaObject::invokeMethod(it, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
-	}
-	if (component_dock) {
-		QMetaObject::invokeMethod(component_dock, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
 	}
 	if (stats_dock) {
 		QMetaObject::invokeMethod(stats_dock, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
@@ -572,14 +558,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		filters_dock = nullptr;
 		delete transform_dock;
 		transform_dock = nullptr;
-	} else if (event == OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED) {
-		if (studioModeAction && !studioModeAction->isChecked()) {
-			studioModeAction->setChecked(true);
-		}
-	} else if (event == OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED) {
-		if (studioModeAction && studioModeAction->isChecked()) {
-			studioModeAction->setChecked(false);
-		}
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
@@ -802,8 +780,6 @@ bool obs_module_load(void)
 
 	output_dock = new OutputDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteOutput", obs_module_text("AitumStreamSuiteOutput"), output_dock);
-	//component_dock = new CanvasDock("Components", main_window);
-	//obs_frontend_add_dock_by_id("AitumStreamSuiteComponent", obs_module_text("AitumStreamSuiteComponent"), component_dock);
 	/* Keep Properties/Filters/Transform as hidden helpers — use OBS native dialogs in the UI. */
 	properties_dock = new PropertiesDock(main_window);
 	properties_dock->hide();
@@ -898,21 +874,3 @@ MODULE_EXPORT const char *obs_module_name(void)
 	return obs_module_text("AitumStreamSuite");
 }
 
-extern "C" void show_component_editor(const char *name);
-
-void show_component_editor(const char *name)
-{
-	if (!component_dock) {
-		return;
-	}
-	QMetaObject::invokeMethod(component_dock, "SwitchScene", Q_ARG(QString, QString::fromUtf8(name)));
-	QMetaObject::invokeMethod(component_dock, [] {
-		auto window = QApplication::activeWindow();
-		if (window->objectName() == "OBSBasicProperties") {
-			window->close();
-		}
-		component_dock->parentWidget()->show();
-		component_dock->parentWidget()->raise();
-		component_dock->parentWidget()->setFocus();
-	});
-}

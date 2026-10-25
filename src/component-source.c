@@ -280,17 +280,6 @@ static void component_update(void *data, obs_data_t *settings)
 	obs_source_release(source);
 }
 
-void show_component_editor(const char *name);
-
-static bool component_edit_button_clicked(obs_properties_t *props, obs_property_t *property, void *data)
-{
-	UNUSED_PARAMETER(props);
-	UNUSED_PARAMETER(property);
-	struct component *component = data;
-	show_component_editor(obs_source_get_name(component->source));
-	return false;
-}
-
 static obs_properties_t *component_get_properties(void *data, void *type_data)
 {
 	UNUSED_PARAMETER(data);
@@ -300,7 +289,6 @@ static obs_properties_t *component_get_properties(void *data, void *type_data)
 	obs_property_int_set_suffix(p, "px");
 	p = obs_properties_add_int(props, "cy", obs_module_text("Height"), 1, 16384, 1);
 	obs_property_int_set_suffix(p, "px");
-	obs_properties_add_button2(props, "edit_button", obs_module_text("Edit"), component_edit_button_clicked, data);
 	return props;
 }
 

@@ -827,27 +827,6 @@ void ScenesDock::ShowScenesContextMenu(QListWidgetItem *widget_item)
 			obs_frontend_source_list_free(&scenes);
 		});
 
-		menu.addAction(QString::fromUtf8(obs_module_text("OnMainCanvas")), [this, scene_name, scene_uuid] {
-			auto s = obs_get_source_by_uuid(scene_uuid.c_str());
-			if (!s) {
-				auto c = obs_weak_canvas_get_canvas(canvas);
-				if (!c) {
-					return;
-				}
-				s = obs_canvas_get_source_by_name(c, scene_name.c_str());
-				obs_canvas_release(c);
-			}
-			if (!s) {
-				return;
-			}
-
-			if (obs_frontend_preview_program_mode_active()) {
-				obs_frontend_set_current_preview_scene(s);
-			} else {
-				obs_frontend_set_current_scene(s);
-			}
-			obs_source_release(s);
-		});
 	}
 
 	a = menu.addAction(QString::fromUtf8(obs_frontend_get_locale_string("ShowInMultiview")),
