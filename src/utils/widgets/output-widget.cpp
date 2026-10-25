@@ -2,12 +2,10 @@
 #include <obs.hpp>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
-#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QSizePolicy>
 #include <QStyle>
-#include <QMainWindow>
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QTime>
@@ -52,9 +50,6 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	if (strcmp(output_type, "record") == 0) {
 		platformIconLabel->setPixmap(
 			QIcon(QStringLiteral(":/aitum/media/record.svg")).pixmap(outputPlatformIconSize, outputPlatformIconSize));
-	} else if (strcmp(output_type, "backtrack") == 0) {
-		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/backtrack_off.svg"))
-						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
 	} else if (strcmp(output_type, "ffmpeg") == 0) {
 		platformIconLabel->setPixmap(QIcon(QStringLiteral(":/aitum/media/ffmpeg_off.svg"))
 						     .pixmap(outputPlatformIconSize, outputPlatformIconSize));
@@ -175,71 +170,6 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 		obs_data_array_release(pause_hotkey);
 		obs_data_array_release(unpause_hotkey);
 
-	} else if (strcmp(output_type, "backtrack") == 0) {
-		outputButton->setObjectName(QStringLiteral("canvasBacktrackEnable"));
-
-		auto replayEnable = new QCheckBox;
-		auto testl = new QHBoxLayout;
-		outputButton->setLayout(testl);
-		testl->setContentsMargins(0, 0, 0, 0);
-		testl->addWidget(replayEnable, 0, Qt::AlignCenter);
-		outputButton->setToolTip(QString::fromUtf8(obs_module_text("Backtrack")));
-
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		connect(replayEnable, &QCheckBox::checkStateChanged, [this, replayEnable] {
-#else
-		connect(replayEnable, &QCheckBox::stateChanged, [this, replayEnable] {
-#endif
-			if (replayEnable->isChecked() != outputButton->isChecked()) {
-				outputButton->click();
-			}
-		});
-
-		extraButton = new QPushButton;
-		extraButton->setCheckable(true);
-		extraButton->setFixedWidth(kActionBtnWidth);
-		extraButton->setMinimumHeight(28);
-		extraButton->setMaximumHeight(32);
-		extraButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-		extraButton->setIcon(create2StateIcon(":/aitum/media/backtrack_on.svg", ":/aitum/media/backtrack_off.svg"));
-		extraButton->setObjectName(QStringLiteral("canvasReplay"));
-		extraButton->setToolTip(QString::fromUtf8(obs_module_text("SaveBacktrack")));
-
-		connect(extraButton, &QPushButton::clicked, [this] {
-			calldata_t cd = {0};
-			proc_handler_t *ph = obs_output_get_proc_handler(this->output);
-			proc_handler_call(ph, "save", &cd);
-			calldata_free(&cd);
-		});
-
-		connect(outputButton, &QPushButton::toggled, [this, replayEnable] {
-			bool enabled = outputButton->isChecked();
-			replayEnable->setChecked(enabled);
-			extraButton->setChecked(enabled);
-		});
-
-		std::string ebName = "AitumStreamSuiteSaveBacktrack";
-		ebName += nameChars;
-		std::string ebDescription = obs_module_text("SaveBacktrack");
-		ebDescription = ebDescription + " " + nameChars;
-
-		extraHotkey = obs_hotkey_register_frontend(
-			ebName.c_str(), ebDescription.c_str(),
-			[](void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed) {
-				UNUSED_PARAMETER(id);
-				UNUSED_PARAMETER(hotkey);
-				if (!pressed) {
-					return;
-				}
-				auto this_ = (OutputWidget *)data;
-				QMetaObject::invokeMethod(this_->extraButton, "click");
-			},
-			this);
-
-		auto extra_hotkey = obs_data_get_array(settings, "extra_hotkey");
-		obs_hotkey_load(extraHotkey, extra_hotkey);
-		obs_data_array_release(extra_hotkey);
-
 	} else if (strcmp(output_type, "virtual_cam") == 0) {
 		outputButton->setIcon(create2StateIcon(":/aitum/media/virtual_cam_on.svg", ":/aitum/media/virtual_cam_off.svg"));
 		outputButton->setObjectName(QStringLiteral("canvasVirtualCam"));
@@ -259,11 +189,6 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 		outputButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
 		outputButton->style()->unpolish(outputButton);
 		outputButton->style()->polish(outputButton);
-		if (extraButton) {
-			extraButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
-			extraButton->style()->unpolish(extraButton);
-			extraButton->style()->polish(extraButton);
-		}
 	});
 
 	connect(outputButton, &QPushButton::clicked, [this]() {
@@ -315,17 +240,7 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	timerLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	timerLabel->setText(QString());
 	outputLayout->addWidget(timerLabel, 0, Qt::AlignVCenter);
-
-	if (extraButton) {
-		auto l3 = new QHBoxLayout;
-		l3->setContentsMargins(0, 0, 0, 0);
-		l3->setSpacing(4);
-		l3->addWidget(outputButton);
-		l3->addWidget(extraButton);
-		outputLayout->addLayout(l3, 0);
-	} else {
-		outputLayout->addWidget(outputButton, 0, Qt::AlignVCenter);
-	}
+	outputLayout->addWidget(outputButton, 0, Qt::AlignVCenter);
 
 	setLayout(outputLayout);
 
@@ -391,9 +306,6 @@ OutputWidget::~OutputWidget()
 	if (PauseHotkey != OBS_INVALID_HOTKEY_PAIR_ID) {
 		obs_hotkey_pair_unregister(PauseHotkey);
 	}
-	if (extraHotkey != OBS_INVALID_HOTKEY_ID) {
-		obs_hotkey_unregister(extraHotkey);
-	}
 	if (splitHotkey != OBS_INVALID_HOTKEY_ID) {
 		obs_hotkey_unregister(splitHotkey);
 	}
@@ -425,34 +337,6 @@ void OutputWidget::output_start(void *data, calldata_t *calldata)
 		return;
 	}
 	QMetaObject::invokeMethod(this_->outputButton, [this_] { this_->outputButton->setChecked(true); }, Qt::QueuedConnection);
-}
-
-void OutputWidget::replay_saved(void *data, calldata_t *calldata)
-{
-	UNUSED_PARAMETER(calldata);
-	auto this_ = (OutputWidget *)data;
-	QMetaObject::invokeMethod(this_->extraButton, [this_] {
-		proc_handler_t *ph = obs_output_get_proc_handler(this_->output);
-		if (!ph) {
-			return;
-		}
-		QString path;
-		calldata_t cd = {0};
-		if (proc_handler_call(ph, "get_last_replay", &cd)) {
-			const char *p = calldata_string(&cd, "path");
-			if (p) {
-				path = QString::fromUtf8(p);
-			}
-		}
-		calldata_free(&cd);
-		if (!path.isEmpty()) {
-			const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-			if (!main_window) {
-				return;
-			}
-			QMetaObject::invokeMethod(main_window, "RecordingFileChanged", Q_ARG(QString, path));
-		}
-	});
 }
 
 extern obs_websocket_vendor vendor;
@@ -629,8 +513,6 @@ bool OutputWidget::StartOutput(bool automated)
 			obs_data_set_int(s, "max_time_sec", obs_data_get_int(settings, "max_time_sec"));
 			obs_data_set_int(s, "max_size_mb", obs_data_get_int(settings, "max_size_mb"));
 
-			//ensure_directory_exists(strPath);
-
 			auto filename = os_generate_formatted_filename(extension, spaces, format);
 			path += filename;
 			obs_data_set_string(s, "url", path.c_str());
@@ -688,7 +570,7 @@ bool OutputWidget::StartOutput(bool automated)
 	std::vector<obs_encoder_t *> aencs;
 
 	//obs_encoder_t *venc = nullptr;
-	bool is_record = (strcmp(output_type, "record") == 0 || strcmp(output_type, "backtrack") == 0);
+	bool is_record = (strcmp(output_type, "record") == 0);
 	auto advanced = obs_data_get_bool(settings, "advanced");
 	auto video_encoders = obs_data_get_array(settings, "video_encoders");
 	auto video_encoders_count = obs_data_array_count(video_encoders);
@@ -923,16 +805,14 @@ bool OutputWidget::StartOutput(bool automated)
 			const char *obsFormat =
 				profile ? config_get_string(profile, "Output", "FilenameFormatting") : nullptr;
 			filenameFormat = (obsFormat && obsFormat[0]) ? obsFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
-			if (strcmp(output_type, "backtrack") != 0) {
-				filenameFormat += " ";
-				QString safeName = QString::fromUtf8(name);
+			filenameFormat += " ";
+			QString safeName = QString::fromUtf8(name);
 #ifdef __APPLE__
-				safeName.replace(QRegularExpression("[:]"), "");
+			safeName.replace(QRegularExpression("[:]"), "");
 #elif defined(_WIN32)
-				safeName.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
+			safeName.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
 #endif
-				filenameFormat += safeName.toStdString();
-			}
+			filenameFormat += safeName.toStdString();
 		}
 
 		const char *format =
@@ -966,9 +846,7 @@ bool OutputWidget::StartOutput(bool automated)
 		std::string output_name = "Aitum Stream Suite Output ";
 		output_name += name;
 		const char *output_id = "ffmpeg_muxer";
-		if (strcmp(output_type, "backtrack") == 0) {
-			output_id = "replay_buffer";
-		} else if (strcmp(format, "hybrid_mp4") == 0) {
+		if (strcmp(format, "hybrid_mp4") == 0) {
 			output_id = "mp4_output";
 		} else if (strcmp(format, "hybrid_mov") == 0) {
 			output_id = "mov_output";
@@ -984,29 +862,20 @@ bool OutputWidget::StartOutput(bool automated)
 		obs_data_set_string(ps, "format", filenameFormat.c_str());
 		obs_data_set_string(ps, "extension", ext.c_str());
 
-		if (strcmp(output_type, "backtrack") == 0) {
-			obs_data_set_bool(ps, "split_file", true);
-			auto max_size = obs_data_get_int(settings, "max_size_mb");
-			obs_data_set_int(ps, "max_size_mb", max_size > 0 ? max_size : 0);
-			auto max_sec = obs_data_get_int(settings, "max_time_sec");
-			obs_data_set_int(ps, "max_time_sec", max_sec > 0 ? max_sec : 0);
-		} else {
-			const bool splitFile =
-				advanced ? config_get_bool(profile, "AdvOut", "RecSplitFile") : false;
-			obs_data_set_bool(ps, "split_file", splitFile);
-			long long max_size = 0;
-			long long max_sec = 0;
-			if (splitFile && profile) {
-				const char *splitType = config_get_string(profile, "AdvOut", "RecSplitFileType");
-				if (splitType && strcmp(splitType, "Size") == 0) {
-					max_size = config_get_int(profile, "AdvOut", "RecSplitFileSize");
-				} else if (splitType && strcmp(splitType, "Time") == 0) {
-					max_sec = config_get_int(profile, "AdvOut", "RecSplitFileTime") * 60;
-				}
+		const bool splitFile = advanced ? config_get_bool(profile, "AdvOut", "RecSplitFile") : false;
+		obs_data_set_bool(ps, "split_file", splitFile);
+		long long max_size = 0;
+		long long max_sec = 0;
+		if (splitFile && profile) {
+			const char *splitType = config_get_string(profile, "AdvOut", "RecSplitFileType");
+			if (splitType && strcmp(splitType, "Size") == 0) {
+				max_size = config_get_int(profile, "AdvOut", "RecSplitFileSize");
+			} else if (splitType && strcmp(splitType, "Time") == 0) {
+				max_sec = config_get_int(profile, "AdvOut", "RecSplitFileTime") * 60;
 			}
-			obs_data_set_int(ps, "max_size_mb", max_size > 0 ? max_size : 0);
-			obs_data_set_int(ps, "max_time_sec", max_sec > 0 ? max_sec : 0);
 		}
+		obs_data_set_int(ps, "max_size_mb", max_size > 0 ? max_size : 0);
+		obs_data_set_int(ps, "max_time_sec", max_sec > 0 ? max_sec : 0);
 		obs_output_update(output, ps);
 		obs_data_release(ps);
 	} else {
@@ -1083,14 +952,8 @@ bool OutputWidget::StartOutput(bool automated)
 	signal_handler_t *signal = obs_output_get_signal_handler(output);
 	signal_handler_disconnect(signal, "start", output_start, this);
 	signal_handler_disconnect(signal, "stop", output_stop, this);
-	if (extraButton) {
-		signal_handler_disconnect(signal, "saved", replay_saved, this);
-	}
 	signal_handler_connect(signal, "start", output_start, this);
 	signal_handler_connect(signal, "stop", output_stop, this);
-	if (extraButton) {
-		signal_handler_connect(signal, "saved", replay_saved, this);
-	}
 
 	for (size_t i = 0; i < vencs.size(); i++) {
 		obs_output_set_video_encoder2(output, vencs[i], i);
@@ -1441,11 +1304,6 @@ void OutputWidget::SaveSettings()
 		obs_data_array_release(pause_hotkey);
 		obs_data_array_release(unpause_hotkey);
 	}
-	if (extraHotkey != OBS_INVALID_HOTKEY_ID) {
-		obs_data_array_t *extra_hotkey = obs_hotkey_save(extraHotkey);
-		obs_data_set_array(settings, "extra_hotkey", extra_hotkey);
-		obs_data_array_release(extra_hotkey);
-	}
 	if (splitHotkey != OBS_INVALID_HOTKEY_ID) {
 		obs_data_array_t *split_hotkey = obs_hotkey_save(splitHotkey);
 		obs_data_set_array(settings, "split_hotkey", split_hotkey);
@@ -1586,7 +1444,7 @@ bool OutputWidget::IsRecord() const
 	if (strcmp(output_type, "ffmpeg") == 0) {
 		return obs_data_get_bool(settings, "save_file");
 	}
-	return (strcmp(output_type, "record") == 0 || strcmp(output_type, "backtrack") == 0);
+	return strcmp(output_type, "record") == 0;
 }
 
 bool OutputWidget::IsFileRecord() const

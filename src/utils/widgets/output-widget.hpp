@@ -19,7 +19,6 @@ private:
 	static constexpr int kTimerMinWidth = 52;
 
 	QPushButton *outputButton = nullptr;
-	QPushButton *extraButton = nullptr;
 	QLabel *canvasLabel = nullptr;
 	QLabel *timerLabel = nullptr;
 	obs_output_t *output = nullptr;
@@ -32,7 +31,6 @@ private:
 
 	obs_hotkey_pair_id StartStopHotkey = OBS_INVALID_HOTKEY_PAIR_ID;
 	obs_hotkey_pair_id PauseHotkey = OBS_INVALID_HOTKEY_PAIR_ID;
-	obs_hotkey_id extraHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id splitHotkey = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id chapterHotkey = OBS_INVALID_HOTKEY_ID;
 
@@ -43,7 +41,6 @@ private:
 
 	static void output_stop(void *data, calldata_t *calldata);
 	static void output_start(void *data, calldata_t *calldata);
-	static void replay_saved(void *data, calldata_t *calldata);
 	static bool EncoderAvailable(const char *encoder);
 	static void ensure_directory(char *path);
 

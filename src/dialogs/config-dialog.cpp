@@ -6,7 +6,6 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
-#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -28,11 +27,9 @@
 #include <QStyle>
 #include <QTabWidget>
 #include <QTextEdit>
-#include <QUrl>
 #include <QSignalBlocker>
 #include <src/docks/canvas-dock.hpp>
 #include <src/utils/widgets/focus-scroll-spinbox.hpp>
-#include <sstream>
 #include <util/config-file.h>
 #include <util/dstr.h>
 #include <util/platform.h>
@@ -41,16 +38,9 @@
 #include <dlfcn.h>
 #endif
 #include "name-dialog.hpp"
+#include <src/utils/icon.hpp>
 
 extern bool isTwitchServer(QString outputServer);
-
-template<typename T> std::string to_string_with_precision(const T a_value, const int n = 6)
-{
-	std::ostringstream out;
-	out.precision(n);
-	out << std::fixed << a_value;
-	return std::move(out).str();
-}
 
 void RemoveWidget(QWidget *widget);
 
@@ -172,8 +162,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	auto canvas_title = new QLabel(QString::fromUtf8(obs_module_text("Canvas")));
 	canvas_title->setStyleSheet(QString::fromUtf8("font-weight: bold;"));
 	canvas_title_layout->addWidget(canvas_title, 0, Qt::AlignLeft);
-	//auto guide_link = new QLabel(QString::fromUtf8("<a href=\"https://l.aitum.tv/vh-streaming-settings\">") + QString::fromUtf8(obs_module_text("ViewGuide")) + QString::fromUtf8("</a>"));
-	//guide_link->setOpenExternalLinks(true);
 
 	auto addButton = new QPushButton(QIcon(":/res/images/plus.svg"), QString::fromUtf8(obs_module_text("AddCanvas")));
 	addButton->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
@@ -181,7 +169,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	connect(addButton, &QPushButton::clicked, [this] { AddCanvas(); });
 
-	//streaming_title_layout->addWidget(guide_link, 0, Qt::AlignRight);
 	canvas_title_layout->addWidget(addButton, 0, Qt::AlignRight);
 
 	canvasLayout->addRow(canvas_title_layout);
@@ -220,20 +207,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	auto output_title = new QLabel(QString::fromUtf8(obs_module_text("Outputs")));
 	output_title->setStyleSheet(QString::fromUtf8("font-weight: bold;"));
 	output_title_layout->addWidget(output_title, 0, Qt::AlignLeft);
-	//auto guide_link = new QLabel(QString::fromUtf8("<a href=\"https://l.aitum.tv/vh-streaming-settings\">") + QString::fromUtf8(obs_module_text("ViewGuide")) + QString::fromUtf8("</a>"));
-	//guide_link->setOpenExternalLinks(true);
-	//	addButton = new QPushButton(QIcon(":/res/images/plus.svg"), QString::fromUtf8(obs_module_text("AddOutput")));
-	//	addButton->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
-	// 	addButton->setProperty("class", "icon-plus");
-	//	connect(addButton, &QPushButton::clicked, [this] {
-	//		if (!vertical_outputs)
-	//			return;
-	//		auto s = obs_data_create();
-	//		obs_data_set_string(s, "name", obs_module_text("Unnamed"));
-	//		obs_data_array_push_back(vertical_outputs, s);
-	//		AddServer(outputsLayout, s);
-	//		obs_data_release(s);
-	//	});
 
 	auto outputAddButton = new QPushButton(QIcon(":/res/images/plus.svg"), QString::fromUtf8(obs_module_text("AddOutput")));
 	outputAddButton->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
@@ -769,11 +742,19 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 		extra_outputs = obs_data_array_create();
 		obs_data_set_array(settings, "outputs", extra_outputs);
 	}
+	for (size_t i = obs_data_array_count(extra_outputs); i > 0; i--) {
+		obs_data_t *item = obs_data_array_item(extra_outputs, i - 1);
+		const char *type = obs_data_get_string(item, "type");
+		const bool drop = strcmp(type, "backtrack") == 0;
+		obs_data_release(item);
+		if (drop)
+			obs_data_array_erase(extra_outputs, i - 1);
+	}
 	obs_data_array_enum(
 		extra_outputs,
 		[](obs_data_t *data2, void *param) {
 			auto type = obs_data_get_string(data2, "type");
-			if (strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0)
+			if (strcmp(type, "virtual_cam") == 0)
 				return;
 			auto d = (OBSBasicSettings *)param;
 			auto outputs2 = obs_data_get_array(d->main_settings, "outputs");
@@ -1122,7 +1103,6 @@ void OBSBasicSettings::SetCreateType(const char *create_type)
 	}
 }
 
-QIcon getPlatformIconFromEndpoint(QString endpoint);
 
 void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *settings, obs_data_array_t *outputs, bool isNew)
 {
@@ -1295,14 +1275,9 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 		otherNames.removeOne(QString::fromUtf8(obs_data_get_string(settings, "name")));
 
 		auto output_type = obs_data_get_string(settings, "type");
-		if (strcmp(output_type, "record") == 0 || strcmp(output_type, "backtrack") == 0) {
+		if (strcmp(output_type, "record") == 0) {
 			auto outputDialog = new RecordOutputDialog(this, QString::fromUtf8(obs_data_get_string(settings, "name")),
-								   QString::fromUtf8(obs_data_get_string(settings, "path")),
-								   QString::fromUtf8(obs_data_get_string(settings, "filename")),
-								   QString::fromUtf8(obs_data_get_string(settings, "format")),
-								   obs_data_get_int(settings, "max_size_mb"),
-								   obs_data_get_int(settings, "max_time_sec"), otherNames,
-								   strcmp(output_type, "backtrack") == 0);
+								   QString::fromUtf8(obs_data_get_string(settings, "path")), otherNames);
 
 			outputDialog->setWindowModality(Qt::WindowModal);
 			outputDialog->setModal(true);
@@ -1317,13 +1292,8 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 				obs_data_set_string(settings, "path", outputDialog->recordPath.toUtf8().constData());
 				obs_data_erase(settings, "filename");
 				obs_data_erase(settings, "format");
-				if (strcmp(output_type, "backtrack") == 0) {
-					obs_data_set_int(settings, "max_size_mb", outputDialog->maxSize);
-					obs_data_set_int(settings, "max_time_sec", outputDialog->maxTime);
-				} else {
-					obs_data_erase(settings, "max_size_mb");
-					obs_data_erase(settings, "max_time_sec");
-				}
+				obs_data_erase(settings, "max_size_mb");
+				obs_data_erase(settings, "max_time_sec");
 
 				// Reload
 				LoadSettings(main_settings);
@@ -1539,21 +1509,6 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 				unpauseHotkeyWidget->label->pairPartner = pauseHotkeyWidget->label;
 				pauseHotkeyWidget->label->pairPartner = unpauseHotkeyWidget->label;
 			}
-		}
-
-		std::string ebName = "AitumStreamSuiteSaveBacktrack";
-		ebName += obs_data_get_string(settings, "name");
-		hotkey = GetHotkeyByName(ebName.c_str());
-		if (hotkey) {
-			auto id = obs_hotkey_get_id(hotkey);
-			std::vector<obs_key_combination_t> combos = GetCombosForHotkey(id);
-			auto hn = obs_hotkey_get_name(hotkey);
-			auto extraHotkeyWidget = new OBSHotkeyWidget(this, id, hn, combos);
-			auto label = new OBSHotkeyLabel;
-			label->setText(QString::fromUtf8(obs_module_text("SaveBacktrack")));
-			extraHotkeyWidget->label = label;
-			hotkeyLayout->addRow(label, extraHotkeyWidget);
-			hotkeys.push_back(extraHotkeyWidget);
 		}
 
 		std::string splitName = "AitumStreamSuiteSplit";
@@ -2450,7 +2405,7 @@ void OBSBasicSettings::AddRecord()
 		},
 		&otherNames);
 	otherNames.removeDuplicates();
-	auto outputDialog = new RecordOutputDialog(this, otherNames, false);
+	auto outputDialog = new RecordOutputDialog(this, otherNames);
 
 	outputDialog->setWindowModality(Qt::WindowModal);
 	outputDialog->setModal(true);

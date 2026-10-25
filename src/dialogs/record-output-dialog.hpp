@@ -5,19 +5,13 @@ class RecordOutputDialog : public QDialog {
 	Q_OBJECT
 private:
 	QStringList otherNames;
-	bool backtrack;
 
 	void validateOutputs(QPushButton *confirmButton);
 
 public:
-	RecordOutputDialog(QDialog *parent, QStringList otherNames, bool backtrack);
-	RecordOutputDialog(QDialog *parent, QString name, QString path, QString filename, QString format, long long max_size,
-			   long long max_time, QStringList otherNames, bool backtrack);
+	RecordOutputDialog(QDialog *parent, QStringList otherNames);
+	RecordOutputDialog(QDialog *parent, QString name, QString path, QStringList otherNames);
 
 	QString outputName;
 	QString recordPath;
-	QString filenameFormat;
-	QString fileFormat;
-	long long maxSize = 0;
-	long long maxTime = 0;
 };

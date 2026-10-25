@@ -47,9 +47,6 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 	titleLayout->setContentsMargins(0, 0, 0, 0);
 	titleLayout->addWidget(sourceLabel, 1, Qt::AlignLeft);
 
-	//titleLayout->addWidget(new VisibilityCheckBox(this), 0, Qt::AlignRight);
-	//titleLayout->addWidget(new LockedCheckBox(this), 0, Qt::AlignRight);
-
 	verticalLayout_3->addLayout(titleLayout);
 
 	auto toolbar = new QToolBar;

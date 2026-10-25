@@ -420,13 +420,21 @@ void OutputDock::LoadSettings()
 	RefreshRecordCanvasLabel();
 
 	auto outputs2 = obs_data_get_array(current_profile_config, "outputs");
+	for (size_t i = obs_data_array_count(outputs2); i > 0; i--) {
+		obs_data_t *item = obs_data_array_item(outputs2, i - 1);
+		const char *type = obs_data_get_string(item, "type");
+		const bool drop = strcmp(type, "backtrack") == 0;
+		obs_data_release(item);
+		if (drop)
+			obs_data_array_erase(outputs2, i - 1);
+	}
 	for (auto it = outputWidgets.begin(); it != outputWidgets.end();) {
 		bool found = false;
 		auto count = obs_data_array_count(outputs2);
 		for (size_t i = 0; i < count; i++) {
 			obs_data_t *data2 = obs_data_array_item(outputs2, i);
 			auto type = obs_data_get_string(data2, "type");
-			if (strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0) {
+			if (strcmp(type, "virtual_cam") == 0) {
 				obs_data_release(data2);
 				continue;
 			}
@@ -452,7 +460,7 @@ void OutputDock::LoadSettings()
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *data2 = obs_data_array_item(outputs2, i);
 		auto type = obs_data_get_string(data2, "type");
-		if (strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0) {
+		if (strcmp(type, "virtual_cam") == 0) {
 			obs_data_release(data2);
 			continue;
 		}

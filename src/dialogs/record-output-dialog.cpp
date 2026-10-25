@@ -3,11 +3,11 @@
 #include <obs-module.h>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <util/config-file.h>
-#include "../utils/widgets/focus-scroll-spinbox.hpp"
 
 namespace {
 
@@ -26,20 +26,18 @@ QString ObsRecordingPath()
 
 } // namespace
 
-RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames, bool backtrack_)
+RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames)
 	: QDialog(parent),
-	  otherNames(_otherNames),
-	  backtrack(backtrack_)
+	  otherNames(_otherNames)
 {
-	setWindowTitle(QString::fromUtf8(obs_module_text(backtrack ? "NewBacktrackOutputWindowTitle" : "NewRecordOutputWindowTitle")));
+	setWindowTitle(QString::fromUtf8(obs_module_text("NewRecordOutputWindowTitle")));
 
 	auto pageLayout = new QVBoxLayout;
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
-	setMinimumSize(520, backtrack ? 280 : 200);
+	setMinimumSize(520, 200);
 
-	auto confirmButton =
-		new QPushButton(QString::fromUtf8(obs_module_text(backtrack ? "CreateBacktrackOutput" : "CreateRecordOutput")));
+	auto confirmButton = new QPushButton(QString::fromUtf8(obs_module_text("CreateRecordOutput")));
 	confirmButton->setEnabled(false);
 
 	auto formLayout = new QFormLayout;
@@ -52,7 +50,7 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 		outputName = nameField->text();
 		validateOutputs(confirmButton);
 	});
-	nameField->setText(QString::fromUtf8(obs_module_text(backtrack ? "BacktrackOutput" : "RecordOutput")));
+	nameField->setText(QString::fromUtf8(obs_module_text("RecordOutput")));
 	outputName = nameField->text();
 	formLayout->addRow(QString::fromUtf8(obs_module_text("OutputName")), nameField);
 
@@ -81,41 +79,6 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Simple.SavePath")),
 			   recordPathLayout);
 
-	/* Format, filename pattern and auto-split follow OBS Settings → Output. */
-	filenameFormat.clear();
-	fileFormat.clear();
-	maxSize = 0;
-	maxTime = 0;
-
-	if (backtrack) {
-		auto maxTimeSpin = new FocusScrollSpinBox();
-		maxTimeSpin->setMinimum(0);
-		maxTimeSpin->setMaximum(31536000);
-		maxTimeSpin->setSuffix(" s");
-		maxTimeSpin->setValue(30);
-		maxTime = 30;
-		connect(maxTimeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
-			this->maxTime = value;
-			validateOutputs(confirmButton);
-		});
-
-		auto maxSizeSpin = new FocusScrollSpinBox();
-		maxSizeSpin->setMinimum(0);
-		maxSizeSpin->setMaximum(1073741824);
-		maxSizeSpin->setSuffix(" MB");
-		connect(maxSizeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
-			this->maxSize = value;
-			validateOutputs(confirmButton);
-		});
-
-		formLayout->addRow(
-			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.SecondsMax")),
-			maxTimeSpin);
-		formLayout->addRow(
-			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.MegabytesMax")),
-			maxSizeSpin);
-	}
-
 	auto controlsLayout = new QHBoxLayout;
 	controlsLayout->setSpacing(0);
 	controlsLayout->setContentsMargins(0, 0, 0, 0);
@@ -130,30 +93,21 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QStringList _otherNames,
 	validateOutputs(confirmButton);
 }
 
-RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString path, QString filename, QString format,
-				       long long max_size, long long max_time, QStringList _otherNames, bool backtrack_)
+RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString path, QStringList _otherNames)
 	: QDialog(parent),
-	  otherNames(_otherNames),
-	  backtrack(backtrack_)
+	  otherNames(_otherNames)
 {
 	outputName = name;
 	recordPath = path;
-	filenameFormat.clear();
-	fileFormat.clear();
-	maxSize = backtrack_ ? max_size : 0;
-	maxTime = backtrack_ ? max_time : 0;
-	UNUSED_PARAMETER(filename);
-	UNUSED_PARAMETER(format);
 
-	setWindowTitle(obs_module_text(backtrack ? "EditBacktrackOutputWindowTitle" : "EditRecordOutputWindowTitle"));
+	setWindowTitle(obs_module_text("EditRecordOutputWindowTitle"));
 
 	auto pageLayout = new QVBoxLayout;
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
-	setMinimumSize(520, backtrack ? 280 : 200);
+	setMinimumSize(520, 200);
 
-	auto confirmButton =
-		new QPushButton(QString::fromUtf8(obs_module_text(backtrack ? "SaveBacktrackOutput" : "SaveRecordOutput")));
+	auto confirmButton = new QPushButton(QString::fromUtf8(obs_module_text("SaveRecordOutput")));
 	confirmButton->setEnabled(false);
 
 	auto formLayout = new QFormLayout;
@@ -193,35 +147,6 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString pa
 	formLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Simple.SavePath")),
 			   recordPathLayout);
 
-	if (backtrack) {
-		auto maxTimeSpin = new FocusScrollSpinBox();
-		maxTimeSpin->setMinimum(0);
-		maxTimeSpin->setMaximum(31536000);
-		maxTimeSpin->setSuffix(" s");
-		maxTimeSpin->setValue(maxTime);
-		connect(maxTimeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
-			this->maxTime = value;
-			validateOutputs(confirmButton);
-		});
-
-		auto maxSizeSpin = new FocusScrollSpinBox();
-		maxSizeSpin->setMinimum(0);
-		maxSizeSpin->setMaximum(1073741824);
-		maxSizeSpin->setSuffix(" MB");
-		maxSizeSpin->setValue(maxSize);
-		connect(maxSizeSpin, &QSpinBox::valueChanged, [this, confirmButton](int value) {
-			this->maxSize = value;
-			validateOutputs(confirmButton);
-		});
-
-		formLayout->addRow(
-			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.SecondsMax")),
-			maxTimeSpin);
-		formLayout->addRow(
-			QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.ReplayBuffer.MegabytesMax")),
-			maxSizeSpin);
-	}
-
 	auto controlsLayout = new QHBoxLayout;
 	controlsLayout->setSpacing(0);
 	controlsLayout->setContentsMargins(0, 0, 0, 0);
@@ -238,11 +163,7 @@ RecordOutputDialog::RecordOutputDialog(QDialog *parent, QString name, QString pa
 
 void RecordOutputDialog::validateOutputs(QPushButton *confirmButton)
 {
-	if (outputName.isEmpty() || otherNames.contains(outputName)) {
-		confirmButton->setEnabled(false);
-	} else if (recordPath.isEmpty()) {
-		confirmButton->setEnabled(false);
-	} else if (backtrack && maxSize == 0 && maxTime == 0) {
+	if (outputName.isEmpty() || otherNames.contains(outputName) || recordPath.isEmpty()) {
 		confirmButton->setEnabled(false);
 	} else {
 		confirmButton->setEnabled(true);

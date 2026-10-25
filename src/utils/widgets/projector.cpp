@@ -100,10 +100,7 @@ OBSProjector::OBSProjector(obs_canvas_t *canvas_, obs_source_t *source_, int mon
 
 	setAttribute(Qt::WA_DeleteOnClose, true);
 
-	//disable application quit when last window closed
 	setAttribute(Qt::WA_QuitOnClose, false);
-
-	//installEventFilter(CreateShortcutFilter());
 
 	auto addDrawCallback = [this]() {
 		obs_display_add_draw_callback(GetDisplay(), OBSRender, this);
@@ -111,23 +108,18 @@ OBSProjector::OBSProjector(obs_canvas_t *canvas_, obs_source_t *source_, int mon
 	};
 
 	connect(this, &OBSQTDisplay::DisplayCreated, addDrawCallback);
-	//connect(App(), &QGuiApplication::screenRemoved, this,	&OBSProjector::ScreenRemoved);
-
-	//App()->IncrementSleepInhibition();
 
 	ready = true;
 
 	show();
 
-	// We need it here to allow keyboard input in X11 to listen to Escape
+	/* Allow keyboard input in X11 to listen to Escape. */
 	activateWindow();
 }
 
 OBSProjector::~OBSProjector()
 {
 	obs_display_remove_draw_callback(GetDisplay(), OBSRender, this);
-
-	//App()->DecrementSleepInhibition();
 
 	screen = nullptr;
 }

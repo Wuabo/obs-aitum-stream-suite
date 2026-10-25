@@ -310,45 +310,6 @@ void vendor_request_stop_all_recordings(obs_data_t *request_data, obs_data_t *re
 	obs_data_set_bool(response_data, "success", true);
 }
 
-void vendor_request_save_backtrack(obs_data_t *request_data, obs_data_t *response_data, void *)
-{
-	const char *output_name = obs_data_get_string(request_data, "output");
-	if (output_name[0] == '\0') {
-		obs_data_set_string(response_data, "error", "'output' not set");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-
-	std::string saveName = "AitumStreamSuiteSaveBacktrack";
-	saveName += output_name;
-
-	struct find_hotkey {
-		obs_hotkey_t *hotkey;
-		const char *name;
-	};
-	find_hotkey t = {};
-	t.name = saveName.c_str();
-	obs_enum_hotkeys(
-		[](void *param, obs_hotkey_id id, obs_hotkey_t *key) {
-			UNUSED_PARAMETER(id);
-			const auto hp = (struct find_hotkey *)param;
-			const auto hn = obs_hotkey_get_name(key);
-			if (strcmp(hp->name, hn) == 0) {
-				hp->hotkey = key;
-			}
-			return true;
-		},
-		&t);
-	if (t.hotkey) {
-		obs_hotkey_trigger_routed_callback(obs_hotkey_get_id(t.hotkey), true);
-		obs_hotkey_trigger_routed_callback(obs_hotkey_get_id(t.hotkey), false);
-		obs_data_set_bool(response_data, "success", true);
-		return;
-	}
-	obs_data_set_string(response_data, "error", "'output' not found");
-	obs_data_set_bool(response_data, "success", false);
-}
-
 void vendor_request_add_chapter(obs_data_t *request_data, obs_data_t *response_data, void *)
 {
 	const char *output_name = obs_data_get_string(request_data, "output");
@@ -708,7 +669,6 @@ void load_obs_websocket()
 	obs_websocket_vendor_register_request(vendor, "stop_all_streams", vendor_request_stop_all_streams, nullptr);
 	obs_websocket_vendor_register_request(vendor, "start_all_recordings", vendor_request_start_all_recordings, nullptr);
 	obs_websocket_vendor_register_request(vendor, "stop_all_recordings", vendor_request_stop_all_recordings, nullptr);
-	obs_websocket_vendor_register_request(vendor, "save_backtrack", vendor_request_save_backtrack, nullptr);
 
 	obs_websocket_vendor_register_request(vendor, "add_chapter", vendor_request_add_chapter, nullptr);
 
@@ -751,7 +711,6 @@ void unload_obs_websocket()
 	obs_websocket_vendor_unregister_request(vendor, "stop_all_streams");
 	obs_websocket_vendor_unregister_request(vendor, "start_all_recordings");
 	obs_websocket_vendor_unregister_request(vendor, "stop_all_recordings");
-	obs_websocket_vendor_unregister_request(vendor, "save_backtrack");
 
 	obs_websocket_vendor_unregister_request(vendor, "add_chapter");
 
