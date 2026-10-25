@@ -13,7 +13,6 @@
 #include <QTabBar>
 #include <QTimer>
 #include <QToolBar>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 extern std::list<CanvasDock *> canvas_docks;
@@ -100,56 +99,38 @@ void KeepDockFromShrinking(QDockWidget *dock)
 	}
 }
 
-/* OBSDock QToolBar QToolButton uses margin 1px. A bar built outside the
- * dock keeps the tighter spacing after polish, so the scenes actions sit
- * closer together than the native bar. Keep the themed icon and add only
- * that margin. */
-void MatchScenesToolbarSpacing(QWidget *pane)
+/* Same metrics as OBSBasic.ui scenesToolbar. A local stylesheet drops
+ * Yami's max icon size and draws the actions larger than the native bar. */
+void MatchNativeToolbar(QWidget *pane, const char *name, QWidget *nativeWidget)
 {
 	if (!pane) {
 		return;
 	}
-	auto *toolbar = pane->findChild<QToolBar *>(QString::fromUtf8("scenesToolbar"));
-	if (!toolbar) {
+	auto *toolbar = pane->findChild<QToolBar *>(QString::fromUtf8(name));
+	auto *native = qobject_cast<QToolBar *>(nativeWidget);
+	if (!toolbar || !native) {
 		return;
 	}
-	toolbar->setContentsMargins(0, 0, 0, 0);
-	toolbar->setMaximumHeight(32);
-	const auto buttons = toolbar->findChildren<QToolButton *>();
-	for (QToolButton *button : buttons) {
-		const QIcon themed = button->icon();
-		const int hint = button->sizeHint().width();
-		const int icon = toolbar->iconSize().width();
-		int pad = hint > icon ? (hint - icon) / 2 : -1;
-		if (pad > 6) {
-			pad = -1;
+	toolbar->setStyleSheet(QString());
+	toolbar->setIconSize(native->iconSize());
+	toolbar->setFloatable(native->isFloatable());
+	toolbar->setMovable(native->isMovable());
+	toolbar->setToolButtonStyle(native->toolButtonStyle());
+	toolbar->setContentsMargins(native->contentsMargins());
+	if (toolbar->layout() && native->layout()) {
+		toolbar->layout()->setContentsMargins(native->layout()->contentsMargins());
+		toolbar->layout()->setSpacing(native->layout()->spacing());
+	}
+	toolbar->style()->unpolish(toolbar);
+	toolbar->style()->polish(toolbar);
+	const auto buttons = toolbar->findChildren<QWidget *>();
+	for (QWidget *button : buttons) {
+		button->setStyleSheet(QString());
+		if (!button->style()) {
+			continue;
 		}
-		QString sheet = QString::fromUtf8(
-			"QToolButton {"
-			"  margin-left: 1px;"
-			"  margin-right: 1px;"
-			"  background: transparent;"
-			"  border: 1px solid transparent;"
-			"}"
-			"QToolButton:hover { border-color: rgb(97, 97, 97); }"
-			"QToolButton:disabled { background: rgb(16, 16, 16); }");
-		if (pad >= 0) {
-			sheet = QString::fromUtf8(
-					"QToolButton {"
-					"  margin-left: 1px;"
-					"  margin-right: 1px;"
-					"  padding: %1px;"
-					"  background: transparent;"
-					"  border: 1px solid transparent;"
-					"}"
-					"QToolButton:hover { border-color: rgb(97, 97, 97); }"
-					"QToolButton:disabled { background: rgb(16, 16, 16); }")
-					.arg(pad);
-		}
-		button->setStyleSheet(sheet);
-		if (!themed.isNull()) {
-			button->setIcon(themed);
-		}
+		button->style()->unpolish(button);
+		button->style()->polish(button);
 	}
 }
 
@@ -186,7 +167,7 @@ public:
 		if (pane) {
 			layout->addWidget(pane);
 			PolishDockWidgets(pane);
-			MatchScenesToolbarSpacing(pane);
+			MatchNativeToolbar(pane, "scenesToolbar", nativeScenesToolbar);
 		}
 	}
 
@@ -217,6 +198,7 @@ public:
 		sources = new SourcesDock(this);
 		layout->addWidget(sources);
 		PolishDockWidgets(sources);
+		MatchNativeToolbar(sources, "sourcesToolbar", nativeSourcesToolbar);
 
 		if (dock) {
 			connect(dock, &CanvasDock::editingSceneChanged, this, [this] { SyncScene(); });
