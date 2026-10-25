@@ -1,4 +1,3 @@
-#include "../version.h"
 #include "config-dialog.hpp"
 #include "ffmpeg-output-dialog.hpp"
 #include "obs-module.h"
@@ -97,12 +96,21 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	listWidget->setFixedWidth(160);
 	listWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
+	/* Prefer theme:Dark SVGs — :/settings paths are the black System-theme assets. */
+	const bool dark = obs_frontend_is_theme_dark();
+	const QString canvasIconPath =
+		dark ? QStringLiteral("theme:Dark/settings/output.svg")
+		     : QStringLiteral(":/settings/images/settings/output.svg");
+	const QString outputIconPath =
+		dark ? QStringLiteral("theme:Dark/settings/stream.svg")
+		     : QStringLiteral(":/settings/images/settings/stream.svg");
+
 	QListWidgetItem *listwidgetitem = new QListWidgetItem(listWidget);
-	listwidgetitem->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/output.svg")));
+	listwidgetitem->setIcon(QIcon(canvasIconPath));
 	listwidgetitem->setText(QString::fromUtf8(obs_module_text("Canvas")));
 
 	listwidgetitem = new QListWidgetItem(listWidget);
-	listwidgetitem->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/stream.svg")));
+	listwidgetitem->setIcon(QIcon(outputIconPath));
 	listwidgetitem->setText(QString::fromUtf8(obs_module_text("Output")));
 
 	listwidgetitem = new QListWidgetItem(listWidget);
@@ -320,10 +328,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	outputsPage->setLayout(outputsLayout);
 
-	const auto version =
-		new QLabel(QString::fromUtf8(obs_module_text("Version")) + " " + QString::fromUtf8(PROJECT_VERSION));
-	version->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-
 	newVersion = new QLabel;
 	newVersion->setProperty("themeID", "warning");
 	newVersion->setProperty("class", "text-warning");
@@ -337,8 +341,8 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
 	QHBoxLayout *bottomLayout = new QHBoxLayout;
-	bottomLayout->addWidget(version, 1, Qt::AlignLeft);
-	bottomLayout->addWidget(newVersion, 1, Qt::AlignLeft);
+	bottomLayout->addWidget(newVersion, 0, Qt::AlignLeft);
+	bottomLayout->addStretch(1);
 	bottomLayout->addWidget(buttonBox, 0, Qt::AlignRight);
 
 	QHBoxLayout *contentLayout = new QHBoxLayout;

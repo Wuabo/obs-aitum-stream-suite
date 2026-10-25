@@ -6,15 +6,71 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QFont>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPainter>
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QStackedWidget>
-#include <QToolButton>
+#include <QTimer>
 #include <QVBoxLayout>
+
+namespace {
+
+class ServiceTileButton : public QAbstractButton {
+public:
+	ServiceTileButton(const QString &title, const QIcon &icon, QWidget *parent = nullptr) : QAbstractButton(parent)
+	{
+		setCursor(Qt::PointingHandCursor);
+		setFocusPolicy(Qt::ClickFocus);
+		setFixedWidth(120);
+		setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+		auto *lay = new QVBoxLayout(this);
+		lay->setContentsMargins(8, 10, 8, 10);
+		lay->setSpacing(6);
+		lay->setAlignment(Qt::AlignCenter);
+
+		auto *iconLabel = new QLabel(this);
+		iconLabel->setFixedSize(32, 32);
+		iconLabel->setPixmap(icon.pixmap(32, 32));
+		iconLabel->setAlignment(Qt::AlignCenter);
+		iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+		lay->addWidget(iconLabel, 0, Qt::AlignHCenter);
+
+		auto *textLabel = new QLabel(title, this);
+		textLabel->setAlignment(Qt::AlignCenter);
+		textLabel->setWordWrap(true);
+		textLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+		lay->addWidget(textLabel, 0, Qt::AlignHCenter);
+
+		adjustSize();
+		setFixedHeight(sizeHint().height());
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		QPainter p(this);
+		p.setRenderHint(QPainter::Antialiasing, true);
+
+		QColor bg = palette().color(QPalette::Button);
+		if (isDown()) {
+			bg = palette().color(QPalette::Dark);
+		} else if (underMouse()) {
+			bg = palette().color(QPalette::Mid);
+		}
+
+		p.setPen(QPen(palette().color(underMouse() || hasFocus() ? QPalette::Highlight : QPalette::Mid), 1));
+		p.setBrush(bg);
+		p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6.0, 6.0);
+	}
+};
+
+} // namespace
 
 bool isTwitchServer(QString outputServer)
 {
@@ -240,19 +296,38 @@ QPushButton *StreamOutputDialog::generateBackButton()
 	return button;
 }
 
-QToolButton *StreamOutputDialog::selectionButton(std::string title, QIcon icon, int selectionStep)
+void StreamOutputDialog::fitStackedPage(int index)
 {
-	auto button = new QToolButton;
+	if (!stackedWidget || !layout()) {
+		return;
+	}
 
-	button->setText(QString::fromUtf8(title));
-	button->setIcon(icon);
-	button->setIconSize(QSize(32, 32));
-	button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-	button->setMinimumSize(110, 90);
-	button->setMaximumSize(110, 90);
+	setMinimumSize(0, 0);
+	setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+	stackedWidget->setMinimumSize(0, 0);
+	stackedWidget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
 
-	connect(button, &QPushButton::clicked, [this, selectionStep] { stackedWidget->setCurrentIndex(selectionStep); });
+	if (index == 0) {
+		QWidget *page = stackedWidget->widget(0);
+		if (!page) {
+			return;
+		}
+		page->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+		page->adjustSize();
+		const QSize content = page->sizeHint();
+		stackedWidget->setFixedSize(content);
+		const QMargins m = layout()->contentsMargins();
+		setFixedSize(content.width() + m.left() + m.right(), content.height() + m.top() + m.bottom());
+	} else {
+		stackedWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		setFixedSize(600, 400);
+	}
+}
 
+QAbstractButton *StreamOutputDialog::selectionButton(const QString &title, const QIcon &icon, int selectionStep)
+{
+	auto *button = new ServiceTileButton(title, icon, this);
+	connect(button, &QAbstractButton::clicked, this, [this, selectionStep] { stackedWidget->setCurrentIndex(selectionStep); });
 	return button;
 }
 
@@ -292,15 +367,10 @@ StreamOutputDialog::StreamOutputDialog(QDialog *parent, QStringList _otherNames)
 	//
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
-	setFixedSize(650, 400);
 
 	stackedWidget = new QStackedWidget;
 
-
-	// Service selection page
 	stackedWidget->addWidget(WizardServicePage());
-
-	// Pages for each service
 	stackedWidget->addWidget(WizardInfoKick());
 	stackedWidget->addWidget(WizardInfoYouTube());
 	stackedWidget->addWidget(WizardInfoTwitter());
@@ -311,16 +381,19 @@ StreamOutputDialog::StreamOutputDialog(QDialog *parent, QStringList _otherNames)
 	stackedWidget->addWidget(WizardInfoFacebook());
 
 	stackedWidget->setCurrentIndex(0);
+	stackedWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+	setWindowTitle(QString::fromUtf8(obs_module_text("NewStreamOutputWindowTitle")));
 
-	stackedWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	setWindowTitle(obs_module_text("NewStreamOutputWindowTitle"));
+	auto *stackedLayout = new QVBoxLayout(this);
+	stackedLayout->setContentsMargins(16, 12, 16, 12);
+	stackedLayout->setSpacing(0);
+	stackedLayout->addWidget(stackedWidget);
 
-	auto stackedLayout = new QVBoxLayout;
-	stackedLayout->setContentsMargins(0, 0, 0, 0);
-	stackedLayout->addWidget(stackedWidget, 1);
+	connect(stackedWidget, &QStackedWidget::currentChanged, this, &StreamOutputDialog::fitStackedPage);
 
-	setLayout(stackedLayout);
 	show();
+	/* After show, layouts have final metrics — shrink to the service grid. */
+	QTimer::singleShot(0, this, [this] { fitStackedPage(stackedWidget->currentIndex()); });
 }
 
 // Edit mode
@@ -352,9 +425,10 @@ StreamOutputDialog::StreamOutputDialog(QDialog *parent, QString name, QString se
 	//
 	setModal(true);
 	setContentsMargins(0, 0, 0, 0);
-	setFixedSize(650, 400);
+	setFixedSize(600, 400);
 
-	auto layout = new QVBoxLayout();
+	auto *layout = new QVBoxLayout(this);
+	layout->setContentsMargins(16, 16, 16, 16);
 
 	// Add the appropriate page to the layout based upon the server url
 	if (isTwitchServer(outputServer)) { // twitch
@@ -376,9 +450,7 @@ StreamOutputDialog::StreamOutputDialog(QDialog *parent, QString name, QString se
 		layout->addWidget(WizardInfoUnknown(true));
 	}
 
-	setLayout(layout);
-
-	setWindowTitle(obs_module_text("EditStreamOutputWindowTitle"));
+	setWindowTitle(QString::fromUtf8(obs_module_text("EditStreamOutputWindowTitle")));
 
 	show();
 }
@@ -390,45 +462,48 @@ StreamOutputDialog::~StreamOutputDialog()
 
 QWidget *StreamOutputDialog::WizardServicePage()
 {
-	auto page = new QWidget(this);
-	auto pageLayout = new QVBoxLayout;
+	auto *page = new QWidget(this);
+	page->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+
+	auto *pageLayout = new QVBoxLayout(page);
+	pageLayout->setContentsMargins(0, 0, 0, 0);
+	pageLayout->setSpacing(8);
 	pageLayout->setAlignment(Qt::AlignTop);
 
-	auto description = new QLabel(QString::fromUtf8(obs_module_text("NewOutputSelectService")));
+	auto *description = new QLabel(QString::fromUtf8(obs_module_text("NewOutputSelectService")), page);
 	description->setWordWrap(true);
-	pageLayout->addWidget(description);
+	description->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	/* Without Maximum, a word-wrapped QLabel eats all free height and
+	 * creates the huge empty gap above the service buttons. */
+	description->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+	pageLayout->addWidget(description, 0, Qt::AlignTop);
 
-	// layout for service selection
-	auto selectionLayout = new QVBoxLayout;
-	selectionLayout->setAlignment(Qt::AlignCenter);
+	auto *grid = new QGridLayout;
+	grid->setContentsMargins(0, 0, 0, 0);
+	grid->setHorizontalSpacing(8);
+	grid->setVerticalSpacing(8);
 
-	auto spacerTest = new QSpacerItem(20, 45, QSizePolicy::Fixed, QSizePolicy::Fixed);
+	struct ServiceTile {
+		QString title;
+		QIcon *icon;
+		int step;
+	};
+	const ServiceTile tiles[] = {
+		{QStringLiteral("Twitch"), &platformIconTwitch, 5},
+		{QStringLiteral("YouTube"), &platformIconYouTube, 2},
+		{QStringLiteral("TikTok"), &platformIconTikTok, 7},
+		{QStringLiteral("Facebook"), &platformIconFacebook, 8},
+		{QStringLiteral("Trovo"), &platformIconTrovo, 6},
+		{QStringLiteral("X (Twitter)"), &platformIconTwitter, 3},
+		{QStringLiteral("Kick"), &platformIconKick, 1},
+		{QString::fromUtf8(obs_module_text("OtherService")), &platformIconUnknown, 4},
+	};
 
-	pageLayout->addSpacerItem(spacerTest);
+	for (int i = 0; i < 8; i++) {
+		grid->addWidget(selectionButton(tiles[i].title, *tiles[i].icon, tiles[i].step), i / 4, i % 4);
+	}
 
-	// row 1
-	auto rowOne = new QHBoxLayout;
-
-	rowOne->addWidget(selectionButton("Twitch", platformIconTwitch, 5));
-	rowOne->addWidget(selectionButton("YouTube", platformIconYouTube, 2));
-	rowOne->addWidget(selectionButton("TikTok", platformIconTikTok, 7));
-	rowOne->addWidget(selectionButton("Facebook", platformIconFacebook, 8));
-
-	selectionLayout->addLayout(rowOne);
-
-	// row 2
-	auto rowTwo = new QHBoxLayout;
-
-	rowTwo->addWidget(selectionButton("Trovo", platformIconTrovo, 6));
-	rowTwo->addWidget(selectionButton("X (Twitter)", platformIconTwitter, 3));
-	rowTwo->addWidget(selectionButton("Kick", platformIconKick, 1));
-	rowTwo->addWidget(selectionButton(obs_module_text("OtherService"), platformIconUnknown, 4));
-
-	selectionLayout->addLayout(rowTwo);
-
-	//
-	pageLayout->addLayout(selectionLayout);
-	page->setLayout(pageLayout);
+	pageLayout->addLayout(grid, 0);
 
 	return page;
 }

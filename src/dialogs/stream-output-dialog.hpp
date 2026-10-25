@@ -1,9 +1,9 @@
 #pragma once
 
+#include <QAbstractButton>
 #include <QDialog>
 #include <QWidget>
 #include <QStackedWidget>
-#include <QToolButton>
 #include <QComboBox>
 #include <QPushButton>
 #include <QHBoxLayout>
@@ -16,7 +16,8 @@ class StreamOutputDialog : public QDialog {
 private:
 	QWidget *WizardServicePage();
 
-	QToolButton *selectionButton(std::string title, QIcon icon, int selectionStep);
+	QAbstractButton *selectionButton(const QString &title, const QIcon &icon, int selectionStep);
+	void fitStackedPage(int index);
 
 	QWidget *WizardInfoKick(bool edit = false);
 	QWidget *WizardInfoYouTube(bool edit = false);
