@@ -1,22 +1,17 @@
 
-#include "../docks/browser-dock.hpp"
 #include "../docks/canvas-clone-dock.hpp"
 #include "../docks/canvas-dock.hpp"
-#include "../docks/live-scenes-dock.hpp"
 #include "../docks/output-dock.hpp"
 #include "../version.h"
 #include "obs-websocket-api.h"
 #include <list>
 #include <QDockWidget>
 #include <QMainWindow>
-#include <QTabBar>
 
 obs_websocket_vendor vendor = nullptr;
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
 extern OutputDock *output_dock;
-extern LiveScenesDock *live_scenes_dock;
-extern QTabBar *modesTabBar;
 
 void vendor_request_version(obs_data_t *request_data, obs_data_t *response_data, void *)
 {
@@ -370,84 +365,24 @@ void vendor_request_add_chapter(obs_data_t *request_data, obs_data_t *response_d
 void vendor_request_get_dock_modes(obs_data_t *request_data, obs_data_t *response_data, void *)
 {
 	UNUSED_PARAMETER(request_data);
-	if (!modesTabBar) {
-		obs_data_set_string(response_data, "error", "Modes tab bar not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
+	/* Dock layout modes removed — OBS owns dock placement. */
 	auto modes = obs_data_array_create();
-	for (int i = 0; i < modesTabBar->count(); i++) {
-		auto mode = obs_data_create();
-		auto d = modesTabBar->tabData(i);
-		if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-			obs_data_set_string(mode, "name", d.toString().toUtf8().constData());
-			obs_data_set_bool(mode, "fixed", true);
-		} else {
-			obs_data_set_string(mode, "name", modesTabBar->tabText(i).toUtf8().constData());
-			obs_data_set_bool(mode, "fixed", false);
-		}
-		obs_data_array_push_back(modes, mode);
-		obs_data_release(mode);
-	}
+	auto mode = obs_data_create();
+	obs_data_set_string(mode, "name", "default");
+	obs_data_set_bool(mode, "fixed", true);
+	obs_data_array_push_back(modes, mode);
+	obs_data_release(mode);
 	obs_data_set_array(response_data, "modes", modes);
 	obs_data_array_release(modes);
-	auto index = modesTabBar->currentIndex();
-	if (index >= 0) {
-		auto d = modesTabBar->tabData(index);
-		if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-			obs_data_set_string(response_data, "current", d.toString().toUtf8().constData());
-		} else {
-			obs_data_set_string(response_data, "current", modesTabBar->tabText(index).toUtf8().constData());
-		}
-	}
+	obs_data_set_string(response_data, "current", "default");
 	obs_data_set_bool(response_data, "success", true);
 }
 
 void vendor_request_switch_dock_mode(obs_data_t *request_data, obs_data_t *response_data, void *)
 {
-	if (!modesTabBar) {
-		obs_data_set_string(response_data, "error", "Modes tab bar not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto item = obs_data_item_byname(request_data, "mode");
-	if (!item) {
-		obs_data_set_string(response_data, "error", "'mode' not set");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	if (obs_data_item_gettype(item) == OBS_DATA_NUMBER) {
-		auto mode = obs_data_item_get_int(item);
-		if (mode >= 0 && mode < modesTabBar->count()) {
-			QMetaObject::invokeMethod(modesTabBar, "setCurrentIndex", Q_ARG(int, (int)mode));
-			obs_data_item_release(&item);
-			obs_data_set_bool(response_data, "success", true);
-			return;
-		}
-	} else if (obs_data_item_gettype(item) == OBS_DATA_STRING) {
-		auto mode = QString::fromUtf8(obs_data_item_get_string(item));
-		for (int i = 0; i < modesTabBar->count(); i++) {
-			auto d = modesTabBar->tabData(i);
-			if (!d.isNull() && d.isValid() && d.toString() == mode) {
-				if (modesTabBar->currentIndex() != i) {
-					QMetaObject::invokeMethod(modesTabBar, "setCurrentIndex", Q_ARG(int, i));
-				}
-				obs_data_item_release(&item);
-				obs_data_set_bool(response_data, "success", true);
-				return;
-			} else if (modesTabBar->tabText(i) == mode) {
-				if (modesTabBar->currentIndex() != i) {
-					QMetaObject::invokeMethod(modesTabBar, "setCurrentIndex", Q_ARG(int, i));
-				}
-				obs_data_item_release(&item);
-				obs_data_set_bool(response_data, "success", true);
-				return;
-			}
-		}
-	}
-	obs_data_set_string(response_data, "error", "'mode' invalid");
-	obs_data_set_bool(response_data, "success", false);
-	obs_data_item_release(&item);
+	UNUSED_PARAMETER(request_data);
+	/* No-op: plugin no longer manages dock layout modes. */
+	obs_data_set_bool(response_data, "success", true);
 }
 
 void vendor_request_get_docks(obs_data_t *request_data, obs_data_t *response_data, void *)
@@ -506,8 +441,6 @@ void vendor_request_dock_show(obs_data_t *request_data, obs_data_t *response_dat
 	obs_data_set_bool(response_data, "success", false);
 }
 
-void fill_central_widget();
-
 void vendor_request_dock_hide(obs_data_t *request_data, obs_data_t *response_data, void *)
 {
 	const char *dock_name = obs_data_get_string(request_data, "dock");
@@ -526,67 +459,13 @@ void vendor_request_dock_hide(obs_data_t *request_data, obs_data_t *response_dat
 	auto docks = main_window->findChildren<QDockWidget *>();
 	for (auto &dock : docks) {
 		if (dock->objectName() == dn) {
-			QMetaObject::invokeMethod(dock, [dock] {
-				dock->hide();
-				fill_central_widget();
-			});
-
+			QMetaObject::invokeMethod(dock, "hide");
 			obs_data_set_bool(response_data, "success", true);
 			return;
 		}
 	}
 	obs_data_set_string(response_data, "error", "'dock' not found");
 	obs_data_set_bool(response_data, "success", false);
-}
-
-void vendor_request_get_live_scenes(obs_data_t *request_data, obs_data_t *response_data, void *)
-{
-	UNUSED_PARAMETER(request_data);
-	if (!live_scenes_dock) {
-		obs_data_set_string(response_data, "error", "Live Scenes dock not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto sa = live_scenes_dock->GetLiveScenesArray();
-	obs_data_set_bool(response_data, "success", true);
-	obs_data_set_array(response_data, "live_scenes", sa);
-	obs_data_array_release(sa);
-}
-
-void vendor_request_live_scenes_add(obs_data_t *request_data, obs_data_t *response_data, void *)
-{
-	const char *scene_name = obs_data_get_string(request_data, "scene");
-	if (scene_name[0] == '\0') {
-		obs_data_set_string(response_data, "error", "'scene' not set");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	if (!live_scenes_dock) {
-		obs_data_set_string(response_data, "error", "Live Scenes dock not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto sn = QString::fromUtf8(scene_name);
-	QMetaObject::invokeMethod(live_scenes_dock, [sn] { live_scenes_dock->AddLiveScene(sn); });
-	obs_data_set_bool(response_data, "success", true);
-}
-
-void vendor_request_live_scenes_remove(obs_data_t *request_data, obs_data_t *response_data, void *)
-{
-	const char *scene_name = obs_data_get_string(request_data, "scene");
-	if (scene_name[0] == '\0') {
-		obs_data_set_string(response_data, "error", "'scene' not set");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	if (!live_scenes_dock) {
-		obs_data_set_string(response_data, "error", "Live Scenes dock not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto sn = QString::fromUtf8(scene_name);
-	QMetaObject::invokeMethod(live_scenes_dock, [sn] { live_scenes_dock->RemoveLiveScene(sn); });
-	obs_data_set_bool(response_data, "success", true);
 }
 
 void vendor_request_dock_show_panel(obs_data_t *request_data, obs_data_t *response_data, void *)
@@ -810,60 +689,6 @@ void vendor_request_transitions_remove(obs_data_t *request_data, obs_data_t *res
 	obs_data_set_bool(response_data, "success", false);
 }
 
-void vendor_request_refresh_browser_panel(obs_data_t *request_data, obs_data_t *response_data, void *)
-{
-	auto panel_name = obs_data_get_string(request_data, "panel");
-	if (panel_name[0] == '\0') {
-		obs_data_set_string(response_data, "error", "'panel' not set");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto pn = QString::fromUtf8(panel_name);
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		obs_data_set_string(response_data, "error", "Main window not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto bds = main_window->findChildren<BrowserDock *>();
-	for (auto bd : bds) {
-		if (bd->objectName() == pn) {
-			bd->Refresh();
-			obs_data_set_bool(response_data, "success", true);
-			return;
-		}
-	}
-	obs_data_set_string(response_data, "error", "'panel' not found");
-	obs_data_set_bool(response_data, "success", false);
-}
-
-void vendor_request_reset_browser_panel(obs_data_t *request_data, obs_data_t *response_data, void *)
-{
-	auto panel_name = obs_data_get_string(request_data, "panel");
-	if (panel_name[0] == '\0') {
-		obs_data_set_string(response_data, "error", "'panel' not set");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto pn = QString::fromUtf8(panel_name);
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		obs_data_set_string(response_data, "error", "Main window not available");
-		obs_data_set_bool(response_data, "success", false);
-		return;
-	}
-	auto bds = main_window->findChildren<BrowserDock *>();
-	for (auto bd : bds) {
-		if (bd->objectName() == pn) {
-			bd->Reset();
-			obs_data_set_bool(response_data, "success", true);
-			return;
-		}
-	}
-	obs_data_set_string(response_data, "error", "'panel' not found");
-	obs_data_set_bool(response_data, "success", false);
-}
-
 void load_obs_websocket()
 {
 	vendor = obs_websocket_register_vendor("aitum-stream-suite");
@@ -893,10 +718,6 @@ void load_obs_websocket()
 	obs_websocket_vendor_register_request(vendor, "dock_show", vendor_request_dock_show, nullptr);
 	obs_websocket_vendor_register_request(vendor, "dock_hide", vendor_request_dock_hide, nullptr);
 
-	obs_websocket_vendor_register_request(vendor, "get_live_scenes", vendor_request_get_live_scenes, nullptr);
-	obs_websocket_vendor_register_request(vendor, "live_scenes_add", vendor_request_live_scenes_add, nullptr);
-	obs_websocket_vendor_register_request(vendor, "live_scenes_remove", vendor_request_live_scenes_remove, nullptr);
-
 	obs_websocket_vendor_register_request(vendor, "canvas_dock_show_panel", vendor_request_dock_show_panel, nullptr);
 	obs_websocket_vendor_register_request(vendor, "canvas_dock_hide_panel", vendor_request_dock_hide_panel, nullptr);
 
@@ -904,9 +725,6 @@ void load_obs_websocket()
 	obs_websocket_vendor_register_request(vendor, "switch_transition", vendor_request_switch_transition, nullptr);
 	obs_websocket_vendor_register_request(vendor, "transitions_add", vendor_request_transitions_add, nullptr);
 	obs_websocket_vendor_register_request(vendor, "transitions_remove", vendor_request_transitions_remove, nullptr);
-
-	obs_websocket_vendor_register_request(vendor, "refresh_browser_panel", vendor_request_refresh_browser_panel, nullptr);
-	obs_websocket_vendor_register_request(vendor, "reset_browser_panel", vendor_request_reset_browser_panel, nullptr);
 }
 
 void unload_obs_websocket()
@@ -943,10 +761,6 @@ void unload_obs_websocket()
 	obs_websocket_vendor_unregister_request(vendor, "dock_show");
 	obs_websocket_vendor_unregister_request(vendor, "dock_hide");
 
-	obs_websocket_vendor_unregister_request(vendor, "get_live_scenes");
-	obs_websocket_vendor_unregister_request(vendor, "live_scenes_add");
-	obs_websocket_vendor_unregister_request(vendor, "live_scenes_remove");
-
 	obs_websocket_vendor_unregister_request(vendor, "canvas_dock_show_panel");
 	obs_websocket_vendor_unregister_request(vendor, "canvas_dock_hide_panel");
 
@@ -954,7 +768,4 @@ void unload_obs_websocket()
 	obs_websocket_vendor_unregister_request(vendor, "switch_transition");
 	obs_websocket_vendor_unregister_request(vendor, "transitions_add");
 	obs_websocket_vendor_unregister_request(vendor, "transitions_remove");
-
-	obs_websocket_vendor_unregister_request(vendor, "refresh_browser_panel");
-	obs_websocket_vendor_unregister_request(vendor, "reset_browser_panel");
 }

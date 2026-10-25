@@ -1,12 +1,9 @@
 #include "dialogs/config-dialog.hpp"
 #include "dialogs/name-dialog.hpp"
-#include "dialogs/scene-collection-wizard.hpp"
-#include "docks/browser-dock.hpp"
 #include "docks/canvas-clone-dock.hpp"
 #include "docks/canvas-dock.hpp"
-#include "docks/capture-dock.hpp"
+#include "docks/canvas-previews-dock.hpp"
 #include "docks/filters-dock.hpp"
-#include "docks/live-scenes-dock.hpp"
 #include "docks/output-dock.hpp"
 #include "docks/properties-dock.hpp"
 #include "docks/scenes-dock.hpp"
@@ -14,288 +11,74 @@
 #include "docks/stats-dock.hpp"
 #include "docks/transform-dock.hpp"
 #include "docks/transitions-dock.hpp"
-#include "utils/file-download.h"
 #include "utils/icon.hpp"
 #include "utils/obs-websocket-api.h"
-#include "utils/widgets/pixmap-label.hpp"
 #include "version.h"
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <QApplication>
-#include <QDesktopServices>
 #include <QDockWidget>
 #include <QMainWindow>
 #include <QMap>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QPainter>
+#include <QLabel>
 #include <QPlainTextEdit>
-#include <QTabWidget>
+#include <QPointer>
+#include <QStyle>
+#include <QTimer>
 #include <QToolBar>
-#include <random>
+#include <QToolButton>
 #include <util/dstr.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_AUTHOR("Aitum");
 OBS_MODULE_USE_DEFAULT_LOCALE("aitum-stream-suite", "en-US")
 
-download_info_t *version_download_info = nullptr;
 obs_data_t *current_profile_config = nullptr;
-QTabBar *modesTabBar = nullptr;
 QToolBar *toolbar = nullptr;
-QString modesTab;
 
-QList<QAction *> partnerBlockActions;
 QAction *studioModeAction = nullptr;
 
 OBSBasicSettings *configDialog = nullptr;
 OutputDock *output_dock = nullptr;
-PropertiesDock *properties_dock = nullptr;
-FiltersDock *filters_dock = nullptr;
-TransformDock *transform_dock = nullptr;
-LiveScenesDock *live_scenes_dock = nullptr;
+QPointer<PropertiesDock> properties_dock;
+QPointer<FiltersDock> filters_dock;
+QPointer<TransformDock> transform_dock;
 CanvasDock *component_dock = nullptr;
 StatsDock *stats_dock = nullptr;
 ScenesDock *scenes_dock = nullptr;
 SourcesDock *sources_dock = nullptr;
 TransitionsDock *transitions_dock = nullptr;
 
-QString newer_version_available;
-
-QTimer load_dock_state_timer;
-QList<QString> loaded_docks;
-
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
 extern obs_websocket_vendor vendor;
 
-std::list<QFrame *> empty_docks;
-std::vector<std::tuple<std::string, std::string, std::string>> extensions = {};
-
 extern QWidget *aitumSettingsWidget;
 
 static bool finished_loading = false;
+static bool scene_collection_changing = false;
 
-void AskUpdate()
-{
-	auto parts = newer_version_available.split(".");
-	if (parts.count() < 3) {
-		return;
-	}
-	int major = parts.value(0).toInt();
-	int minor = parts.value(1).toInt();
-	int patch = parts.value(2).toInt();
-	auto sv = MAKE_SEMANTIC_VERSION(major, minor, patch);
-	auto user_config = obs_frontend_get_user_config();
-
-	auto skip_version = user_config ? config_get_int(user_config, "Aitum", "skip_version") : 0;
-	if (sv == skip_version) {
-		return;
-	}
-
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-
-	QMessageBox mb(QMessageBox::Question, QString::fromUtf8(obs_frontend_get_locale_string("Updater.Title")),
-		       QString::fromUtf8(obs_frontend_get_locale_string("Updater.Text")) + " " +
-			       QString::fromUtf8(obs_module_text("AitumStreamSuite")) + " " + newer_version_available,
-		       QMessageBox::StandardButtons(), main_window);
-	auto update = mb.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Updater.UpdateNow")), QMessageBox::YesRole);
-	auto remind =
-		mb.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Updater.RemindMeLater")), QMessageBox::RejectRole);
-	auto skip = mb.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Updater.Skip")), QMessageBox::NoRole);
-	mb.setDefaultButton(remind);
-	mb.exec();
-
-	if (mb.clickedButton() == update) {
-		QDesktopServices::openUrl(QUrl(QString::fromUtf8("https://aitum.tv/download/stream-suite")));
-	} else if (mb.clickedButton() == skip && user_config) {
-		config_set_int(user_config, "Aitum", "skip_version", sv);
-		config_save_safe(user_config, "tmp", "bak");
-	}
-}
-
-bool version_info_downloaded(void *param, struct file_download_data *file)
-{
-	UNUSED_PARAMETER(param);
-	if (!file || !file->buffer.num) {
-		return true;
-	}
-
-	auto d = obs_data_create_from_json((const char *)file->buffer.array);
-	if (!d) {
-		if (version_download_info) {
-			download_info_destroy(version_download_info);
-			version_download_info = nullptr;
-		}
-		return true;
-	}
-
-	auto data_obj = obs_data_get_obj(d, "data");
-	obs_data_release(d);
-	if (!data_obj) {
-		if (version_download_info) {
-			download_info_destroy(version_download_info);
-			version_download_info = nullptr;
-		}
-		return true;
-	}
-
-	auto version = obs_data_get_string(data_obj, "version");
-	int major;
-	int minor;
-	int patch;
-	if (sscanf(version, "%d.%d.%d", &major, &minor, &patch) == 3) {
-		auto sv = MAKE_SEMANTIC_VERSION(major, minor, patch);
-		if (sv > MAKE_SEMANTIC_VERSION(PROJECT_VERSION_MAJOR, PROJECT_VERSION_MINOR, PROJECT_VERSION_PATCH)) {
-			newer_version_available = QString::fromUtf8(version);
-			QMetaObject::invokeMethod(aitumSettingsWidget, [] {
-				aitumSettingsWidget->setStyleSheet(QString::fromUtf8("background: rgb(192,128,0);"));
-				if (finished_loading) {
-					AskUpdate();
-				}
-			});
-		}
-	}
-
-	obs_data_array_t *blocks = obs_data_get_array(data_obj, "partnerBlocks");
-	if (obs_data_array_count(blocks) > 0) {
-		time_t current_time = time(nullptr);
-		auto partnerBlockTime = (time_t)config_get_int(obs_frontend_get_user_config(), "Aitum", "partner_block");
-		if (current_time < partnerBlockTime || current_time - partnerBlockTime > 1209600) {
-			obs_data_array_addref(blocks);
-			QMetaObject::invokeMethod(
-				toolbar,
-				[blocks] {
-					auto before = studioModeAction;
-					size_t count = obs_data_array_count(blocks);
-					for (size_t i = 0; i < count; i++) {
-						obs_data_t *block = obs_data_array_item(blocks, i);
-						auto block_type = obs_data_get_string(block, "type");
-						if (strcmp(block_type, "LINK") == 0) {
-							auto button = new QPushButton(
-								QString::fromUtf8(obs_data_get_string(block, "label")));
-							button->setStyleSheet(QString::fromUtf8(obs_data_get_string(block, "qss")));
-							auto url = QString::fromUtf8(obs_data_get_string(block, "data"));
-							button->connect(button, &QPushButton::clicked,
-									[url] { QDesktopServices::openUrl(QUrl(url)); });
-							partnerBlockActions.append(toolbar->insertWidget(before, button));
-						} else if (strcmp(block_type, "IMAGE") == 0) {
-							auto image_data = QString::fromUtf8(obs_data_get_string(block, "data"));
-							if (image_data.startsWith("data:image/")) {
-								auto pos = image_data.indexOf(";");
-								auto format = image_data.mid(11, pos - 11);
-								QImage image;
-								if (image.loadFromData(
-									    QByteArray::fromBase64(
-										    image_data.mid(pos + 7).toUtf8().constData()),
-									    format.toUtf8().constData())) {
-									auto label = new AspectRatioPixmapLabel;
-									label->setPixmap(QPixmap::fromImage(image));
-									label->setAlignment(Qt::AlignCenter);
-									label->setStyleSheet(QString::fromUtf8(
-										obs_data_get_string(block, "qss")));
-									partnerBlockActions.append(
-										toolbar->insertWidget(before, label));
-								}
-							}
-						} else if (strcmp(block_type, "LABEL") == 0) {
-							auto label =
-								new QLabel(QString::fromUtf8(obs_data_get_string(block, "label")));
-							label->setOpenExternalLinks(true);
-							label->setStyleSheet(QString::fromUtf8(obs_data_get_string(block, "qss")));
-							partnerBlockActions.append(toolbar->insertWidget(before, label));
-						}
-						obs_data_release(block);
-					}
-					auto close = new QAction("x");
-					close->setToolTip(QString::fromUtf8(obs_module_text("ClosePartnerBlock")));
-					close->connect(close, &QAction::triggered, [] {
-						for (auto &a : partnerBlockActions) {
-							toolbar->removeAction(a);
-						}
-						partnerBlockActions.clear();
-						config_set_int(obs_frontend_get_user_config(), "Aitum", "partner_block",
-							       (int64_t)time(nullptr));
-					});
-					toolbar->insertAction(before, close);
-					partnerBlockActions.append(close);
-					QWidget *spacer = new QWidget();
-					spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-					partnerBlockActions.append(toolbar->insertWidget(before, spacer));
-					obs_data_array_release(blocks);
-				},
-				Qt::BlockingQueuedConnection);
-		}
-	}
-	obs_data_array_release(blocks);
-	obs_data_array_t *ea = obs_data_get_array(data_obj, "extensions");
-	size_t ec = obs_data_array_count(ea);
-	if (ec > 0) {
-		extensions.clear();
-		for (size_t i = 0; i < ec; i++) {
-			obs_data_t *extension = obs_data_array_item(ea, i);
-			extensions.push_back({obs_data_get_string(extension, "name"), obs_data_get_string(extension, "title"),
-					      obs_data_get_string(extension, "url")});
-			obs_data_release(extension);
-		}
-		for (int i = 0; i < modesTabBar->count(); ++i) {
-			if (modesTabBar->tabData(i) == QString::fromUtf8("Extensions")) {
-				modesTabBar->setTabVisible(i, true);
-				break;
-			}
-		}
-	}
-	obs_data_array_release(ea);
-
-	obs_data_release(data_obj);
-
-	if (version_download_info) {
-		download_info_destroy(version_download_info);
-		version_download_info = nullptr;
-	}
-	return true;
-}
+static const QString kDefaultMode = QStringLiteral("default");
 
 void transition_start(void *, calldata_t *)
 {
-	QMetaObject::invokeMethod(live_scenes_dock, "MainSceneChanged", Qt::QueuedConnection);
 	for (const auto &it : canvas_docks) {
 		QMetaObject::invokeMethod(it, "MainSceneChanged", Qt::QueuedConnection);
 	}
 }
 
+/* Persist per-dock widget settings only (canvas panels, stats columns).
+ * OBS owns main-window dock placement — never saveState/restoreState here. */
 void save_dock_state(QString mode)
 {
-	if (mode.isEmpty()) {
-		return;
-	}
 	if (!current_profile_config) {
 		return;
 	}
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	auto state = main_window->saveState();
-	auto b64 = state.toBase64();
-	std::string setting_name = "dock_state_" + mode.toStdString();
-	obs_data_set_string(current_profile_config, setting_name.c_str(), b64.constData());
-	b64 = main_window->saveGeometry().toBase64();
-	obs_data_set_string(current_profile_config, "main_geometry", b64.constData());
-	auto maximized = main_window->isMaximized();
-	auto minimized = main_window->isMinimized();
-	obs_data_set_string(current_profile_config, "main_state", maximized ? "maximized" : minimized ? "minimized" : "normal");
-	auto main_dock = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteMainCanvas"));
-	if (!main_dock) {
-		main_dock = main_window->findChild<QDockWidget *>(QStringLiteral("previewDock"));
-	}
-	if (main_dock) {
-		setting_name = "dock_state_main_restored_" + mode.toStdString();
-		obs_data_set_bool(current_profile_config, setting_name.c_str(), true);
+	if (mode.isEmpty()) {
+		mode = kDefaultMode;
 	}
 	for (const auto &it : canvas_docks) {
 		QMetaObject::invokeMethod(it, "SaveSettings", Q_ARG(bool, false), Q_ARG(QString, mode));
@@ -311,609 +94,28 @@ void save_dock_state(QString mode)
 	}
 }
 
-void fill_central_widget()
-{
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	auto cw = main_window->centralWidget();
-	if (!cw) {
-		return;
-	}
-	auto cw_height = cw->height();
-	auto cw_width = cw->width();
-	auto cw_pos = cw->pos();
-	if (cw_height <= 10 || cw_width <= 10) {
-		return;
-	}
-	if (cw_pos.x() <= -cw_width || cw_pos.y() <= -cw_height || cw_pos.x() > main_window->width() ||
-	    cw_pos.y() > main_window->height()) {
-		return;
-	}
-	auto all_docks = main_window->findChildren<QDockWidget *>();
-	QList<QDockWidget *> visible_docks;
-	QList<QDockWidget *> left_docks;
-	QList<QDockWidget *> right_docks;
-	QList<QDockWidget *> top_docks;
-	QList<QDockWidget *> bottom_docks;
-
-	for (auto &dock : all_docks) {
-		if (dock->isVisible()) {
-			auto area = main_window->dockWidgetArea(dock);
-			visible_docks.append(dock);
-			if (area == Qt::TopDockWidgetArea) {
-				top_docks.append(dock);
-			} else if (area == Qt::BottomDockWidgetArea) {
-				bottom_docks.append(dock);
-			} else if (area == Qt::LeftDockWidgetArea) {
-				left_docks.append(dock);
-			} else if (area == Qt::RightDockWidgetArea) {
-				right_docks.append(dock);
-			}
-		}
-	}
-	QList<QDockWidget *> can_fill_central;
-	for (auto &dock : visible_docks) {
-		auto area = main_window->dockWidgetArea(dock);
-		if (area == Qt::TopDockWidgetArea) {
-			if ((left_docks.isEmpty() || main_window->corner(Qt::TopLeftCorner) != Qt::TopDockWidgetArea) &&
-			    (right_docks.isEmpty() || main_window->corner(Qt::TopRightCorner) != Qt::TopDockWidgetArea)) {
-				can_fill_central.append(dock);
-			}
-		} else if (area == Qt::BottomDockWidgetArea) {
-			if ((left_docks.isEmpty() || main_window->corner(Qt::BottomLeftCorner) != Qt::BottomDockWidgetArea) &&
-			    (right_docks.isEmpty() || main_window->corner(Qt::BottomRightCorner) != Qt::BottomDockWidgetArea)) {
-				can_fill_central.append(dock);
-			}
-		} else if (area == Qt::LeftDockWidgetArea) {
-			if ((top_docks.isEmpty() || main_window->corner(Qt::TopLeftCorner) != Qt::LeftDockWidgetArea) &&
-			    (bottom_docks.isEmpty() || main_window->corner(Qt::BottomLeftCorner) != Qt::LeftDockWidgetArea)) {
-				can_fill_central.append(dock);
-			}
-		} else if (area == Qt::RightDockWidgetArea) {
-			if ((top_docks.isEmpty() || main_window->corner(Qt::TopRightCorner) != Qt::RightDockWidgetArea) &&
-			    (bottom_docks.isEmpty() || main_window->corner(Qt::BottomRightCorner) != Qt::RightDockWidgetArea)) {
-				can_fill_central.append(dock);
-			}
-		}
-	}
-
-	QDockWidget *dock_to_size = nullptr;
-	if (can_fill_central.count() == 1) {
-		dock_to_size = can_fill_central.first();
-	} else if (visible_docks.count() == 1) {
-		dock_to_size = visible_docks.first();
-	} else if (!top_docks.isEmpty() &&
-		   (left_docks.isEmpty() || main_window->corner(Qt::TopLeftCorner) != Qt::TopDockWidgetArea) &&
-		   (right_docks.isEmpty() || main_window->corner(Qt::TopRightCorner) != Qt::TopDockWidgetArea)) {
-		dock_to_size = top_docks.first();
-	} else if (!left_docks.isEmpty() &&
-		   (bottom_docks.isEmpty() || main_window->corner(Qt::BottomLeftCorner) != Qt::LeftDockWidgetArea) &&
-		   (top_docks.isEmpty() || main_window->corner(Qt::TopLeftCorner) != Qt::LeftDockWidgetArea)) {
-		dock_to_size = left_docks.first();
-	} else if (!bottom_docks.isEmpty() &&
-		   (left_docks.isEmpty() || main_window->corner(Qt::BottomLeftCorner) != Qt::BottomDockWidgetArea) &&
-		   (right_docks.isEmpty() || main_window->corner(Qt::BottomRightCorner) != Qt::BottomDockWidgetArea)) {
-		dock_to_size = bottom_docks.first();
-	} else if (!right_docks.isEmpty() &&
-		   (top_docks.isEmpty() || main_window->corner(Qt::TopRightCorner) != Qt::RightDockWidgetArea) &&
-		   (bottom_docks.isEmpty() || main_window->corner(Qt::BottomRightCorner) != Qt::RightDockWidgetArea)) {
-		dock_to_size = right_docks.first();
-	} else if (!can_fill_central.isEmpty()) {
-		dock_to_size = can_fill_central.first();
-	} else if (!visible_docks.isEmpty()) {
-		dock_to_size = visible_docks.first();
-	}
-	if (!dock_to_size) {
-		return;
-	}
-	auto area = main_window->dockWidgetArea(dock_to_size);
-	if (area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea) {
-		main_window->resizeDocks({dock_to_size}, {dock_to_size->height() + cw->height()}, Qt::Vertical);
-	} else if (area == Qt::LeftDockWidgetArea || area == Qt::RightDockWidgetArea) {
-		main_window->resizeDocks({dock_to_size}, {dock_to_size->width() + cw->width()}, Qt::Horizontal);
-	}
-}
-
-void reset_dock_corners()
-{
-	auto uc = obs_frontend_get_user_config();
-	if (uc) {
-		config_set_bool(uc, "BasicWindow", "SideDocks", true);
-	}
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	if (main_window->corner(Qt::TopLeftCorner) != Qt::LeftDockWidgetArea) {
-		main_window->setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
-	}
-	if (main_window->corner(Qt::TopRightCorner) != Qt::RightDockWidgetArea) {
-		main_window->setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
-	}
-	if (main_window->corner(Qt::BottomLeftCorner) != Qt::LeftDockWidgetArea) {
-		main_window->setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
-	}
-	if (main_window->corner(Qt::BottomRightCorner) != Qt::RightDockWidgetArea) {
-		main_window->setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
-	}
-}
-
-void reset_live_dock_state()
-{
-	//Shows activity feeds, chat (multi-chat), Game capture change dock, main scenes quick switch dock, canvas previews, multi-stream dock. Hides scene list or sources or anything related to actually making a stream setup and not actually being live
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	reset_dock_corners();
-
-	QMap<QString, enum Qt::DockWidgetArea> allow_docks = {
-		{QStringLiteral("AitumStreamSuiteMainCanvas"), Qt::TopDockWidgetArea},
-		{QStringLiteral("previewDock"), Qt::TopDockWidgetArea},
-
-		{QStringLiteral("AitumStreamSuiteChat"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteActivity"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteInfo"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuitePortal"), Qt::RightDockWidgetArea},
-
-		{QStringLiteral("mixerDock"), Qt::BottomDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteOutput"), Qt::BottomDockWidgetArea},
-
-		{QStringLiteral("AitumStreamSuiteLiveScenes"), Qt::LeftDockWidgetArea},
-	};
-
-	QList<QDockWidget *> left_docks;
-	auto docks = main_window->findChildren<QDockWidget *>();
-	for (auto dock : docks) {
-		auto canvas_dock = dynamic_cast<CanvasDock *>(dock->widget());
-		auto clone_dock = dynamic_cast<CanvasCloneDock *>(dock->widget());
-		if (canvas_dock || clone_dock) {
-			dock->setVisible(true);
-			dock->setFloating(false);
-			if (main_window->dockWidgetArea(dock) != Qt::LeftDockWidgetArea) {
-				main_window->addDockWidget(Qt::LeftDockWidgetArea, dock);
-			}
-			if (left_docks.isEmpty()) {
-				main_window->addDockWidget(Qt::LeftDockWidgetArea, dock);
-				left_docks.append(dock);
-			} else {
-				main_window->tabifyDockWidget(left_docks.first(), dock);
-			}
-			if (canvas_dock) {
-				canvas_dock->reset_build_state();
-			} else if (clone_dock) {
-				clone_dock->reset_build_state();
-			}
-			continue;
-		}
-		if (allow_docks.contains(dock->objectName())) {
-			if (!dock->isVisible()) {
-				dock->setVisible(true);
-			}
-			if (dock->isFloating()) {
-				dock->setFloating(false);
-			}
-			main_window->addDockWidget(allow_docks[dock->objectName()], dock);
-		} else {
-			if (dock->isVisible()) {
-				dock->setVisible(false);
-			}
-		}
-	}
-
-	QList<QDockWidget *> right_docks;
-	QList<int> right_dock_sizes;
-
-	auto chat = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteChat"));
-	if (chat) {
-		right_docks.append(chat);
-		right_dock_sizes.append(3);
-	}
-
-	auto activity = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteActivity"));
-	if (activity) {
-		right_docks.append(activity);
-		right_dock_sizes.append(3);
-		if (chat) {
-
-			main_window->splitDockWidget(chat, activity, Qt::Horizontal);
-		}
-	}
-
-	auto info = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteInfo"));
-	if (info) {
-		right_docks.append(info);
-		right_dock_sizes.append(1);
-	}
-
-	auto portal = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuitePortal"));
-	if (portal) {
-		right_docks.append(portal);
-		right_dock_sizes.append(1);
-		if (info) {
-			main_window->splitDockWidget(portal, info, Qt::Horizontal);
-		}
-	}
-
-	main_window->resizeDocks(right_docks, right_dock_sizes, Qt::Vertical);
-
-	fill_central_widget();
-	save_dock_state(QString::fromStdString("Live"));
-}
-
-void reset_build_dock_state()
-{
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	reset_dock_corners();
-
-	QMap<QString, enum Qt::DockWidgetArea> allow_docks = {
-		{QStringLiteral("AitumStreamSuiteScenes"), Qt::LeftDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteSources"), Qt::LeftDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteFilters"), Qt::LeftDockWidgetArea},
-
-		{QStringLiteral("AitumStreamSuiteMainCanvas"), Qt::TopDockWidgetArea},
-		{QStringLiteral("previewDock"), Qt::TopDockWidgetArea},
-
-		{QStringLiteral("AitumStreamSuiteProperties"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteTransform"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteTransitions"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteSelect"), Qt::RightDockWidgetArea},
-
-		{QStringLiteral("mixerDock"), Qt::BottomDockWidgetArea},
-		{QStringLiteral("SceneNotesDock"), Qt::BottomDockWidgetArea},
-	};
-
-	QList<QDockWidget *> top_docks;
-	auto docks = main_window->findChildren<QDockWidget *>();
-	for (auto dock : docks) {
-		auto canvas_dock = dynamic_cast<CanvasDock *>(dock->widget());
-		auto clone_dock = dynamic_cast<CanvasCloneDock *>(dock->widget());
-		if (canvas_dock || clone_dock) {
-			dock->setVisible(true);
-			dock->setFloating(false);
-			if (main_window->dockWidgetArea(dock) != Qt::TopDockWidgetArea) {
-				main_window->addDockWidget(Qt::TopDockWidgetArea, dock);
-			}
-			if (top_docks.isEmpty()) {
-				main_window->addDockWidget(Qt::TopDockWidgetArea, dock);
-				top_docks.append(dock);
-			} else {
-				main_window->tabifyDockWidget(top_docks.first(), dock);
-			}
-			if (canvas_dock) {
-				canvas_dock->reset_build_state();
-			} else if (clone_dock) {
-				clone_dock->reset_build_state();
-			}
-			continue;
-		}
-		if (allow_docks.contains(dock->objectName())) {
-			if (!dock->isVisible()) {
-				dock->setVisible(true);
-			}
-			if (dock->isFloating()) {
-				dock->setFloating(false);
-			}
-			if (main_window->dockWidgetArea(dock) != allow_docks[dock->objectName()]) {
-				main_window->addDockWidget(allow_docks[dock->objectName()], dock);
-			}
-		} else {
-			if (dock->isVisible()) {
-				dock->setVisible(false);
-			}
-		}
-	}
-
-	auto props = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteProperties"));
-	auto transform = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteTransform"));
-	if (props && transform) {
-		main_window->tabifyDockWidget(props, transform);
-		auto select = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteSelect"));
-		if (select) {
-			main_window->tabifyDockWidget(props, select);
-		}
-	}
-
-	auto mcd = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteMainCanvas"));
-	if (!mcd) {
-		mcd = main_window->findChild<QDockWidget *>(QStringLiteral("previewDock"));
-	}
-	if (mcd) {
-		if (top_docks.isEmpty()) {
-			main_window->addDockWidget(Qt::TopDockWidgetArea, mcd);
-			top_docks.append(mcd);
-		} else {
-			main_window->tabifyDockWidget(top_docks.first(), mcd);
-		}
-		top_docks.append(mcd);
-	}
-
-	fill_central_widget();
-
-	save_dock_state(QString::fromStdString("Build"));
-}
-
-void reset_design_dock_state()
-{
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	QMetaObject::invokeMethod(main_window, "on_resetDocks_triggered", Q_ARG(bool, true));
-	auto d = main_window->findChild<QDockWidget *>(QStringLiteral("controlsDock"));
-	if (d) {
-		d->setVisible(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("sourcesDock"));
-	if (d) {
-		d->setVisible(true);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteChat"));
-	if (d) {
-		d->setVisible(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteActivity"));
-	if (d) {
-		d->setVisible(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteInfo"));
-	if (d) {
-		d->setVisible(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteOutput"));
-	if (d) {
-		d->setVisible(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteProperties"));
-	if (d) {
-		d->setVisible(true);
-		d->setFloating(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteFilters"));
-	if (d) {
-		d->setVisible(true);
-		d->setFloating(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteLiveScenes"));
-	if (d) {
-		d->setVisible(false);
-	}
-
-	d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteComponent"));
-	if (d) {
-		d->setVisible(true);
-		d->setFloating(false);
-	}
-
-	save_dock_state(QString::fromStdString("Design"));
-}
-
-void reset_overlays_dock_state()
-{
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	auto docks = main_window->findChildren<QDockWidget *>();
-	QDockWidget *od = nullptr;
-	for (auto &d : docks) {
-		if (d->objectName() == QStringLiteral("AitumStreamSuiteOverlays")) {
-			d->setVisible(true);
-			od = d;
-		} else {
-			d->setVisible(false);
-		}
-	}
-	if (!od) {
-		od = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteOverlays"));
-	}
-	if (!od) {
-		return;
-	}
-	od->setVisible(true);
-	od->setFloating(false);
-	if (main_window->dockWidgetArea(od) != Qt::TopDockWidgetArea) {
-		main_window->addDockWidget(Qt::TopDockWidgetArea, od);
-	}
-	QMetaObject::invokeMethod(
-		main_window,
-		[main_window, od] {
-			auto cw = main_window->centralWidget();
-			if (!cw) {
-				return;
-			}
-			auto cw_height = cw->height();
-			auto cw_width = cw->width();
-			auto cw_pos = cw->pos();
-			if (cw_height <= 10 || cw_width <= 10) {
-				return;
-			}
-			if (cw_pos.x() <= -cw_width || cw_pos.y() <= -cw_height || cw_pos.x() > main_window->width() ||
-			    cw_pos.y() > main_window->height()) {
-				return;
-			}
-			main_window->resizeDocks({od}, {main_window->height()}, Qt::Vertical);
-		},
-		Qt::QueuedConnection);
-}
-
-void reset_extensions_dock_state()
-{
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	auto docks = main_window->findChildren<QDockWidget *>();
-	for (auto &d : docks) {
-		bool found = false;
-		for (auto &e : extensions) {
-			if (d->objectName() == QString::fromStdString(std::get<0>(e).c_str())) {
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			d->setVisible(false);
-		}
-	}
-	std::shuffle(extensions.begin(), extensions.end(), std::default_random_engine());
-	bool resize = false;
-	QList<QDockWidget *> extension_docks;
-	QList<int> extension_dock_sizes;
-	for (auto &e : extensions) {
-		auto name = QString::fromStdString(std::get<0>(e));
-		auto title = QString::fromStdString(std::get<1>(e));
-		auto d = main_window->findChild<QDockWidget *>(name);
-		if (!d) {
-			d = new QDockWidget(title, main_window);
-			d->setObjectName(name);
-			auto bd = new BrowserDock(std::get<0>(e).c_str(), std::get<2>(e).c_str(), d);
-			d->setWidget(bd);
-			//obs_frontend_add_dock_by_id(std::get<0>(e).c_str(), std::get<1>(e).c_str(), bd);
-			obs_frontend_add_custom_qdock(std::get<0>(e).c_str(), d);
-			//d = main_window->findChild<QDockWidget *>(name);
-			d->setFeatures(QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetMovable);
-		}
-		d->setVisible(true);
-		d->setFloating(false);
-		if (main_window->dockWidgetArea(d) != Qt::TopDockWidgetArea) {
-			main_window->addDockWidget(Qt::TopDockWidgetArea, d);
-			resize = true;
-		}
-		extension_docks.append(d);
-		extension_dock_sizes.append(1);
-	}
-	if (extension_docks.isEmpty()) {
-		return;
-	}
-	if (resize) {
-		main_window->resizeDocks(extension_docks, extension_dock_sizes, Qt::Horizontal);
-	}
-	QMetaObject::invokeMethod(
-		main_window,
-		[main_window, extension_docks] {
-			auto cw = main_window->centralWidget();
-			if (!cw) {
-				return;
-			}
-			auto cw_height = cw->height();
-			auto cw_width = cw->width();
-			auto cw_pos = cw->pos();
-			if (cw_height <= 10 || cw_width <= 10) {
-				return;
-			}
-			if (cw_pos.x() <= -cw_width || cw_pos.y() <= -cw_height || cw_pos.x() > main_window->width() ||
-			    cw_pos.y() > main_window->height()) {
-				return;
-			}
-
-			QList<int> extension_dock_sizes;
-			for (auto i = 0; i < extension_docks.count(); ++i) {
-				extension_dock_sizes.append(main_window->height());
-			}
-			main_window->resizeDocks(extension_docks, extension_dock_sizes, Qt::Vertical);
-		},
-		Qt::QueuedConnection);
-}
-
-std::vector<std::tuple<std::string, void (*)(void), QString, bool>> fixed_tabs = {
-	{"Live", reset_live_dock_state, QString::fromUtf8("📡"), false},
-	{"Build", reset_build_dock_state, QString::fromUtf8("🔨"), false},
-	{"Overlays", reset_overlays_dock_state, QString::fromUtf8("✨"), true},
-	{"Extensions", reset_extensions_dock_state, QString::fromUtf8("🔌"), true}};
-//,{"Design", reset_design_dock_state, QString::fromUtf8("🎨"), false}};
-
-static bool scene_collection_changing = false;
-static bool applying_dock_layout = false;
-
 void load_dock_state(QString mode)
 {
 	if (!current_profile_config) {
 		return;
 	}
 	scene_collection_changing = false;
-	bool main_restored = false;
-	std::string setting_name = "dock_state_" + mode.toStdString();
-	std::string state = obs_data_get_string(current_profile_config, setting_name.c_str());
-	setting_name = "dock_state_main_restored_" + mode.toStdString();
-	main_restored = obs_data_get_bool(current_profile_config, setting_name.c_str());
-	if (state.empty()) {
-		setting_name = "dock_state_" + mode.toLower().toStdString();
-		state = obs_data_get_string(current_profile_config, setting_name.c_str());
-		setting_name = "dock_state_main_restored_" + mode.toLower().toStdString();
-		main_restored = obs_data_get_bool(current_profile_config, setting_name.c_str());
+	if (mode.isEmpty()) {
+		mode = kDefaultMode;
 	}
-	void (*reset_func)(void) = nullptr;
-	for (auto it = fixed_tabs.begin(); it != fixed_tabs.end(); ++it) {
-		auto name = std::get<0>(*it);
-		auto translated = obs_module_text(name.c_str());
-		if ((translated && mode == translated) || mode == QString::fromStdString(name)) {
-			if (std::get<3>(*it)) {
-				reset_func = std::get<1>(*it);
-			} else if (state.empty()) {
-				std::get<1> (*it)();
-				return;
-			}
-			break;
-		}
-	}
-	QList<QDockWidget *> visible_canvas_docks;
-	loaded_docks.clear();
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!state.empty()) {
-		if (!main_window) {
-			return;
-		}
-		main_window->restoreState(QByteArray::fromBase64(state.c_str()));
 
+	QList<QDockWidget *> visible_canvas_docks;
+	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (main_window) {
 		auto d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteMainCanvas"));
 		if (!d) {
 			d = main_window->findChild<QDockWidget *>(QStringLiteral("previewDock"));
 		}
-		if (d) {
-			if (d->isVisible()) {
-				visible_canvas_docks.append(d);
-			}
-			if (!main_restored && !d->isVisibleTo(main_window)) {
-				bool canvas_mode = false;
-				for (auto it : canvas_docks) {
-					if (it->parentWidget()->objectName() == mode) {
-						canvas_mode = true;
-						break;
-					}
-				}
-				for (auto it : canvas_clone_docks) {
-					if (it->parentWidget()->objectName() == mode) {
-						canvas_mode = true;
-						break;
-					}
-				}
-				if (!canvas_mode) {
-					d->setVisible(true);
-					d->setFloating(false);
-					main_window->addDockWidget(Qt::TopDockWidgetArea, d);
-				}
-			}
-
-			if (finished_loading) {
-				QMetaObject::invokeMethod(main_window, [] { fill_central_widget(); }, Qt::QueuedConnection);
-			}
-		}
-
-		auto docks = main_window->findChildren<QDockWidget *>();
-		for (auto &dock : docks) {
-			if (dock->isVisible()) {
-				loaded_docks.append(dock->objectName());
-			}
+		if (d && d->isVisible()) {
+			visible_canvas_docks.append(d);
 		}
 	}
+
 	for (const auto &it : canvas_docks) {
 		auto dw = qobject_cast<QDockWidget *>(it->parentWidget());
 		if (dw && dw->isVisible()) {
@@ -938,17 +140,6 @@ void load_dock_state(QString mode)
 		QMetaObject::invokeMethod(scenes_dock, "UpdateCanvasFromDockList",
 					  Q_ARG(QList<QDockWidget *>, visible_canvas_docks));
 	}
-	if (reset_func) {
-		reset_func();
-	} else {
-		for (auto &e : extensions) {
-			auto d = main_window->findChild<QDockWidget *>(QString::fromStdString(std::get<0>(e).c_str()));
-			if (d && d->isVisible()) {
-				d->setVisible(false);
-			}
-		}
-		QMetaObject::invokeMethod(main_window, [] { fill_central_widget(); }, Qt::QueuedConnection);
-	}
 }
 
 void load_outputs()
@@ -963,99 +154,9 @@ void load_outputs()
 		Qt::QueuedConnection);
 }
 
-void reset_canvas_dock_state(QString name)
-{
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main_window) {
-		return;
-	}
-	reset_dock_corners();
-
-	bool main = false;
-	QDockWidget *cd = nullptr;
-	if (name == "Main") {
-		auto d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteMainCanvas"));
-		if (!d) {
-			d = main_window->findChild<QDockWidget *>(QStringLiteral("previewDock"));
-		}
-		cd = d;
-		main = true;
-	}
-
-	QMap<QString, enum Qt::DockWidgetArea> allow_docks = {
-		{QStringLiteral("AitumStreamSuiteScenes"), Qt::LeftDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteSources"), Qt::LeftDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteFilters"), Qt::LeftDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteTransitions"), Qt::LeftDockWidgetArea},
-
-		{QStringLiteral("AitumStreamSuiteProperties"), Qt::RightDockWidgetArea},
-		{QStringLiteral("AitumStreamSuiteTransform"), Qt::RightDockWidgetArea},
-		{QStringLiteral("mixerDock"), Qt::BottomDockWidgetArea},
-	};
-	if (main) {
-		allow_docks.insert(QStringLiteral("AitumStreamSuiteMainCanvas"), Qt::TopDockWidgetArea);
-		allow_docks.insert(QStringLiteral("previewDock"), Qt::TopDockWidgetArea);
-		allow_docks.insert(QStringLiteral("SceneNotesDock"), Qt::BottomDockWidgetArea);
-	}
-
-	auto docks = main_window->findChildren<QDockWidget *>();
-	for (auto dock : docks) {
-		auto canvas_dock = dynamic_cast<CanvasDock *>(dock->widget());
-		auto clone_dock = dynamic_cast<CanvasCloneDock *>(dock->widget());
-		if (canvas_dock || clone_dock) {
-			if (!main && dock->objectName() == name) {
-				cd = dock;
-				dock->setVisible(true);
-				dock->setFloating(false);
-				if (main_window->dockWidgetArea(dock) != Qt::TopDockWidgetArea) {
-					main_window->addDockWidget(Qt::TopDockWidgetArea, dock);
-				}
-
-				if (canvas_dock) {
-					canvas_dock->reset_build_state();
-				} else if (clone_dock) {
-					clone_dock->reset_build_state();
-				}
-			} else if (dock->isVisible()) {
-				dock->setVisible(false);
-			}
-			continue;
-		}
-		if (allow_docks.contains(dock->objectName())) {
-			if (!dock->isVisible()) {
-				dock->setVisible(true);
-			}
-			if (dock->isFloating()) {
-				dock->setFloating(false);
-			}
-			if (main_window->dockWidgetArea(dock) != allow_docks[dock->objectName()]) {
-				main_window->addDockWidget(allow_docks[dock->objectName()], dock);
-			}
-		} else {
-			if (dock->isVisible()) {
-				dock->setVisible(false);
-			}
-		}
-	}
-}
-
-void create_new_dock_mode(const char *name)
-{
-	QString qname = QString::fromUtf8(name);
-	for (int i = 0; i < modesTabBar->count(); i++) {
-		if (modesTabBar->tabText(i) == qname) {
-			return;
-		}
-	}
-
-	auto index = modesTabBar->insertTab(modesTabBar->count() - 2, qname);
-	modesTabBar->setCurrentIndex(index);
-	reset_canvas_dock_state(name);
-	save_dock_state(qname);
-}
-
 void load_canvas(bool check_new_canvas)
 {
+	UNUSED_PARAMETER(check_new_canvas);
 	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	if (!main_window) {
 		return;
@@ -1142,16 +243,12 @@ void load_canvas(bool check_new_canvas)
 				ccd->UpdateSettings(t);
 			} else {
 				ccd = new CanvasCloneDock(t, main_window);
-				std::string title = "🧬 ";
-				title += name;
+				std::string title = name;
 				if (obs_frontend_add_dock_by_id(name, title.c_str(), ccd)) {
 					canvas_clone_docks.push_back(ccd);
 					if (!obs_data_get_bool(t, "has_loaded")) {
 						ccd->parentWidget()->show();
 						obs_data_set_bool(t, "has_loaded", true);
-					}
-					if (check_new_canvas) {
-						create_new_dock_mode(name);
 					}
 				} else {
 					delete ccd;
@@ -1197,16 +294,12 @@ void load_canvas(bool check_new_canvas)
 				cd->UpdateSettings(t);
 			} else {
 				cd = new CanvasDock(t, main_window);
-				std::string title = "🖼️ ";
-				title += name;
+				std::string title = name;
 				if (obs_frontend_add_dock_by_id(name, title.c_str(), cd)) {
 					canvas_docks.push_back(cd);
 					if (!obs_data_get_bool(t, "has_loaded")) {
 						cd->parentWidget()->show();
 						obs_data_set_bool(t, "has_loaded", true);
-					}
-					if (check_new_canvas) {
-						create_new_dock_mode(name);
 					}
 				} else {
 					delete cd;
@@ -1241,32 +334,13 @@ void save_current_profile_config(bool save_docks)
 	dstr_cat(&path, "aitum.json");
 
 	if (save_docks) {
-		if (!obs_data_get_bool(current_profile_config, "dock_mode_manual_save")) {
-			auto index = modesTabBar->currentIndex();
-			if (index >= 0) {
-				QString tn;
-				auto d = modesTabBar->tabData(index);
-				if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-					tn = d.toString();
-				} else {
-					tn = modesTabBar->tabText(index);
-				}
-				save_dock_state(tn);
-				obs_data_set_string(current_profile_config, "dock_state_mode", tn.toUtf8().constData());
-			}
-		}
-		auto custom_modes = obs_data_array_create();
-		for (int i = 0; i < modesTabBar->count(); i++) {
-			auto d = modesTabBar->tabData(i);
-			if (d.isNull() || !d.isValid() || d.toString().isEmpty()) {
-				auto cm = obs_data_create();
-				obs_data_set_string(cm, "name", modesTabBar->tabText(i).toUtf8().constData());
-				obs_data_array_push_back(custom_modes, cm);
-				obs_data_release(cm);
-			}
-		}
-		obs_data_set_array(current_profile_config, "custom_dock_modes", custom_modes);
-		obs_data_array_release(custom_modes);
+		save_dock_state(kDefaultMode);
+		obs_data_erase(current_profile_config, "custom_dock_modes");
+		obs_data_erase(current_profile_config, "dock_state_mode");
+		obs_data_erase(current_profile_config, "dock_mode_manual_save");
+		obs_data_erase(current_profile_config, "main_geometry");
+		obs_data_erase(current_profile_config, "main_state");
+		obs_data_erase(current_profile_config, "empty_docks");
 	}
 	if (output_dock) {
 		output_dock->SaveSettings();
@@ -1306,278 +380,42 @@ void load_current_profile_config()
 		current_profile_config = obs_data_create();
 		obs_data_set_bool(current_profile_config, "main_stream_output_show", true);
 		obs_data_set_bool(current_profile_config, "main_record_output_show", true);
-		obs_data_set_bool(current_profile_config, "main_backtrack_output_show", true);
-		obs_data_set_bool(current_profile_config, "main_virtual_cam_output_show", true);
-		blog(LOG_WARNING, "[Aitum Stream Suite] No configuration file loaded");
-		if (modesTabBar->count() <= (int)fixed_tabs.size()) {
-			auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-			if (main_window) {
-				auto main_dock =
-					main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteMainCanvas"));
-				if (!main_dock) {
-					main_dock = main_window->findChild<QDockWidget *>(QStringLiteral("previewDock"));
-				}
-				if (main_dock) {
-					main_dock->setVisible(true);
-					main_dock->setFloating(false);
-					main_window->addDockWidget(Qt::TopDockWidgetArea, main_dock);
-				}
-			}
-			modesTab = "";
-			auto tn = QString::fromUtf8(obs_module_text("User"));
-			auto index = modesTabBar->insertTab(modesTabBar->count() - 2, tn);
-			modesTabBar->setCurrentIndex(index);
-			save_dock_state(tn);
-			save_current_profile_config(true);
-		}
+		blog(LOG_WARNING, "[Stream Suite] No configuration file loaded");
+		save_current_profile_config(false);
 	} else {
-		blog(LOG_INFO, "[Aitum Stream Suite] Loaded configuration file");
+		blog(LOG_INFO, "[Stream Suite] Loaded configuration file");
 	}
-	for (const auto &it : empty_docks) {
-		obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
-	}
-	empty_docks.clear();
-	auto ed = obs_data_get_array(current_profile_config, "empty_docks");
-	if (ed) {
-		obs_data_array_enum(
-			ed,
-			[](obs_data_t *data, void *param) {
-				UNUSED_PARAMETER(param);
-				auto empty_dock = new QFrame;
-				std::string title = "⬜ ";
-				title += obs_data_get_string(data, "name");
-				if (obs_frontend_add_dock_by_id(obs_data_get_string(data, "name"), title.c_str(), empty_dock)) {
-					empty_docks.push_back(empty_dock);
-				} else {
-					delete empty_dock;
-				}
-			},
-			nullptr);
-		obs_data_array_release(ed);
-	}
+	/* Drop legacy dock-layout keys from older builds. */
+	obs_data_erase(current_profile_config, "empty_docks");
+	obs_data_erase(current_profile_config, "custom_dock_modes");
+	obs_data_erase(current_profile_config, "dock_state_mode");
+	obs_data_erase(current_profile_config, "dock_mode_manual_save");
+	obs_data_erase(current_profile_config, "main_geometry");
+	obs_data_erase(current_profile_config, "main_state");
 
 	bool first_create = false;
 	auto canvas = obs_data_get_array(current_profile_config, "canvas");
 	if (!canvas) {
+		/* Start empty — user adds canvases/outputs in settings. */
 		first_create = true;
 		canvas = obs_data_array_create();
-		const char *canvas_name = "Vertical";
-		auto vertical_canvas = obs_get_canvas_by_name("Aitum Vertical");
-		if (vertical_canvas) {
-			obs_canvas_release(vertical_canvas);
-			canvas_name = "Aitum Vertical";
-		}
-		auto new_canvas = obs_data_create();
-		obs_data_set_string(new_canvas, "name", canvas_name);
-		obs_data_set_int(new_canvas, "color", 0x1F1A17);
-		obs_data_array_push_back(canvas, new_canvas);
-		obs_data_release(new_canvas);
-
 		obs_data_set_array(current_profile_config, "canvas", canvas);
-
 		auto outputs2 = obs_data_get_array(current_profile_config, "outputs");
 		if (!outputs2) {
 			outputs2 = obs_data_array_create();
 			obs_data_set_array(current_profile_config, "outputs", outputs2);
 		}
-		if (obs_data_array_count(outputs2) < 1) {
-			auto new_output = obs_data_create();
-			obs_data_set_bool(new_output, "enabled", true);
-			obs_data_set_string(new_output, "type", "stream");
-			obs_data_set_string(new_output, "name", "Vertical Stream");
-			obs_data_set_string(new_output, "canvas", canvas_name);
-			obs_data_array_push_back(outputs2, new_output);
-			obs_data_release(new_output);
-
-			new_output = obs_data_create();
-			obs_data_set_bool(new_output, "enabled", true);
-			obs_data_set_string(new_output, "type", "backtrack");
-
-			config_t *config = obs_frontend_get_profile_config();
-			const char *mode = config_get_string(config, "Output", "Mode");
-			const char *path = nullptr;
-			if (mode && strcmp(mode, "Advanced") == 0) {
-				path = config_get_string(config, "AdvOut", "RecFilePath");
-			}
-			if (!path || path[0] == '\0') {
-				path = config_get_string(config, "SimpleOutput", "FilePath");
-			}
-			if (path) {
-				obs_data_set_string(new_output, "path", path);
-			}
-			obs_data_set_string(new_output, "filename", "%CCYY-%MM-%DD %hh-%mm-%ss Vertical Backtrack");
-			obs_data_set_string(new_output, "format", "hybrid_mp4");
-			obs_data_set_string(new_output, "name", "Vertical Backtrack");
-			obs_data_set_string(new_output, "canvas", canvas_name);
-			obs_data_set_int(new_output, "max_time_sec", 10);
-			obs_data_array_push_back(outputs2, new_output);
-			obs_data_release(new_output);
-
-			new_output = obs_data_create();
-			obs_data_set_bool(new_output, "enabled", true);
-			obs_data_set_string(new_output, "type", "virtual_cam");
-			obs_data_set_string(new_output, "name", "Vertical Virtual Camera");
-			obs_data_set_string(new_output, "canvas", canvas_name);
-			obs_data_array_push_back(outputs2, new_output);
-			obs_data_release(new_output);
-		}
 		obs_data_array_release(outputs2);
 	} else {
 		obs_data_array_release(canvas);
 	}
-	auto dock_modes = obs_data_get_array(current_profile_config, "custom_dock_modes");
-	obs_data_array_enum(
-		dock_modes,
-		[](obs_data_t *data, void *) {
-			auto name = QString::fromUtf8(obs_data_get_string(data, "name"));
-			for (int i = 0; i < modesTabBar->count(); i++) {
-				auto d = modesTabBar->tabData(i);
-				if (!d.isNull() && d.isValid() && d.toString() == name) {
-					return;
-				} else if (modesTabBar->tabText(i) == name) {
-					return;
-				}
-			}
-			modesTabBar->insertTab(modesTabBar->count() - 2, name);
-		},
-		nullptr);
-	if (!first_create) {
-		for (int i = modesTabBar->count() - 1; i >= 0; i--) {
-			auto d = modesTabBar->tabData(i);
-			if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-				continue;
-			}
-			bool found = false;
-			for (size_t j = 0; j < obs_data_array_count(dock_modes); j++) {
-				auto dm = obs_data_array_item(dock_modes, j);
-				auto name = QString::fromUtf8(obs_data_get_string(dm, "name"));
-				obs_data_release(dm);
-				if (name == modesTabBar->tabText(i)) {
-					found = true;
-					break;
-				}
-			}
-			if (!found) {
-				modesTabBar->removeTab(i);
-			}
-		}
-	}
-
-	obs_data_array_release(dock_modes);
-
-	auto dsm = obs_data_item_byname(current_profile_config, "dock_state_mode");
-	if (obs_data_item_gettype(dsm) == OBS_DATA_STRING) {
-		auto mode = QString::fromUtf8(obs_data_item_get_string(dsm));
-		for (int i = 0; i < modesTabBar->count(); i++) {
-			auto d = modesTabBar->tabData(i);
-			if (!d.isNull() && d.isValid() && d.toString() == mode) {
-				if (modesTabBar->currentIndex() != i) {
-					modesTab = "";
-					modesTabBar->setCurrentIndex(i);
-				}
-				break;
-			} else if (modesTabBar->tabText(i) == mode) {
-				if (modesTabBar->currentIndex() != i) {
-					modesTab = "";
-					modesTabBar->setCurrentIndex(i);
-				}
-				break;
-			}
-		}
-	} else {
-		auto index = obs_data_item_get_int(dsm);
-		if (modesTabBar->currentIndex() != index) {
-			modesTab = "";
-			modesTabBar->setCurrentIndex(index);
-		}
-	}
-	obs_data_item_release(&dsm);
-	for (int i = 0; i < modesTabBar->count(); i++) {
-		auto d = modesTabBar->tabData(i);
-		if (d.isNull() || !d.isValid() || d.toString().isEmpty()) {
-			continue;
-		}
-		for (auto it : fixed_tabs) {
-			if (std::get<0>(it) != d.toString().toUtf8().constData()) {
-				continue;
-			}
-			std::string ss = "tab_show_" + std::get<0>(it);
-			auto show = obs_data_get_int(current_profile_config, ss.c_str());
-			if (show == 1) {
-				modesTabBar->setTabText(i, std::get<2>(it));
-				modesTabBar->setTabIcon(i, QIcon());
-			} else if (show == 2) {
-				modesTabBar->setTabText(i, QString::fromUtf8(obs_module_text(std::get<0>(it).c_str())));
-				modesTabBar->setTabIcon(i, QIcon());
-			} else {
-				modesTabBar->setTabText(i, QString::fromUtf8(obs_module_text(std::get<0>(it).c_str())));
-				modesTabBar->setTabIcon(i, generateEmojiQIcon(std::get<2>(it),
-									      modesTabBar->palette().color(QPalette::Text)));
-			}
-			break;
-		}
-	}
 	load_canvas(first_create);
-	if (first_create) {
-		create_new_dock_mode("Main");
-	}
 
 	load_outputs();
 
-	QMetaObject::invokeMethod(
-		modesTabBar,
-		[] {
-			if (applying_dock_layout) {
-				return;
-			}
-			auto index = modesTabBar->currentIndex();
-			if (index >= 0) {
-				applying_dock_layout = true;
-				auto d = modesTabBar->tabData(index);
-				if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-					load_dock_state(d.toString());
-				} else {
-					load_dock_state(modesTabBar->tabText(index));
-				}
-				applying_dock_layout = false;
-			}
-		},
-		Qt::QueuedConnection);
+	QMetaObject::invokeMethod(qApp, [] { load_dock_state(kDefaultMode); }, Qt::QueuedConnection);
 }
 
-bool load_cef();
-
-void load_browser_panels()
-{
-	if (!load_cef()) {
-		return;
-	}
-
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-
-	obs_frontend_add_dock_by_id("AitumStreamSuiteChat", obs_module_text("AitumStreamSuiteChat"),
-				    new BrowserDock("chat", "https://chat.aitumsuite.tv/chat", main_window));
-	obs_frontend_add_dock_by_id("AitumStreamSuiteActivity", obs_module_text("AitumStreamSuiteActivity"),
-				    new BrowserDock("activity", "https://chat.aitumsuite.tv/activity", main_window));
-	obs_frontend_add_dock_by_id("AitumStreamSuiteInfo", obs_module_text("AitumStreamSuiteInfo"),
-				    new BrowserDock("info", "https://chat.aitumsuite.tv/info", main_window));
-	obs_frontend_add_dock_by_id("AitumStreamSuitePortal", obs_module_text("AitumStreamSuitePortal"),
-				    new BrowserDock("portal", "https://chat.aitumsuite.tv/portal", main_window));
-	obs_frontend_add_dock_by_id("AitumStreamSuiteOverlays", obs_module_text("AitumStreamSuiteOverlays"),
-				    new BrowserDock("overlays", "https://chat.aitumsuite.tv/overlays", main_window));
-	obs_frontend_add_dock_by_id("AitumStreamSuiteSelect", obs_module_text("AitumStreamSuiteSelect"),
-				    new BrowserDock("select", "https://chat.aitumsuite.tv/overlays/select", main_window));
-}
-
-void unload_browser_panels()
-{
-	obs_frontend_remove_dock("AitumStreamSuiteChat");
-	obs_frontend_remove_dock("AitumStreamSuiteActivity");
-	obs_frontend_remove_dock("AitumStreamSuiteInfo");
-	obs_frontend_remove_dock("AitumStreamSuitePortal");
-	obs_frontend_remove_dock("AitumStreamSuiteOverlays");
-	obs_frontend_remove_dock("AitumStreamSuiteSelect");
-}
 
 static bool all_string_settings_the_same(obs_data_t *settings_a, obs_data_t *settings_b)
 {
@@ -1641,9 +479,6 @@ static void log_same_sources()
 	}
 }
 
-struct QCef;
-extern QCef *cef;
-void DestroyPanelCookieManager();
 static bool restart = false;
 
 static void frontend_event(enum obs_frontend_event event, void *private_data)
@@ -1666,41 +501,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			return;
 		}
 		log_same_sources();
-		load_browser_panels();
-		size_t scene_count = 0;
-		obs_enum_scenes(
-			[](void *param, obs_source_t *) {
-				size_t *scene_count = (size_t *)param;
-				(*scene_count)++;
-				return true;
-			},
-			&scene_count);
-		if (scene_count <= 1) {
-			obs_source_t *ss = obs_frontend_get_current_scene();
-			obs_scene_t *scene = obs_scene_from_source(ss);
-			bool has_items = false;
-			obs_scene_enum_items(
-				scene,
-				[](obs_scene_t *, obs_sceneitem_t *, void *param) {
-					bool *has_items = (bool *)param;
-					*has_items = true;
-					return false;
-				},
-				&has_items);
-			if (!has_items) {
-				std::string path = obs_get_module_data_path(obs_current_module());
-				if (path.back() != '/')
-					path += '/';
-				path += "scenecollections";
-				if (os_file_exists(path.c_str())) {
-					const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-					SceneCollectionWizard wizard(main_window);
-					wizard.exec();
-					QMetaObject::invokeMethod(main_window, "on_autoConfigure_triggered", Qt::QueuedConnection);
-				}
-			}
-			obs_source_release(ss);
-		}
 		struct obs_frontend_source_list transitions = {};
 		obs_frontend_get_transitions(&transitions);
 		for (size_t i = 0; i < transitions.sources.num; i++) {
@@ -1710,23 +510,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		obs_frontend_source_list_free(&transitions);
 
 		load_current_profile_config();
-		std::string main_geometry = obs_data_get_string(current_profile_config, "main_geometry");
-		auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-		if (!main_geometry.empty() && main_window) {
-			main_window->restoreGeometry(QByteArray::fromBase64(main_geometry.c_str()));
-		}
-		std::string main_state = obs_data_get_string(current_profile_config, "main_state");
-		if (!main_state.empty()) {
-			if (main_state == "maximized" && main_window) {
-				main_window->showNormal();
-				main_window->showMaximized();
-			} else if (main_state == "minimized" && main_window) {
-				main_window->showMinimized();
-			} else if (main_state == "normal" && main_window &&
-				   (main_window->isMaximized() || main_window->isMinimized())) {
-				main_window->showNormal();
-			}
-		}
 		auto scene = obs_frontend_get_current_scene();
 		if (scene) {
 			if (properties_dock) {
@@ -1738,16 +521,10 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (scenes_dock) {
 			QMetaObject::invokeMethod(scenes_dock, "FinishedLoading", Qt::QueuedConnection);
 		}
-		if (!newer_version_available.isEmpty()) {
-			AskUpdate();
-		}
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
-		DestroyPanelCookieManager();
-		load_browser_panels();
 		load_current_profile_config();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
-		unload_browser_panels();
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
 		if (current_profile_config) {
 			obs_data_release(current_profile_config);
@@ -1759,37 +536,38 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (properties_dock) {
 			properties_dock->Exiting();
 		}
-		for (auto &it : empty_docks) {
-			obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
+		/* Disconnect libobs signal handlers before ClearSceneData
+		 * (SCRIPTING_SHUTDOWN runs first) so callbacks never hit
+		 * destroyed docks during scene teardown. */
+		if (scenes_dock) {
+			scenes_dock->Shutdown();
 		}
-		empty_docks.clear();
-		obs_queue_task(
-			OBS_TASK_GRAPHICS,
-			[](void *) {
-				obs_queue_task(
-					OBS_TASK_UI,
-					[](void *) {
-						unload_browser_panels();
-						const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-						for (auto &e : extensions) {
-							auto d = main_window ? main_window->findChild<QDockWidget *>(
-										       QString::fromStdString(std::get<0>(e)))
-									     : nullptr;
-							obs_frontend_remove_dock(std::get<0>(e).c_str());
-							if (d) {
-								main_window->removeDockWidget(d);
-								d->deleteLater();
-							}
-						}
-						DestroyPanelCookieManager();
-						if (cef) {
-							delete cef;
-							cef = nullptr;
-						}
-					},
-					nullptr, false);
-			},
-			nullptr, false);
+		if (sources_dock) {
+			sources_dock->Shutdown();
+		}
+
+		/* Tear down while the UI is still alive. Registered docks are
+		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
+		obs_frontend_remove_dock("AitumStreamSuiteOutput");
+		obs_frontend_remove_dock("AitumStreamSuiteStats");
+		obs_frontend_remove_dock("AitumStreamSuiteScenes");
+		obs_frontend_remove_dock("AitumStreamSuiteSources");
+		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
+		obs_frontend_remove_dock("AitumStreamSuiteCanvasPreviews");
+		output_dock = nullptr;
+		stats_dock = nullptr;
+		scenes_dock = nullptr;
+		sources_dock = nullptr;
+		transitions_dock = nullptr;
+
+		/* Hidden helpers are children of the main window; delete them
+		 * here so obs_module_unload does not touch dangling pointers. */
+		delete properties_dock;
+		properties_dock = nullptr;
+		delete filters_dock;
+		filters_dock = nullptr;
+		delete transform_dock;
+		transform_dock = nullptr;
 	} else if (event == OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED) {
 		if (studioModeAction && !studioModeAction->isChecked()) {
 			studioModeAction->setChecked(true);
@@ -1797,14 +575,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	} else if (event == OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED) {
 		if (studioModeAction && studioModeAction->isChecked()) {
 			studioModeAction->setChecked(false);
-		}
-	} else if (event == OBS_FRONTEND_EVENT_VIRTUALCAM_STARTED) {
-		if (output_dock) {
-			output_dock->UpdateMainVirtualCameraStatus(true);
-		}
-	} else if (event == OBS_FRONTEND_EVENT_VIRTUALCAM_STOPPED) {
-		if (output_dock) {
-			output_dock->UpdateMainVirtualCameraStatus(false);
 		}
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
@@ -1822,18 +592,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (output_dock) {
 			output_dock->UpdateMainRecordingStatus(false);
 		}
-	} else if (event == OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTING || event == OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED) {
-		if (output_dock) {
-			output_dock->UpdateMainBacktrackStatus(true);
-		}
-	} else if (event == OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPING || event == OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED) {
-		if (output_dock) {
-			output_dock->UpdateMainBacktrackStatus(false);
-		}
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_CHANGED || event == OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED) {
-		if (live_scenes_dock) {
-			QMetaObject::invokeMethod(live_scenes_dock, "MainSceneChanged", Qt::QueuedConnection);
-		}
 		if (scenes_dock) {
 			QMetaObject::invokeMethod(scenes_dock, "MainSceneChanged", Qt::QueuedConnection);
 		}
@@ -1896,20 +655,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	}
 }
 
-class TabToolBar : public QToolBar {
-private:
-	QTabBar *tabs;
-
-	void checkOrientation() const;
-
-public:
-	TabToolBar(QTabBar *tabs_);
-	//QSize minimumSizeHint() const override;
-
-protected:
-	virtual void resizeEvent(QResizeEvent *event) override;
-};
-
 QWidget *aitumSettingsWidget = nullptr;
 
 bool obs_data_array_equal(obs_data_array_t *a, obs_data_array_t *b)
@@ -1953,7 +698,6 @@ void open_config_dialog(int tab, const char *create_type)
 	}
 
 	configDialog->LoadSettings(settings);
-	configDialog->SetNewerVersion(newer_version_available);
 	if (tab > 0) {
 		configDialog->ShowTab(tab);
 	}
@@ -1973,16 +717,6 @@ void open_config_dialog(int tab, const char *create_type)
 			show = obs_data_get_bool(settings, "main_record_output_show");
 			if (show != obs_data_get_bool(current_profile_config, "main_record_output_show")) {
 				obs_data_set_bool(current_profile_config, "main_record_output_show", show);
-				outputs_changed = true;
-			}
-			show = obs_data_get_bool(settings, "main_backtrack_output_show");
-			if (show != obs_data_get_bool(current_profile_config, "main_backtrack_output_show")) {
-				obs_data_set_bool(current_profile_config, "main_backtrack_output_show", show);
-				outputs_changed = true;
-			}
-			show = obs_data_get_bool(settings, "main_virtual_cam_output_show");
-			if (show != obs_data_get_bool(current_profile_config, "main_virtual_cam_output_show")) {
-				obs_data_set_bool(current_profile_config, "main_virtual_cam_output_show", show);
 				outputs_changed = true;
 			}
 			obs_data_array_t *a = obs_data_get_array(current_profile_config, "canvas");
@@ -2033,320 +767,21 @@ extern "C" const struct obs_source_info component_info;
 
 bool obs_module_load(void)
 {
-	blog(LOG_INFO, "[Aitum Stream Suite] loaded version %s", PROJECT_VERSION);
+	blog(LOG_INFO, "[Stream Suite] loaded version %s", PROJECT_VERSION);
 
 	obs_register_source(&component_info);
-
-	QFontDatabase::addApplicationFont(":/aitum/media/Roboto.ttf");
-	QFontDatabase::addApplicationFont(":/aitum/media/Roboto-Italic.ttf");
-	QFontDatabase::addApplicationFont(":/aitum/media/RobotoCondensed.ttf");
-	QFontDatabase::addApplicationFont(":/aitum/media/RobotoCondensed-Italic.ttf");
-
-	obs_frontend_add_tools_menu_item(
-		obs_module_text("SceneCollectionWizard"),
-		[](void *) {
-			SceneCollectionWizard wizard;
-			wizard.exec();
-		},
-		nullptr);
 
 	obs_frontend_add_event_callback(frontend_event, nullptr);
 
 	const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	auto user_config = obs_frontend_get_user_config();
-	if (user_config) {
-		if (!config_get_bool(user_config, "Aitum", "ThemeSet")) {
-			auto theme = config_get_string(user_config, "Appearance", "Theme");
-			if ((!theme || strcmp(theme, "com.obsproject.Aitum.Original") != 0) &&
-			    (os_file_exists("data/obs-studio/themes/Aitum") ||
-			     os_file_exists("../../data/obs-studio/themes/Aitum"))) {
-				config_set_string(user_config, "Appearance", "Theme", "com.obsproject.Aitum.Original");
-				restart = true;
-			}
-			config_set_bool(user_config, "BasicWindow", "VerticalVolControl", true);
-			config_set_bool(user_config, "BasicWindow", "ShowContextToolbars", false);
-			config_set_bool(user_config, "Aitum", "ThemeSet", true);
-			config_save_safe(user_config, "tmp", "bak");
-		}
-		const char *theme = config_get_string(user_config, "Appearance", "Theme");
-		if (theme && strcmp(theme, "com.obsproject.Aitum.Original") == 0) {
-			main_window->setContentsMargins(10, 10, 10, 10);
-		}
-	}
+	/* Keep the user's OBS theme (Yami/Acri, etc.). Do not force Aitum theme. */
 
-	modesTabBar = new QTabBar();
-	modesTabBar->setContextMenuPolicy(Qt::CustomContextMenu);
-	modesTabBar->setMovable(true);
-	modesTabBar->setElideMode(Qt::ElideRight);
-
-	toolbar = new TabToolBar(modesTabBar);
+	/* OBS owns dock placement — plugin only adds docks + a small toolbar. */
+	toolbar = new QToolBar(main_window);
 	toolbar->setObjectName(QStringLiteral("AitumToolbar"));
-	main_window->addToolBar(toolbar);
+	toolbar->setWindowTitle(QString::fromUtf8(obs_module_text("AitumStreamSuite")));
 	toolbar->setFloatable(false);
-	//tb->setMovable(false);
-	//tb->setAllowedAreas(Qt::ToolBarArea::TopToolBarArea);
-
-	for (auto it : fixed_tabs) {
-		auto index = modesTabBar->addTab(QString::fromUtf8(obs_module_text(std::get<0>(it).c_str())));
-		modesTabBar->setTabData(index, QString::fromUtf8(std::get<0>(it).c_str()));
-		modesTabBar->setTabIcon(index, generateEmojiQIcon(std::get<2>(it), modesTabBar->palette().color(QPalette::Text)));
-		modesTabBar->setTabVisible(index, !std::get<3>(it) || QString::fromUtf8("Overlays") == modesTabBar->tabData(index));
-		modesTabBar->setTabToolTip(index, QString::fromUtf8(obs_module_text(std::get<0>(it).c_str())));
-	}
-	toolbar->addWidget(modesTabBar);
-	auto addModeAction =
-		toolbar->addAction(QIcon(":/res/images/plus.svg"), QString::fromUtf8(obs_module_text("AddDockMode")), [] {
-			const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-			if (!main_window) {
-				return;
-			}
-			std::string name = obs_module_text("DockMode");
-			if (NameDialog::AskForName(main_window, QString::fromUtf8(obs_module_text("DockMode")), name)) {
-				if (name.empty()) {
-					return;
-				}
-				for (int i = 0; i < modesTabBar->count(); i++) {
-					auto d = modesTabBar->tabData(i);
-					if (!d.isNull() && d.isValid() && d.toString().toStdString() == name) {
-						return;
-					} else if (modesTabBar->tabText(i).toStdString() == name) {
-						return;
-					}
-				}
-				auto index = modesTabBar->insertTab(modesTabBar->count() - 2, QString::fromStdString(name));
-				modesTabBar->setCurrentIndex(index);
-				save_current_profile_config(true);
-			}
-		});
-	toolbar->widgetForAction(addModeAction)->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
-	toolbar->widgetForAction(addModeAction)->setProperty("class", "icon-plus");
-	toolbar->addSeparator();
-
-	QObject::connect(modesTabBar, &QTabBar::currentChanged, [](int index) {
-		applying_dock_layout = true;
-		if (!current_profile_config || !obs_data_get_bool(current_profile_config, "dock_mode_manual_save")) {
-			save_dock_state(modesTab);
-		}
-		auto d = modesTabBar->tabData(index);
-		if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-			modesTab = d.toString();
-			load_dock_state(d.toString());
-			if (vendor) {
-				auto d2 = obs_data_create();
-				obs_data_set_string(d2, "name", d.toString().toUtf8().constData());
-				obs_data_set_bool(d2, "fixed", true);
-				obs_websocket_vendor_emit_event(vendor, "switched_dock_mode", d2);
-				obs_data_release(d2);
-			}
-		} else {
-			modesTab = modesTabBar->tabText(index);
-			load_dock_state(modesTabBar->tabText(index));
-			if (vendor) {
-				auto d2 = obs_data_create();
-				obs_data_set_string(d2, "name", modesTabBar->tabText(index).toUtf8().constData());
-				obs_data_set_bool(d2, "fixed", false);
-				obs_websocket_vendor_emit_event(vendor, "switched_dock_mode", d2);
-				obs_data_release(d2);
-			}
-		}
-#ifdef WIN32
-		const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-		if (main_window && main_window->isMaximized()) {
-			auto geo = main_window->screen()->availableGeometry();
-			if (main_window->geometry() != geo) {
-				main_window->setGeometry(geo);
-				main_window->showMaximized();
-			}
-		}
-#endif // WIN32
-		applying_dock_layout = false;
-	});
-
-	QObject::connect(modesTabBar, &QTabBar::customContextMenuRequested, [] {
-		int tab = modesTabBar->tabAt(QCursor::pos() - modesTabBar->mapToGlobal(QPoint(0, 0)));
-		QMenu menu;
-		auto index = modesTabBar->currentIndex();
-		if (tab >= 0) {
-			auto d = modesTabBar->tabData(tab);
-			if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-				auto sm = menu.addMenu(QString::fromUtf8(obs_module_text("TabShow")));
-				auto a = sm->addAction(QString::fromUtf8(obs_module_text("IconOnly")), [tab, d] {
-					for (auto it : fixed_tabs) {
-						if (std::get<0>(it) == d.toString().toUtf8().constData()) {
-							modesTabBar->setTabIcon(tab, QIcon());
-							modesTabBar->setTabText(tab, std::get<2>(it));
-							std::string ss = "tab_show_";
-							ss += std::get<0>(it);
-							obs_data_set_int(current_profile_config, ss.c_str(), 1);
-							return;
-						}
-					}
-				});
-				a->setCheckable(true);
-				a->setChecked(modesTabBar->tabIcon(tab).isNull() && modesTabBar->tabText(tab).length() <= 2);
-				a = sm->addAction(QString::fromUtf8(obs_module_text("TextOnly")), [tab, d] {
-					for (auto it : fixed_tabs) {
-						if (std::get<0>(it) == d.toString().toUtf8().constData()) {
-							modesTabBar->setTabText(
-								tab, QString::fromUtf8(obs_module_text(std::get<0>(it).c_str())));
-							modesTabBar->setTabIcon(tab, QIcon());
-							std::string ss = "tab_show_";
-							ss += std::get<0>(it);
-							obs_data_set_int(current_profile_config, ss.c_str(), 2);
-							return;
-						}
-					}
-				});
-				a->setCheckable(true);
-				a->setChecked(modesTabBar->tabIcon(tab).isNull() && modesTabBar->tabText(tab).length() > 2);
-				a = sm->addAction(QString::fromUtf8(obs_module_text("IconAndText")), [tab, d] {
-					for (auto it : fixed_tabs) {
-						if (std::get<0>(it) == d.toString().toUtf8().constData()) {
-							modesTabBar->setTabText(
-								tab, QString::fromUtf8(obs_module_text(std::get<0>(it).c_str())));
-							modesTabBar->setTabIcon(
-								tab,
-								generateEmojiQIcon(std::get<2>(it),
-										   modesTabBar->palette().color(QPalette::Text)));
-							std::string ss = "tab_show_";
-							ss += std::get<0>(it);
-							obs_data_set_int(current_profile_config, ss.c_str(), 0);
-							return;
-						}
-					}
-				});
-				a->setCheckable(true);
-				a->setChecked(!modesTabBar->tabIcon(tab).isNull());
-			}
-		}
-		if (tab == index || tab == -1) {
-			auto d = modesTabBar->tabData(index);
-			if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-				menu.addAction(QString::fromUtf8(obs_module_text("Reset")), [d] {
-					for (auto it : fixed_tabs) {
-						if (std::get<0>(it) == d.toString().toUtf8().constData()) {
-							std::get<1>(it)();
-							return;
-						}
-					}
-				});
-			} else {
-				auto tabName = modesTabBar->tabText(index);
-				bool found = tabName == "Main";
-				for (auto it : canvas_docks) {
-					if (it->parentWidget()->objectName() == tabName) {
-						found = true;
-						break;
-					}
-				}
-				for (auto it : canvas_clone_docks) {
-					if (it->parentWidget()->objectName() == tabName) {
-						found = true;
-						break;
-					}
-				}
-				if (found) {
-					menu.addAction(QString::fromUtf8(obs_module_text("Reset")), [] {
-						auto index = modesTabBar->currentIndex();
-						if (index < 0) {
-							return;
-						}
-						reset_canvas_dock_state(modesTabBar->tabText(index));
-					});
-				}
-				menu.addAction(QString::fromUtf8(obs_module_text("Remove")), [] {
-					auto index = modesTabBar->currentIndex();
-					if (index < 0) {
-						return;
-					}
-					modesTabBar->removeTab(index);
-					save_current_profile_config(true);
-				});
-			}
-		}
-		auto a = menu.addAction(QString::fromUtf8(obs_module_text("DockModeAutoSave")), [] {
-			if (!current_profile_config) {
-				return;
-			}
-			obs_data_set_bool(current_profile_config, "dock_mode_manual_save",
-					  !obs_data_get_bool(current_profile_config, "dock_mode_manual_save"));
-		});
-		a->setCheckable(true);
-		a->setChecked(current_profile_config ? !obs_data_get_bool(current_profile_config, "dock_mode_manual_save") : true);
-		if (tab == index || tab == -1) {
-			menu.addAction(QString::fromUtf8(obs_module_text("DockModeSave")), [] {
-				auto index = modesTabBar->currentIndex();
-				if (index < 0) {
-					return;
-				}
-				QString tn;
-				auto d = modesTabBar->tabData(index);
-				if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-					tn = d.toString();
-				} else {
-					tn = modesTabBar->tabText(index);
-				}
-				save_dock_state(tn);
-				save_current_profile_config(true);
-			});
-		}
-		menu.addSeparator();
-		menu.addAction(QString::fromUtf8(obs_module_text("AddEmptyDock")), [] {
-			const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-			if (!main_window) {
-				return;
-			}
-			std::string name = obs_module_text("EmptyDock");
-			if (NameDialog::AskForName(main_window, QString::fromUtf8(obs_module_text("EmptyDockName")), name)) {
-				//break;
-				auto empty_dock = new QFrame;
-				std::string title = "⬜ ";
-				title += name;
-				if (obs_frontend_add_dock_by_id(name.c_str(), title.c_str(), empty_dock)) {
-					empty_dock->parentWidget()->show();
-					auto ed = obs_data_get_array(current_profile_config, "empty_docks");
-					if (!ed) {
-						ed = obs_data_array_create();
-						obs_data_set_array(current_profile_config, "empty_docks", ed);
-					}
-					auto edd = obs_data_create();
-					obs_data_set_string(edd, "name", name.c_str());
-					obs_data_array_push_back(ed, edd);
-					obs_data_release(edd);
-					empty_docks.push_back(empty_dock);
-				} else {
-					delete empty_dock;
-				}
-			}
-		});
-		if (!empty_docks.empty()) {
-			auto removeMenu = menu.addMenu(QString::fromUtf8(obs_module_text("RemoveEmptyDock")));
-			for (const auto &it : empty_docks) {
-				QFrame *w = it;
-				removeMenu->addAction(it->parentWidget()->objectName(), [w] {
-					std::string name = w->parentWidget()->objectName().toUtf8().constData();
-					obs_frontend_remove_dock(name.c_str());
-					empty_docks.remove(w);
-					auto ed = obs_data_get_array(current_profile_config, "empty_docks");
-					auto count = obs_data_array_count(ed);
-					for (size_t i = count; i > 0; i--) {
-						auto item = obs_data_array_item(ed, i - 1);
-						if (!item) {
-							continue;
-						}
-						if (strcmp(name.c_str(), obs_data_get_string(item, "name")) == 0) {
-							obs_data_array_erase(ed, i - 1);
-						}
-					}
-				});
-			}
-		}
-		if (tab >= 0) {
-			menu.exec(QCursor::pos());
-		} else {
-			menu.exec(modesTabBar->mapToGlobal(modesTabBar->tabRect(index).center()));
-		}
-	});
+	main_window->addToolBar(toolbar);
 
 	auto aitumSettingsAction = toolbar->addAction(QString::fromUtf8(obs_module_text("Settings")));
 	aitumSettingsAction->setProperty("themeID", "configIconSmall");
@@ -2357,28 +792,8 @@ bool obs_module_load(void)
 	aitumSettingsWidget->setObjectName("AitumStreamSuiteSettingsButton");
 	QObject::connect(aitumSettingsAction, &QAction::triggered, [] { open_config_dialog(0, nullptr); });
 
-	// Contribute Button
-	auto contributeButton = toolbar->addAction(generateEmojiQIcon("❤️", toolbar->palette().color(QPalette::Text)),
-						   QString::fromUtf8(obs_module_text("Donate")));
-	contributeButton->setProperty("themeID", "icon-aitum-donate");
-	contributeButton->setProperty("class", "icon-aitum-donate");
-	toolbar->widgetForAction(contributeButton)->setProperty("themeID", "icon-aitum-donate");
-	toolbar->widgetForAction(contributeButton)->setProperty("class", "icon-aitum-donate");
-	contributeButton->setToolTip(QString::fromUtf8(obs_module_text("AitumStreamSuiteDonate")));
-	QAction::connect(contributeButton, &QAction::triggered,
-			 [] { QDesktopServices::openUrl(QUrl("https://aitum.tv/contribute")); });
-
-	// Aitum Button
-	auto aitumButton = toolbar->addAction(QIcon(":/aitum/media/aitum.png"), QString::fromUtf8(obs_module_text("Aitum")));
-	aitumButton->setProperty("themeID", "icon-aitum");
-	aitumButton->setProperty("class", "icon-aitum");
-	toolbar->widgetForAction(aitumButton)->setProperty("themeID", "icon-aitum");
-	toolbar->widgetForAction(aitumButton)->setProperty("class", "icon-aitum");
-	aitumButton->setToolTip(QString::fromUtf8("https://aitum.tv"));
-	QAction::connect(aitumButton, &QAction::triggered, [] { QDesktopServices::openUrl(QUrl("https://aitum.tv")); });
-
 	auto addCanvas = toolbar->addAction(QString::fromUtf8(obs_module_text("AddCanvas")));
-	QAction::connect(addCanvas, &QAction::triggered, [] { open_config_dialog(1, nullptr); });
+	QAction::connect(addCanvas, &QAction::triggered, [] { open_config_dialog(0, nullptr); });
 
 	//tb->addAction(QString::fromUtf8(obs_module_text("Reset")));
 	//tb->layout()->addItem(new QSpacerItem(0, 0));
@@ -2393,8 +808,16 @@ bool obs_module_load(void)
 
 	studioModeAction->setCheckable(true);
 	studioModeAction->setIcon(create2StateIcon(":/aitum/media/studio_mode_on.svg", ":/aitum/media/studio_mode_off.svg"));
-	controlsToolBar->widgetForAction(studioModeAction)->setStyleSheet("QAbstractButton:checked{background: rgb(158,0,89);}");
-	((QToolButton *)controlsToolBar->widgetForAction(studioModeAction))->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+	auto *studioModeButton = qobject_cast<QToolButton *>(controlsToolBar->widgetForAction(studioModeAction));
+	if (studioModeButton) {
+		studioModeButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		QObject::connect(studioModeAction, &QAction::toggled, studioModeButton, [studioModeButton](bool checked) {
+			studioModeButton->setProperty("class",
+						      checked ? QStringLiteral("state-active") : QStringLiteral(""));
+			studioModeButton->style()->unpolish(studioModeButton);
+			studioModeButton->style()->polish(studioModeButton);
+		});
+	}
 	QObject::connect(studioModeAction, SIGNAL(triggered()), main_window, SLOT(TogglePreviewProgramMode()));
 
 	//https://coolors.co/00d299-ff0000-1a57ff-c08000-9e0059
@@ -2424,20 +847,21 @@ bool obs_module_load(void)
 		main_window->setCentralWidget(l);
 	}
 
+	auto *canvas_previews_dock = new CanvasPreviewsDock(main_window);
+	obs_frontend_add_dock_by_id("AitumStreamSuiteCanvasPreviews", obs_module_text("CanvasPreviews"),
+				    canvas_previews_dock);
+
 	output_dock = new OutputDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteOutput", obs_module_text("AitumStreamSuiteOutput"), output_dock);
 	//component_dock = new CanvasDock("Components", main_window);
 	//obs_frontend_add_dock_by_id("AitumStreamSuiteComponent", obs_module_text("AitumStreamSuiteComponent"), component_dock);
+	/* Keep Properties/Filters/Transform as hidden helpers — use OBS native dialogs in the UI. */
 	properties_dock = new PropertiesDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteProperties", obs_module_text("AitumStreamSuiteProperties"), properties_dock);
+	properties_dock->hide();
 	filters_dock = new FiltersDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteFilters", obs_module_text("AitumStreamSuiteFilters"), filters_dock);
+	filters_dock->hide();
 	transform_dock = new TransformDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteTransform", obs_module_text("AitumStreamSuiteTransform"), transform_dock);
-	live_scenes_dock = new LiveScenesDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteLiveScenes", obs_module_text("AitumStreamSuiteLiveScenes"), live_scenes_dock);
-	auto capture_dock = new CaptureDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteCapture", obs_module_text("AitumStreamSuiteCapture"), capture_dock);
+	transform_dock->hide();
 	stats_dock = new StatsDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteStats", obs_module_text("AitumStreamSuiteStats"), stats_dock);
 	scenes_dock = new ScenesDock(main_window);
@@ -2448,98 +872,8 @@ bool obs_module_load(void)
 	obs_frontend_add_dock_by_id("AitumStreamSuiteTransitions", obs_module_text("AitumStreamSuiteTransitions"),
 				    transitions_dock);
 
-	std::string url = "https://api.aitum.tv/plugin/streamsuite?version=" PROJECT_VERSION;
-	const char *pguid = config_get_string(obs_frontend_get_app_config(), "General", "InstallGUID");
-	if (pguid) {
-		url += "&uuid=";
-		url += pguid;
-	}
-
-	version_download_info =
-		download_info_create_single("[Aitum Stream Suite]", "OBS", url.c_str(), version_info_downloaded, nullptr);
 	return true;
 }
-
-void TabToolBar::checkOrientation() const
-{
-	const auto main_window = static_cast<QMainWindow *>(parent());
-	auto area = main_window->toolBarArea(this);
-	if (orientation() == Qt::Orientation::Vertical) {
-		if (area == Qt::RightToolBarArea) {
-			if (tabs->shape() != QTabBar::Shape::RoundedEast) {
-				tabs->setShape(QTabBar::Shape::RoundedEast);
-			}
-		} else {
-			if (tabs->shape() != QTabBar::Shape::RoundedWest) {
-				tabs->setShape(QTabBar::Shape::RoundedWest);
-			}
-		}
-	} else {
-		if (area == Qt::BottomToolBarArea) {
-			if (tabs->shape() != QTabBar::Shape::RoundedSouth) {
-				tabs->setShape(QTabBar::Shape::RoundedSouth);
-			}
-		} else {
-			if (tabs->shape() != QTabBar::Shape::RoundedNorth) {
-				tabs->setShape(QTabBar::Shape::RoundedNorth);
-			}
-		}
-	}
-}
-
-void TabToolBar::resizeEvent(QResizeEvent *event)
-{
-	load_dock_state_timer.stop();
-	if (!applying_dock_layout && !isFloating()) {
-		auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-		if (!main_window) {
-			return;
-		}
-		auto docks = main_window->findChildren<QDockWidget *>();
-		QList<QString> current_docks;
-		for (auto &dock : docks) {
-			if (dock->isVisible()) {
-				current_docks.append(dock->objectName());
-			}
-		}
-		if (current_docks == loaded_docks) {
-			if (finished_loading) {
-				load_dock_state_timer.start();
-			}
-		} else if (main_window->isVisible() && current_profile_config &&
-			   !obs_data_get_bool(current_profile_config, "dock_mode_manual_save")) {
-			auto index = modesTabBar->currentIndex();
-			if (index >= 0) {
-				auto d = modesTabBar->tabData(index);
-				if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-					save_dock_state(d.toString());
-				} else {
-					save_dock_state(modesTabBar->tabText(index));
-				}
-			}
-			loaded_docks = current_docks;
-		}
-	}
-	checkOrientation();
-	QToolBar::resizeEvent(event);
-}
-
-TabToolBar::TabToolBar(QTabBar *tabs_) : QToolBar(), tabs(tabs_)
-{
-	connect(this, &QToolBar::orientationChanged, [&] { checkOrientation(); });
-}
-
-/*
-QSize TabToolBar::minimumSizeHint() const{
-	checkOrientation();
-	auto size = QToolBar::minimumSizeHint();
-	if (orientation() == Qt::Orientation::Vertical) {
-		auto t = tabs->minimumSizeHint();
-		int i = 0;
-	}
-	//auto size2 = QToolBar::minimumSizeHint();
-	return size;
-}*/
 
 static void save_load(obs_data_t *save_data, bool saving, void *private_data)
 {
@@ -2554,27 +888,7 @@ void load_obs_websocket();
 
 void obs_module_post_load()
 {
-	load_dock_state_timer.setInterval(100);
-	load_dock_state_timer.setSingleShot(true);
-	QObject::connect(&load_dock_state_timer, &QTimer::timeout, []() {
-		if (applying_dock_layout) {
-			return;
-		}
-		auto index = modesTabBar->currentIndex();
-		if (index >= 0) {
-			applying_dock_layout = true;
-			auto d = modesTabBar->tabData(index);
-			if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-				load_dock_state(d.toString());
-			} else {
-				load_dock_state(modesTabBar->tabText(index));
-			}
-			applying_dock_layout = false;
-		}
-	});
-
 	obs_frontend_add_save_callback(save_load, nullptr);
-
 	load_obs_websocket();
 }
 
@@ -2585,46 +899,44 @@ void obs_module_unload()
 	unload_obs_websocket();
 	obs_frontend_remove_save_callback(save_load, nullptr);
 	obs_frontend_remove_event_callback(frontend_event, nullptr);
-	if (version_download_info) {
-		download_info_destroy(version_download_info);
-		version_download_info = nullptr;
-	}
 	if (current_profile_config) {
 		obs_data_release(current_profile_config);
 		current_profile_config = nullptr;
 	}
 
-	obs_frontend_remove_dock("AitumStreamSuiteOutput");
-	obs_frontend_remove_dock("AitumStreamSuiteProperties");
-	obs_frontend_remove_dock("AitumStreamSuiteFilters");
-	obs_frontend_remove_dock("AitumStreamSuiteTransform");
-	obs_frontend_remove_dock("AitumStreamSuiteLiveScenes");
-	obs_frontend_remove_dock("AitumStreamSuiteCapture");
-	obs_frontend_remove_dock("AitumStreamSuiteStats");
-	obs_frontend_remove_dock("AitumStreamSuiteScenes");
-	obs_frontend_remove_dock("AitumStreamSuiteSources");
-	obs_frontend_remove_dock("AitumStreamSuiteTransitions");
-
-	obs_frontend_remove_dock("AitumStreamSuiteChat");
-	obs_frontend_remove_dock("AitumStreamSuiteActivity");
-	obs_frontend_remove_dock("AitumStreamSuiteInfo");
-	obs_frontend_remove_dock("AitumStreamSuitePortal");
-	obs_frontend_remove_dock("AitumStreamSuiteSelect");
-	obs_frontend_remove_dock("AitumStreamSuiteOverlays");
-
-	if (output_dock) {
-		delete output_dock;
+	/* Prefer teardown on EXIT. If unload runs without EXIT (e.g. module
+	 * reload), remove registered docks but never delete their widgets —
+	 * obs_frontend_remove_dock already destroys them. */
+	if (output_dock || stats_dock || scenes_dock || sources_dock || transitions_dock) {
+		obs_frontend_remove_dock("AitumStreamSuiteOutput");
+		obs_frontend_remove_dock("AitumStreamSuiteStats");
+		obs_frontend_remove_dock("AitumStreamSuiteScenes");
+		obs_frontend_remove_dock("AitumStreamSuiteSources");
+		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
+		obs_frontend_remove_dock("AitumStreamSuiteCanvasPreviews");
+		output_dock = nullptr;
+		stats_dock = nullptr;
+		scenes_dock = nullptr;
+		sources_dock = nullptr;
+		transitions_dock = nullptr;
 	}
-	for (auto &it : empty_docks) {
-		obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
-	}
-	empty_docks.clear();
 
-	DestroyPanelCookieManager();
-	if (cef) {
-		delete cef;
-		cef = nullptr;
+	if (properties_dock) {
+		properties_dock->setParent(nullptr);
+		delete properties_dock;
+		properties_dock = nullptr;
 	}
+	if (filters_dock) {
+		filters_dock->setParent(nullptr);
+		delete filters_dock;
+		filters_dock = nullptr;
+	}
+	if (transform_dock) {
+		transform_dock->setParent(nullptr);
+		delete transform_dock;
+		transform_dock = nullptr;
+	}
+
 }
 
 MODULE_EXPORT const char *obs_module_description(void)

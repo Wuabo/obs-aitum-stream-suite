@@ -2,7 +2,6 @@
 
 #include <obs-frontend-api.h>
 #include <QMainWindow>
-#include <QPainter>
 #include <util/platform.h>
 #ifndef _WIN32
 #include <dlfcn.h>
@@ -152,17 +151,3 @@ QIcon create2StateIcon(QString fileOn, QString fileOff)
 	return icon;
 }
 
-QIcon generateEmojiQIcon(QString ch, QColor color)
-{
-	QPixmap pixmap(32, 32);
-	pixmap.fill(Qt::transparent);
-
-	QPainter painter(&pixmap);
-	QFont font = painter.font();
-	font.setPixelSize(32);
-	font.setBold(true);
-	painter.setFont(font);
-	painter.setPen(color);
-	painter.drawText(pixmap.rect(), Qt::AlignCenter, ch);
-	return QIcon(pixmap);
-}

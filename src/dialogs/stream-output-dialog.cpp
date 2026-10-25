@@ -7,6 +7,7 @@
 #include <QDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QFont>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -68,7 +69,6 @@ QLabel *generateInfoLabel(std::string text)
 QLabel *generateFormLabel(std::string text)
 {
 	auto label = new QLabel(QString::fromUtf8(obs_module_text(text.c_str())));
-	label->setStyleSheet("font-weight: bold;");
 
 	return label;
 }
@@ -78,7 +78,6 @@ QLineEdit *StreamOutputDialog::generateOutputNameField(std::string text, QPushBu
 {
 	auto field = new QLineEdit;
 	field->setText(QString::fromUtf8(obs_module_text(text.c_str())));
-	field->setStyleSheet("padding: 4px 8px;");
 
 	if (edit) { // edit mode, set field value from output value
 		field->setText(outputName);
@@ -96,7 +95,6 @@ QLineEdit *StreamOutputDialog::generateOutputNameField(std::string text, QPushBu
 QLineEdit *StreamOutputDialog::generateOutputServerField(QPushButton *confirmButton, bool locked, bool edit)
 {
 	auto field = new QLineEdit;
-	field->setStyleSheet("padding: 4px 8px;");
 	field->setDisabled(locked);
 
 	if (edit) { // edit mode, set field value from output value
@@ -118,7 +116,6 @@ QComboBox *StreamOutputDialog::generateOutputServerCombo(std::string service, QP
 {
 	auto combo = new QComboBox;
 	combo->setMinimumHeight(30);
-	combo->setStyleSheet("padding: 4px 8px;");
 
 	if (service == "Twitch") {
 		auto twitch_cache = obs_module_get_config_path(obs_get_module("rtmp-services"), "twitch_ingests.json");
@@ -179,7 +176,6 @@ QComboBox *StreamOutputDialog::generateOutputServerCombo(std::string service, QP
 QLineEdit *StreamOutputDialog::generateOutputKeyField(QPushButton *confirmButton, bool edit)
 {
 	auto field = new StreamKeyInput;
-	field->setStyleSheet("padding: 4px 8px;");
 
 	if (edit) { // edit mode, set field value from output value
 		field->setText(outputKey);
@@ -226,7 +222,6 @@ QPushButton *generateButton(QString text)
 {
 	auto button = new QPushButton;
 	button->setText(text);
-	button->setStyleSheet("padding: 4px 12px;");
 	button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
 	return button;
@@ -253,8 +248,8 @@ QToolButton *StreamOutputDialog::selectionButton(std::string title, QIcon icon, 
 	button->setIcon(icon);
 	button->setIconSize(QSize(32, 32));
 	button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-	button->setStyleSheet(
-		"min-width: 110px; max-width: 110px; min-height: 90px; max-height: 90px; padding-top: 16px; font-weight: bold;");
+	button->setMinimumSize(110, 90);
+	button->setMaximumSize(110, 90);
 
 	connect(button, &QPushButton::clicked, [this, selectionStep] { stackedWidget->setCurrentIndex(selectionStep); });
 
@@ -301,7 +296,6 @@ StreamOutputDialog::StreamOutputDialog(QDialog *parent, QStringList _otherNames)
 
 	stackedWidget = new QStackedWidget;
 
-	stackedWidget->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Service selection page
 	stackedWidget->addWidget(WizardServicePage());
@@ -402,7 +396,6 @@ QWidget *StreamOutputDialog::WizardServicePage()
 
 	auto description = new QLabel(QString::fromUtf8(obs_module_text("NewOutputSelectService")));
 	description->setWordWrap(true);
-	description->setStyleSheet("margin-bottom: 20px;");
 	pageLayout->addWidget(description);
 
 	// layout for service selection
@@ -443,7 +436,6 @@ QWidget *StreamOutputDialog::WizardServicePage()
 QWidget *StreamOutputDialog::WizardInfoKick(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -526,7 +518,6 @@ QWidget *StreamOutputDialog::WizardInfoKick(bool edit)
 QWidget *StreamOutputDialog::WizardInfoYouTube(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -606,7 +597,6 @@ QWidget *StreamOutputDialog::WizardInfoYouTube(bool edit)
 QWidget *StreamOutputDialog::WizardInfoTwitter(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -686,7 +676,6 @@ QWidget *StreamOutputDialog::WizardInfoTwitter(bool edit)
 QWidget *StreamOutputDialog::WizardInfoUnknown(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -768,7 +757,6 @@ QWidget *StreamOutputDialog::WizardInfoUnknown(bool edit)
 QWidget *StreamOutputDialog::WizardInfoTwitch(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -850,7 +838,6 @@ QWidget *StreamOutputDialog::WizardInfoTwitch(bool edit)
 QWidget *StreamOutputDialog::WizardInfoTrovo(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -934,7 +921,6 @@ QWidget *StreamOutputDialog::WizardInfoTrovo(bool edit)
 QWidget *StreamOutputDialog::WizardInfoTikTok(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;
@@ -1016,7 +1002,6 @@ QWidget *StreamOutputDialog::WizardInfoTikTok(bool edit)
 QWidget *StreamOutputDialog::WizardInfoFacebook(bool edit)
 {
 	auto page = new QWidget(this);
-	page->setStyleSheet("padding: 0px; margin: 0px;");
 
 	// Layout
 	auto pageLayout = new QVBoxLayout;

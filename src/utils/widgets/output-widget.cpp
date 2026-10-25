@@ -5,6 +5,8 @@
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSizePolicy>
+#include <QStyle>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QRegularExpression>
@@ -27,28 +29,38 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	setObjectName(name);
 
 	auto outputLayout = new QHBoxLayout;
-	outputLayout->setContentsMargins(5, 0, 5, 0);
-	outputLayout->setSpacing(0);
+	outputLayout->setContentsMargins(8, 4, 8, 4);
+	outputLayout->setSpacing(kRowSpacing);
 
 	outputButton = new QPushButton;
-	outputButton->setMinimumHeight(30);
+	outputButton->setFixedWidth(kActionBtnWidth);
+	outputButton->setMinimumHeight(28);
+	outputButton->setMaximumHeight(32);
+	outputButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 	outputButton->setObjectName(QStringLiteral("canvasOutput"));
+
+	auto iconSlot = new QWidget;
+	iconSlot->setFixedWidth(outputPlatformIconSize);
+	auto iconSlotLayout = new QHBoxLayout(iconSlot);
+	iconSlotLayout->setContentsMargins(0, 0, 0, 0);
+	iconSlotLayout->setSpacing(0);
 
 	auto output_type = obs_data_get_string(settings, "type");
 	if (output_type[0] == '\0' || strcmp(output_type, "stream") == 0) {
 		auto endpoint = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
 		auto platformIconLabel = new QLabel;
-		auto platformIcon = getPlatformIconFromEndpoint(endpoint);
-
-		platformIconLabel->setPixmap(platformIcon.pixmap(outputPlatformIconSize, outputPlatformIconSize));
-
-		outputLayout->addWidget(platformIconLabel);
+		platformIconLabel->setFixedSize(outputPlatformIconSize, outputPlatformIconSize);
+		platformIconLabel->setScaledContents(true);
+		platformIconLabel->setPixmap(
+			getPlatformIconFromEndpoint(endpoint).pixmap(outputPlatformIconSize, outputPlatformIconSize));
+		iconSlotLayout->addWidget(platformIconLabel, 0, Qt::AlignVCenter);
 	}
-	outputLayout->addWidget(new QLabel(name), 1);
+	outputLayout->addWidget(iconSlot, 0, Qt::AlignVCenter);
+	outputLayout->addWidget(new QLabel(name), 2, Qt::AlignVCenter);
 
 	if (strcmp(output_type, "record") == 0) {
 		outputButton->setIcon(create2StateIcon(":/aitum/media/recording.svg", ":/aitum/media/record.svg"));
-		outputButton->setStyleSheet("QAbstractButton:checked{background: rgb(255,0,0);}");
+		outputButton->setObjectName(QStringLiteral("canvasRecord"));
 		outputButton->setToolTip(QString::fromUtf8(obs_module_text("Record")));
 
 		std::string splitName = "AitumStreamSuiteSplit";
@@ -152,13 +164,13 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 		obs_data_array_release(unpause_hotkey);
 
 	} else if (strcmp(output_type, "backtrack") == 0) {
-		outputButton->setStyleSheet(QString::fromUtf8(
-			"QPushButton:checked{background: rgb(26,87,255);} QPushButton{ border-top-right-radius: 0; border-bottom-right-radius: 0; width: 32px; padding-left: 0px; padding-right: 0px;}"));
+		outputButton->setObjectName(QStringLiteral("canvasBacktrackEnable"));
 
 		auto replayEnable = new QCheckBox;
 		auto testl = new QHBoxLayout;
 		outputButton->setLayout(testl);
-		testl->addWidget(replayEnable);
+		testl->setContentsMargins(0, 0, 0, 0);
+		testl->addWidget(replayEnable, 0, Qt::AlignCenter);
 		outputButton->setToolTip(QString::fromUtf8(obs_module_text("Backtrack")));
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
@@ -173,9 +185,12 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 
 		extraButton = new QPushButton;
 		extraButton->setCheckable(true);
+		extraButton->setFixedWidth(kActionBtnWidth);
+		extraButton->setMinimumHeight(28);
+		extraButton->setMaximumHeight(32);
+		extraButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 		extraButton->setIcon(create2StateIcon(":/aitum/media/backtrack_on.svg", ":/aitum/media/backtrack_off.svg"));
-		extraButton->setStyleSheet(QString::fromUtf8(
-			"QPushButton:checked{background: rgb(26,87,255);} QPushButton{min-width: 32px; padding-left: 0px; padding-right: 0px; border-top-left-radius: 0; border-bottom-left-radius: 0;}"));
+		extraButton->setObjectName(QStringLiteral("canvasReplay"));
 		extraButton->setToolTip(QString::fromUtf8(obs_module_text("SaveBacktrack")));
 
 		connect(extraButton, &QPushButton::clicked, [this] {
@@ -215,19 +230,29 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 
 	} else if (strcmp(output_type, "virtual_cam") == 0) {
 		outputButton->setIcon(create2StateIcon(":/aitum/media/virtual_cam_on.svg", ":/aitum/media/virtual_cam_off.svg"));
-		outputButton->setStyleSheet("QAbstractButton:checked{background: rgb(192,128,0);}");
+		outputButton->setObjectName(QStringLiteral("canvasVirtualCam"));
 		outputButton->setToolTip(QString::fromUtf8(obs_module_text("VirtualCamera")));
 	} else if (strcmp(output_type, "ffmpeg") == 0) {
 		outputButton->setIcon(create2StateIcon(":/aitum/media/ffmpeg_on.svg", ":/aitum/media/ffmpeg_off.svg"));
-		outputButton->setStyleSheet("QAbstractButton:checked{background: rgb(0,135,0);}");
+		outputButton->setObjectName(QStringLiteral("canvasStream"));
 		outputButton->setToolTip(QString::fromUtf8(obs_module_text("Ffmpeg")));
 	} else {
 		outputButton->setIcon(create2StateIcon(":/aitum/media/streaming.svg", ":/aitum/media/stream.svg"));
-		outputButton->setStyleSheet("QAbstractButton:checked{background: rgb(0,210,153);}");
+		outputButton->setObjectName(QStringLiteral("canvasStream"));
 		outputButton->setToolTip(QString::fromUtf8(obs_module_text("Stream")));
 	}
 	outputButton->setCheckable(true);
 	outputButton->setChecked(false);
+	connect(outputButton, &QPushButton::toggled, [this](bool checked) {
+		outputButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
+		outputButton->style()->unpolish(outputButton);
+		outputButton->style()->polish(outputButton);
+		if (extraButton) {
+			extraButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
+			extraButton->style()->unpolish(extraButton);
+			extraButton->style()->polish(extraButton);
+		}
+	});
 
 	connect(outputButton, &QPushButton::clicked, [this]() {
 		auto output_type = obs_data_get_string(settings, "type");
@@ -271,16 +296,16 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 
 	canvasLabel = new QLabel;
 	UpdateCanvas();
-	outputLayout->addWidget(canvasLabel, 1);
+	outputLayout->addWidget(canvasLabel, 1, Qt::AlignVCenter);
 	if (extraButton) {
 		auto l3 = new QHBoxLayout;
 		l3->setContentsMargins(0, 0, 0, 0);
-		l3->setSpacing(0);
+		l3->setSpacing(4);
 		l3->addWidget(outputButton);
 		l3->addWidget(extraButton);
-		outputLayout->addLayout(l3);
+		outputLayout->addLayout(l3, 0);
 	} else {
-		outputLayout->addWidget(outputButton);
+		outputLayout->addWidget(outputButton, 0, Qt::AlignVCenter);
 	}
 
 	setLayout(outputLayout);

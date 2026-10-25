@@ -11,7 +11,9 @@ class OutputWidget : public QFrame {
 	Q_OBJECT
 private:
 	obs_data_t *settings = nullptr;
-	int outputPlatformIconSize = 36;
+	int outputPlatformIconSize = 24;
+	static constexpr int kRowSpacing = 8;
+	static constexpr int kActionBtnWidth = 40;
 
 	QPushButton *outputButton = nullptr;
 	QPushButton *extraButton = nullptr;

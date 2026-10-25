@@ -227,9 +227,58 @@ ScenesDock::ScenesDock(QWidget *parent) : QFrame(parent)
 	setLayout(mainLayout);
 }
 
+void ScenesDock::DisconnectSignals()
+{
+	auto c = obs_weak_canvas_get_canvas(canvas);
+	if (!c) {
+		return;
+	}
+
+	auto sh = obs_canvas_get_signal_handler(c);
+	if (sh) {
+		signal_handler_disconnect(sh, "source_add", scene_add, this);
+		signal_handler_disconnect(sh, "source_remove", scene_remove, this);
+		signal_handler_disconnect(sh, "channel_change", channel_change, this);
+	}
+
+	obs_canvas_enum_scenes(
+		c,
+		[](void *param, obs_source_t *scene) {
+			auto ssh = obs_source_get_signal_handler(scene);
+			if (ssh) {
+				signal_handler_disconnect(ssh, "rename", scene_rename, param);
+			}
+			return true;
+		},
+		this);
+
+	obs_source_t *current = obs_canvas_get_channel(c, 0);
+	obs_source_t *parent = nullptr;
+	while (current && obs_source_get_type(current) == OBS_SOURCE_TYPE_TRANSITION) {
+		obs_source_release(parent);
+		parent = current;
+		current = obs_transition_get_active_source(parent);
+	}
+	if (parent) {
+		auto tsh = obs_source_get_signal_handler(parent);
+		if (tsh) {
+			signal_handler_disconnect(tsh, "transition_start", transition_action, this);
+			signal_handler_disconnect(tsh, "transition_video_stop", transition_action, this);
+			signal_handler_disconnect(tsh, "transition_stop", transition_action, this);
+		}
+	}
+	obs_source_release(parent);
+	obs_source_release(current);
+	obs_canvas_release(c);
+}
+
 ScenesDock::~ScenesDock()
 {
+	/* Must disconnect before ClearSceneData fires source_remove into a
+	 * destroyed ScenesDock (SCRIPTING_SHUTDOWN removes docks first). */
+	DisconnectSignals();
 	obs_weak_canvas_release(canvas);
+	canvas = nullptr;
 }
 
 void ScenesDock::ChangeSceneIndex(bool relative, int offset, int invalidIdx)
@@ -343,13 +392,9 @@ void ScenesDock::SwitchToCanvas(obs_canvas_t *c)
 		obs_canvas_release(orig);
 		return;
 	}
-	auto sh = orig ? obs_canvas_get_signal_handler(orig) : nullptr;
-	if (sh) {
-		signal_handler_disconnect(sh, "source_add", scene_add, this);
-		signal_handler_disconnect(sh, "source_remove", scene_remove, this);
-		signal_handler_disconnect(sh, "channel_change", channel_change, this);
-	}
 	obs_canvas_release(orig);
+	DisconnectSignals();
+	obs_weak_canvas_release(canvas);
 	canvas = obs_canvas_get_weak_canvas(c);
 	if (transitions_dock) {
 		transitions_dock->SetCanvas(c, canvasDock);
@@ -358,7 +403,7 @@ void ScenesDock::SwitchToCanvas(obs_canvas_t *c)
 	if (!canvas) {
 		return;
 	}
-	sh = obs_canvas_get_signal_handler(c);
+	auto sh = obs_canvas_get_signal_handler(c);
 	if (sh) {
 		signal_handler_connect(sh, "source_add", scene_add, this);
 		signal_handler_connect(sh, "source_remove", scene_remove, this);
@@ -963,13 +1008,19 @@ void ScenesDock::scene_add(void *data, calldata_t *cd)
 
 void ScenesDock::scene_remove(void *data, calldata_t *cd)
 {
+	auto self = static_cast<ScenesDock *>(data);
+	if (!self || !self->sceneList) {
+		return;
+	}
 	auto scene = (obs_source_t *)calldata_ptr(cd, "source");
-	auto self = (ScenesDock *)data;
+	if (!scene) {
+		return;
+	}
 	auto items = self->sceneList->findItems(QString::fromUtf8(obs_source_get_name(scene)), Qt::MatchExactly);
 	if (items.isEmpty()) {
 		return;
 	}
-	self->sceneList->takeItem(self->sceneList->row(items.first()));
+	delete self->sceneList->takeItem(self->sceneList->row(items.first()));
 }
 
 void ScenesDock::scene_rename(void *data, calldata_t *cd)

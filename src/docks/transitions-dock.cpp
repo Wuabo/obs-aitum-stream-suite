@@ -15,30 +15,31 @@ extern TransitionsDock *transitions_dock;
 TransitionsDock::TransitionsDock(QWidget *parent) : QFrame(parent)
 {
 	auto transitionsGroupLayout = new QVBoxLayout();
-	transitionsGroupLayout->setContentsMargins(0, 0, 0, 0);
-	transitionsGroupLayout->setSpacing(0);
+	transitionsGroupLayout->setContentsMargins(8, 8, 8, 8);
+	transitionsGroupLayout->setSpacing(6);
 	setLayout(transitionsGroupLayout);
 
 	transition = new QComboBox();
 	transitionsGroupLayout->addWidget(transition);
 	auto hl = new QHBoxLayout();
 	hl->setContentsMargins(0, 0, 0, 0);
-	hl->setSpacing(4);
+	hl->setSpacing(6);
 
 	auto durationLabel = new QLabel(QString::fromUtf8(obs_frontend_get_locale_string("Basic.TransitionDuration")));
 	duration = new FocusScrollSpinBox();
 	duration->setMinimum(50);
 	duration->setMaximum(20000);
 	duration->setSingleStep(50);
-	duration->setSuffix(QStringLiteral("ms"));
+	duration->setSuffix(QStringLiteral(" ms"));
 	connect(duration, QOverload<int>::of(&QSpinBox::valueChanged), [this](int d) { obs_frontend_set_transition_duration(d); });
 	durationLabel->setBuddy(duration);
 	hl->addWidget(durationLabel);
-	hl->addWidget(duration);
+	hl->addWidget(duration, 1);
 	transitionsGroupLayout->addLayout(hl);
 
 	hl = new QHBoxLayout();
-	hl->addStretch();
+	hl->setContentsMargins(0, 0, 0, 0);
+	hl->setSpacing(4);
 	auto addButton = new QPushButton();
 	addButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 	addButton->setAccessibleName(QString::fromUtf8(obs_frontend_get_locale_string("Basic.AddTransition")));
@@ -279,6 +280,7 @@ TransitionsDock::TransitionsDock(QWidget *parent) : QFrame(parent)
 	});
 
 	hl->addWidget(propsButton);
+	hl->addStretch();
 
 	transitionsGroupLayout->addLayout(hl);
 	transitionsGroupLayout->addStretch();

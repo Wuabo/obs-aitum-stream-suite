@@ -1,18 +1,15 @@
-#include "../utils/icon.hpp"
 #include "../utils/widgets/locked-checkbox.hpp"
 #include "../utils/widgets/visibility-checkbox.hpp"
 #include "../utils/widgets/focus-scroll-spinbox.hpp"
-#include "properties-dock.hpp"
 #include "transform-dock.hpp"
 #include <graphics/matrix4.h>
 #include <obs-frontend-api.h>
 #include <QCoreApplication>
+#include <QIcon>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QToolBar>
 #include <QVBoxLayout>
-
-extern PropertiesDock *properties_dock;
 
 TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 {
@@ -55,15 +52,14 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 
 	verticalLayout_3->addLayout(titleLayout);
 
-	auto c = this->palette().color(QPalette::Text);
 	auto toolbar = new QToolBar;
 	toolbar->setObjectName("transformToolBar");
 
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::EditCopy, generateEmojiQIcon(QString::fromUtf8("⧉"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::EditCopy, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("⧉"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.CopyTransform")), [this] {
 			if (!item)
@@ -102,9 +98,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		});
 	pasteAction = toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::EditPaste, generateEmojiQIcon(QString::fromUtf8("📋"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::EditPaste, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("📋"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.PasteTransform")), [this] {
 			if (!item)
@@ -155,9 +151,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 	pasteAction->setEnabled(false);
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::SystemReboot, generateEmojiQIcon(QString::fromUtf8("↺"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::SystemReboot, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("↺"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.ResetTransform")), [this] {
 			if (!item)
@@ -193,9 +189,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 	toolbar->addSeparator();
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::ObjectRotateLeft, generateEmojiQIcon(QString::fromUtf8("⭯"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::ObjectRotateLeft, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("⭯"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate90CCW")), [this] {
 			if (!item)
@@ -223,9 +219,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		}); // QIcon::ThemeIcon::ViewRestore
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::ObjectRotateRight, generateEmojiQIcon(QString::fromUtf8("⭮"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::ObjectRotateRight, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("⭮"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate90CW")), [this] {
 			if (!item)
@@ -253,9 +249,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		}); // QIcon::ThemeIcon::ViewRefresh
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::ViewRefresh, generateEmojiQIcon(QString::fromUtf8("⟳"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::ViewRefresh, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("⟳"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate180")), [this] {
 			if (!item)
@@ -283,7 +279,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		});
 	toolbar->addSeparator();
 	toolbar->addAction(
-		generateEmojiQIcon(QString::fromUtf8("⇄"), c),
+		QIcon(),
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.FlipHorizontal")), [this] {
 			if (!item)
 				return;
@@ -311,7 +307,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 				obs_data_get_json(rwrapper), false);
 		});
 	toolbar->addAction(
-		generateEmojiQIcon(QString::fromUtf8("⇅"), c),
+		QIcon(),
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.FlipVertical")), [this] {
 			if (!item)
 				return;
@@ -342,9 +338,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 	toolbar->addSeparator();
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::ZoomFitBest, generateEmojiQIcon(QString::fromUtf8("⛶"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::ZoomFitBest, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("⛶"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.FitToScreen")), [this] {
 			if (!item)
@@ -379,9 +375,9 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		});
 	toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		QIcon::fromTheme(QIcon::ThemeIcon::ViewFullscreen, generateEmojiQIcon(QString::fromUtf8("⤢"), c)),
+		QIcon::fromTheme(QIcon::ThemeIcon::ViewFullscreen, QIcon()),
 #else
-		generateEmojiQIcon(QString::fromUtf8("⤢"), c),
+		QIcon(),
 #endif
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.StretchToScreen")), [this] {
 			if (!item)
@@ -415,7 +411,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 				obs_data_get_json(rwrapper), false);
 		});
 	toolbar->addAction(
-		generateEmojiQIcon(QString::fromUtf8("✥"), c),
+		QIcon(),
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.CenterToScreen")), [this] {
 			if (!item)
 				return;
@@ -473,7 +469,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 				obs_data_get_json(rwrapper), false);
 		});
 	toolbar->addAction(
-		generateEmojiQIcon(QString::fromUtf8("⬍"), c),
+		QIcon(),
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.VerticalCenter")), [this] {
 			if (!item)
 				return;
@@ -530,7 +526,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 				obs_data_get_json(rwrapper), false);
 		});
 	toolbar->addAction(
-		generateEmojiQIcon(QString::fromUtf8("⬌"), c),
+		QIcon(),
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.HorizontalCenter")), [this] {
 			if (!item)
 				return;
@@ -1050,9 +1046,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		if (!transition || !obs_source_configurable(transition))
 			return;
 
-		QMetaObject::invokeMethod(properties_dock, "LoadProperties", Qt::QueuedConnection,
-					  Q_ARG(OBSSource, OBSSource(transition)));
-		properties_dock->parentWidget()->show();
+		obs_frontend_open_source_properties(transition);
 	});
 	transitionGridLayout->addWidget(showTransitionProps, 1, 2, 1, 1);
 
@@ -1111,9 +1105,7 @@ TransformDock::TransformDock(QWidget *parent) : QFrame(parent)
 		if (!transition || !obs_source_configurable(transition))
 			return;
 
-		QMetaObject::invokeMethod(properties_dock, "LoadProperties", Qt::QueuedConnection,
-					  Q_ARG(OBSSource, OBSSource(transition)));
-		properties_dock->parentWidget()->show();
+		obs_frontend_open_source_properties(transition);
 	});
 	transitionGridLayout->addWidget(hideTransitionProps, 2, 2, 1, 1);
 

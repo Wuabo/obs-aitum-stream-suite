@@ -9,7 +9,6 @@
 #include <src/utils/color.hpp>
 
 extern obs_data_t *current_profile_config;
-extern QTabBar *modesTabBar;
 
 StatsDock::StatsDock(QWidget *parent) : QFrame(parent)
 {
@@ -102,17 +101,10 @@ void StatsDock::SaveSettings(bool closing, QString mode)
 	auto state = table->horizontalHeader()->saveState();
 	auto b64 = state.toBase64();
 	auto state_chars = b64.constData();
-	if (mode.isEmpty() && modesTabBar) {
-		auto d = modesTabBar->tabData(modesTabBar->currentIndex());
-		if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-			mode = d.toString();
-		} else {
-			mode = modesTabBar->tabText(modesTabBar->currentIndex());
-		}
+	if (mode.isEmpty()) {
+		mode = QStringLiteral("default");
 	}
-	std::string setting_name = "stats_state";
-	if (!mode.isEmpty())
-		setting_name += "_" + mode.toStdString();
+	std::string setting_name = "stats_state_" + mode.toStdString();
 	obs_data_set_string(current_profile_config, setting_name.c_str(), state_chars);
 }
 

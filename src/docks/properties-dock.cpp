@@ -13,6 +13,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSpinBox>
@@ -22,8 +23,8 @@
 #include <src/utils/widgets/double-slider.hpp>
 #include <src/utils/widgets/focus-scroll-spinbox.hpp>
 
-extern FiltersDock *filters_dock;
-extern TransformDock *transform_dock;
+extern QPointer<FiltersDock> filters_dock;
+extern QPointer<TransformDock> transform_dock;
 
 PropertiesDock::PropertiesDock(QWidget *parent) : QFrame(parent)
 {

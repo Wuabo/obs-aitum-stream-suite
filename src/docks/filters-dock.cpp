@@ -4,12 +4,13 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <QMenu>
+#include <QPointer>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <src/dialogs/name-dialog.hpp>
 #include <src/utils/widgets/visibility-item-widget.hpp>
 
-extern PropertiesDock *properties_dock;
+extern QPointer<PropertiesDock> properties_dock;
 
 FiltersDock::FiltersDock(QWidget *parent) : QFrame(parent)
 {
@@ -189,8 +190,7 @@ void FiltersDock::ShowFiltersContextMenu(QListWidgetItem *widget_item)
 
 		obs_source_filter_add(s, df);
 
-		QMetaObject::invokeMethod(properties_dock, "LoadProperties", Qt::QueuedConnection, Q_ARG(OBSSource, OBSSource(df)));
-		properties_dock->parentWidget()->show();
+		obs_frontend_open_source_properties(df);
 	});
 	menu.addAction(QString::fromUtf8(obs_frontend_get_locale_string("Remove")),
 		       [this, widget_item] { RemoveFilter(widget_item); });

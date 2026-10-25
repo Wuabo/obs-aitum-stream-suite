@@ -14,30 +14,22 @@ class OutputDock : public QFrame {
 	Q_OBJECT
 
 private:
-	int outputPlatformIconSize = 36;
+	int outputPlatformIconSize = 24;
+	static constexpr int kRowSpacing = 8;
+	static constexpr int kActionBtnWidth = 40;
 	QVBoxLayout *mainLayout = nullptr;
 	QLabel *mainPlatformIconLabel = nullptr;
 	QLabel *mainStreamCanvasLabel = nullptr;
 	QPushButton *mainStreamButton = nullptr;
 	QPushButton *mainRecordButton = nullptr;
-	QPushButton *mainBacktrackCheckboxButton = nullptr;
-	QCheckBox *mainBacktrackCheckbox = nullptr;
-	QPushButton *mainBacktrackButton = nullptr;
-	QPushButton *mainVirtualCamButton = nullptr;
 	QFrame *mainStreamGroup = nullptr;
 	QFrame *mainRecordGroup = nullptr;
-	QFrame *mainBacktrackGroup = nullptr;
-	QFrame *mainVirtualCamGroup = nullptr;
 	QString mainPlatformUrl;
 	bool exiting = false;
 	bool mainStreamEnabled = true;
 	bool mainRecordEnabled = true;
-	bool mainBacktrackEnabled = true;
-	bool mainVirtualCamEnabled = true;
 	QDateTime mainStreamStartTime;
 	QDateTime mainRecordStartTime;
-	QDateTime mainBacktrackStartTime;
-	QDateTime mainVirtualCamStartTime;
 
 	QTimer videoCheckTimer;
 
@@ -52,8 +44,6 @@ private:
 
 	std::function<void()> mainStreamOnStarted;
 	std::function<void()> mainRecordOnStarted;
-	std::function<void()> mainBacktrackOnStarted;
-	std::function<void()> mainVirtualCamOnStarted;
 
 	static void frontend_event(enum obs_frontend_event event, void *private_data);
 
@@ -76,6 +66,4 @@ public:
 public slots:
 	void UpdateMainStreamStatus(bool active);
 	void UpdateMainRecordingStatus(bool active);
-	void UpdateMainBacktrackStatus(bool active);
-	void UpdateMainVirtualCameraStatus(bool active);
 };

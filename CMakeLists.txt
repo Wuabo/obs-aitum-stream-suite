@@ -37,11 +37,6 @@ if((OS_LINUX OR OS_FREEBSD OR OS_OPENBSD) AND Qt6_VERSION VERSION_LESS "6.9.0")
   target_link_libraries(${PROJECT_NAME} PRIVATE Qt::GuiPrivate)
 endif()
 
-if(BUILD_OUT_OF_TREE)
-  find_package(CURL REQUIRED)
-endif()
-target_link_libraries(${PROJECT_NAME} PRIVATE CURL::libcurl)
-
 target_compile_options(
 ${PROJECT_NAME} PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header
                                 -Wno-comma>)
@@ -65,18 +60,14 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/version.h)
 
 target_sources(${PROJECT_NAME} PRIVATE
-  src/docks/browser-dock.cpp
-  src/docks/browser-dock.hpp
   src/docks/canvas-dock.cpp
   src/docks/canvas-dock.hpp
   src/docks/canvas-clone-dock.cpp
   src/docks/canvas-clone-dock.hpp
-  src/docks/capture-dock.cpp
-  src/docks/capture-dock.hpp
+  src/docks/canvas-previews-dock.cpp
+  src/docks/canvas-previews-dock.hpp
   src/docks/filters-dock.cpp
   src/docks/filters-dock.hpp
-  src/docks/live-scenes-dock.cpp
-  src/docks/live-scenes-dock.hpp
   src/docks/output-dock.cpp
   src/docks/output-dock.hpp
   src/docks/properties-dock.cpp
@@ -101,27 +92,22 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/dialogs/name-dialog.hpp
   src/dialogs/record-output-dialog.cpp
   src/dialogs/record-output-dialog.hpp
-  src/dialogs/scene-collection-wizard.cpp
-  src/dialogs/scene-collection-wizard.hpp
   src/dialogs/stream-output-dialog.cpp
   src/dialogs/stream-output-dialog.hpp)
 
 target_sources(${PROJECT_NAME} PRIVATE
   src/utils/color.cpp
   src/utils/event-filter.cpp
-  src/utils/file-download.c
   src/utils/icon.cpp
   src/utils/obs-websocket.cpp
   src/utils/widgets/accessible-alignment-cell.cpp
   src/utils/widgets/accessible-alignment-selector.cpp
   src/utils/widgets/alignment-selector.cpp
-  src/utils/widgets/capture-widget.cpp
   src/utils/widgets/double-slider.cpp
   src/utils/widgets/focus-scroll-spinbox.cpp
   src/utils/widgets/hotkey-edit.cpp
   src/utils/widgets/locked-checkbox.cpp
   src/utils/widgets/output-widget.cpp
-  src/utils/widgets/pixmap-label.cpp
   src/utils/widgets/slider-ignore-scroll.cpp
   src/utils/widgets/source-tree.cpp
   src/utils/widgets/stream-key-input.cpp
@@ -132,18 +118,15 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/widgets/visibility-item-widget.cpp
   src/utils/color.hpp
   src/utils/event-filter.hpp
-  src/utils/file-download.h
   src/utils/icon.hpp
   src/utils/widgets/accessible-alignment-cell.hpp
   src/utils/widgets/accessible-alignment-selector.hpp
   src/utils/widgets/alignment-selector.hpp
-  src/utils/widgets/capture-widget.hpp
   src/utils/widgets/double-slider.hpp
   src/utils/widgets/focus-scroll-spinbox.hpp
   src/utils/widgets/hotkey-edit.hpp
   src/utils/widgets/locked-checkbox.hpp
   src/utils/widgets/output-widget.hpp
-  src/utils/widgets/pixmap-label.hpp
   src/utils/widgets/slider-ignore-scroll.hpp
   src/utils/widgets/source-tree.hpp
   src/utils/widgets/stream-key-input.hpp

@@ -12,6 +12,8 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSizePolicy>
+#include <QStyle>
 #include <QScrollArea>
 #include <QToolBar>
 #include <QToolButton>
@@ -48,7 +50,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 
 	auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/settings/images/settings/general.svg")),
 				    QString::fromUtf8(obs_frontend_get_locale_string("Settings")),
-				    [this] { open_config_dialog(2, nullptr); });
+				    [this] { open_config_dialog(1, nullptr); });
 	toolbar->widgetForAction(a)->setProperty("themeID", QVariant(QString::fromUtf8("propertiesIconSmall")));
 	toolbar->widgetForAction(a)->setProperty("class", "icon-gear");
 
@@ -95,7 +97,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("class", "icon-media-play");
 	a->setIconText(QString::fromUtf8(obs_module_text("StartAll")));
 	((QToolButton *)toolbar->widgetForAction(a))->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	toolbar->widgetForAction(a)->setStyleSheet("QToolButton { min-width: 80px; max-width: none; }");
+	toolbar->widgetForAction(a)->setMinimumWidth(80);
 
 	a = toolbar->addAction(
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
@@ -108,20 +110,10 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("class", "icon-media-stop");
 
 	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/stream.svg")), QString::fromUtf8(obs_module_text("Stream")),
-			       [this] { open_config_dialog(2, "stream"); });
+			       [this] { open_config_dialog(1, "stream"); });
 
 	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/record.svg")), QString::fromUtf8(obs_module_text("Record")),
-			       [this] { open_config_dialog(2, "record"); });
-
-	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/backtrack_off.svg")),
-			       QString::fromUtf8(obs_module_text("Backtrack")), [this] { open_config_dialog(2, "backtrack"); });
-
-	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/virtual_cam_off.svg")),
-			       QString::fromUtf8(obs_module_text("VirtualCamera")),
-			       [this] { open_config_dialog(2, "virtual_cam"); });
-
-	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/ffmpeg_off.svg")),
-			       QString::fromUtf8(obs_module_text("FfmpegOutput")), [this] { open_config_dialog(2, "ffmpeg"); });
+			       [this] { open_config_dialog(1, "record"); });
 
 	layout->addWidget(toolbar);
 
@@ -132,24 +124,49 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	t->setLayout(mainLayout);
 
 	mainPlatformIconLabel = new QLabel;
+	mainPlatformIconLabel->setFixedSize(outputPlatformIconSize, outputPlatformIconSize);
+	mainPlatformIconLabel->setScaledContents(true);
 	mainPlatformIconLabel->setPixmap(
 		getPlatformIconFromEndpoint(QString::fromUtf8("")).pixmap(outputPlatformIconSize, outputPlatformIconSize));
 
-	auto l2 = new QHBoxLayout;
-	l2->setContentsMargins(5, 0, 5, 0);
-	l2->setSpacing(0);
+	auto makeIconSlot = [this](QWidget *icon) {
+		auto slot = new QWidget;
+		slot->setFixedWidth(outputPlatformIconSize);
+		auto sl = new QHBoxLayout(slot);
+		sl->setContentsMargins(0, 0, 0, 0);
+		sl->setSpacing(0);
+		if (icon) {
+			sl->addWidget(icon, 0, Qt::AlignVCenter);
+		}
+		return slot;
+	};
 
-	l2->addWidget(mainPlatformIconLabel);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinStream"))), 1);
+	auto styleActionButton = [](QPushButton *btn) {
+		btn->setFixedWidth(kActionBtnWidth);
+		btn->setMinimumHeight(28);
+		btn->setMaximumHeight(32);
+		btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	};
+
+	auto l2 = new QHBoxLayout;
+	l2->setContentsMargins(8, 4, 8, 4);
+	l2->setSpacing(kRowSpacing);
+
+	l2->addWidget(makeIconSlot(mainPlatformIconLabel), 0, Qt::AlignVCenter);
+	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinStream"))), 2, Qt::AlignVCenter);
 	mainStreamCanvasLabel = new QLabel(QString::fromUtf8(obs_module_text("MainCanvas")));
-	l2->addWidget(mainStreamCanvasLabel, 1);
+	l2->addWidget(mainStreamCanvasLabel, 1, Qt::AlignVCenter);
 	mainStreamButton = new QPushButton;
 	mainStreamButton->setObjectName(QStringLiteral("canvasStream"));
-	mainStreamButton->setMinimumHeight(30);
+	styleActionButton(mainStreamButton);
 	mainStreamButton->setIcon(create2StateIcon(":/aitum/media/streaming.svg", ":/aitum/media/stream.svg"));
-	mainStreamButton->setStyleSheet("QAbstractButton:checked{background: rgb(0,210,153);}");
 	mainStreamButton->setCheckable(true);
 	mainStreamButton->setChecked(false);
+	connect(mainStreamButton, &QPushButton::toggled, [this](bool checked) {
+		mainStreamButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
+		mainStreamButton->style()->unpolish(mainStreamButton);
+		mainStreamButton->style()->polish(mainStreamButton);
+	});
 
 	connect(mainStreamButton, &QPushButton::clicked, [this] {
 		const auto config = obs_frontend_get_user_config();
@@ -189,10 +206,8 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 			mainStreamButton->setChecked(true);
 		}
 	});
-	//streamButton->setSizePolicy(sp2);
 	mainStreamButton->setToolTip(QString::fromUtf8(obs_module_text("Stream")));
-	l2->addWidget(mainStreamButton);
-	//mainLayout->addLayout(l2);
+	l2->addWidget(mainStreamButton, 0, Qt::AlignVCenter);
 
 	mainStreamGroup = new QFrame;
 	mainStreamGroup->setLayout(l2);
@@ -200,125 +215,29 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	mainLayout->addWidget(mainStreamGroup);
 
 	l2 = new QHBoxLayout;
-	l2->setContentsMargins(5, 0, 5, 0);
-	l2->setSpacing(0);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinRecord"))), 1);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("MainCanvas"))), 1);
+	l2->setContentsMargins(8, 4, 8, 4);
+	l2->setSpacing(kRowSpacing);
+	l2->addWidget(makeIconSlot(nullptr), 0, Qt::AlignVCenter);
+	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinRecord"))), 2, Qt::AlignVCenter);
+	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("MainCanvas"))), 1, Qt::AlignVCenter);
 	mainRecordButton = new QPushButton;
 	mainRecordButton->setObjectName(QStringLiteral("canvasRecord"));
-	mainRecordButton->setMinimumHeight(30);
+	styleActionButton(mainRecordButton);
 	mainRecordButton->setIcon(create2StateIcon(":/aitum/media/recording.svg", ":/aitum/media/record.svg"));
-	mainRecordButton->setStyleSheet("QAbstractButton:checked{background: rgb(255,0,0);}");
 	mainRecordButton->setCheckable(true);
 	mainRecordButton->setChecked(false);
+	connect(mainRecordButton, &QPushButton::toggled, [this](bool checked) {
+		mainRecordButton->setProperty("class", checked ? QStringLiteral("state-active") : QStringLiteral(""));
+		mainRecordButton->style()->unpolish(mainRecordButton);
+		mainRecordButton->style()->polish(mainRecordButton);
+	});
 	QObject::connect(mainRecordButton, SIGNAL(clicked()), main_window, SLOT(RecordActionTriggered()));
 
-	l2->addWidget(mainRecordButton);
+	l2->addWidget(mainRecordButton, 0, Qt::AlignVCenter);
 
 	mainRecordGroup = new QFrame;
 	mainRecordGroup->setLayout(l2);
 	mainLayout->addWidget(mainRecordGroup);
-
-	l2 = new QHBoxLayout;
-	l2->setContentsMargins(5, 0, 5, 0);
-	l2->setSpacing(0);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinBacktrack"))), 1);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("MainCanvas"))), 1);
-
-	//mainBacktrackCheckbox =
-
-	mainBacktrackCheckboxButton = new QPushButton;
-	mainBacktrackCheckboxButton->setCheckable(true);
-	mainBacktrackCheckboxButton->setStyleSheet(QString::fromUtf8(
-		"QPushButton:checked{background: rgb(26,87,255);} QPushButton{ border-top-right-radius: 0; border-bottom-right-radius: 0; width: 32px; padding-left: 0px; padding-right: 0px;}"));
-
-	auto buttonLayout = new QHBoxLayout;
-	mainBacktrackCheckboxButton->setLayout(buttonLayout);
-
-	mainBacktrackCheckbox = new QCheckBox;
-	buttonLayout->addWidget(mainBacktrackCheckbox);
-
-	mainBacktrackButton = new QPushButton;
-	mainBacktrackButton->setObjectName(QStringLiteral("canvasBacktrack"));
-	mainBacktrackButton->setMinimumHeight(30);
-	mainBacktrackButton->setIcon(create2StateIcon(":/aitum/media/backtrack_on.svg", ":/aitum/media/backtrack_off.svg"));
-	mainBacktrackButton->setStyleSheet(
-		"QPushButton:checked{background: rgb(26,87,255);} QPushButton{min-width: 32px; padding-left: 0px; padding-right: 0px; border-top-left-radius: 0; border-bottom-left-radius: 0;}");
-	mainBacktrackButton->setCheckable(true);
-	mainBacktrackButton->setChecked(false);
-	QObject::connect(mainBacktrackButton, &QPushButton::clicked, [this] {
-		if (obs_frontend_replay_buffer_active()) {
-			obs_frontend_replay_buffer_save();
-			mainBacktrackButton->setChecked(true);
-			mainBacktrackStartTime = QDateTime::currentDateTime();
-		} else {
-			mainBacktrackButton->setChecked(false);
-		}
-	});
-
-	connect(mainBacktrackCheckboxButton, &QPushButton::clicked, [this] {
-		bool enabled = mainBacktrackCheckboxButton->isChecked();
-		if (enabled != mainBacktrackCheckbox->isChecked()) {
-			mainBacktrackCheckbox->setChecked(enabled);
-		}
-		if (enabled != mainBacktrackButton->isChecked()) {
-			mainBacktrackButton->setChecked(enabled);
-		}
-		if (enabled) {
-			obs_frontend_replay_buffer_start();
-		} else {
-			obs_frontend_replay_buffer_stop();
-		}
-	});
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-	connect(mainBacktrackCheckbox, &QCheckBox::checkStateChanged, [this] {
-#else
-	connect(mainBacktrackCheckbox, &QCheckBox::stateChanged, [this] {
-#endif
-		if (mainBacktrackCheckbox->isChecked() != mainBacktrackCheckboxButton->isChecked()) {
-			mainBacktrackCheckboxButton->click();
-		}
-	});
-
-	auto l3 = new QHBoxLayout;
-	l3->setContentsMargins(0, 0, 0, 0);
-	l3->setSpacing(0);
-	l3->addWidget(mainBacktrackCheckboxButton);
-	l3->addWidget(mainBacktrackButton);
-	l2->addLayout(l3);
-
-	mainBacktrackGroup = new QFrame;
-	mainBacktrackGroup->setLayout(l2);
-	mainLayout->addWidget(mainBacktrackGroup);
-
-	l2 = new QHBoxLayout;
-	l2->setContentsMargins(5, 0, 5, 0);
-	l2->setSpacing(0);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("BuiltinVirtualCamera"))), 1);
-	l2->addWidget(new QLabel(QString::fromUtf8(obs_module_text("MainCanvas"))), 1);
-	mainVirtualCamButton = new QPushButton;
-	mainVirtualCamButton->setObjectName(QStringLiteral("canvasVirtualCamera"));
-	mainVirtualCamButton->setMinimumHeight(30);
-	mainVirtualCamButton->setIcon(create2StateIcon(":/aitum/media/virtual_cam_on.svg", ":/aitum/media/virtual_cam_off.svg"));
-	mainVirtualCamButton->setStyleSheet("QAbstractButton:checked{background: rgb(192,128,0);}");
-	mainVirtualCamButton->setCheckable(true);
-	mainVirtualCamButton->setChecked(false);
-
-	connect(mainVirtualCamButton, &QPushButton::clicked, [this] {
-		if (obs_frontend_virtualcam_active()) {
-			obs_frontend_stop_virtualcam();
-			mainVirtualCamButton->setChecked(false);
-		} else {
-			obs_frontend_start_virtualcam();
-			mainVirtualCamButton->setChecked(true);
-		}
-	});
-
-	l2->addWidget(mainVirtualCamButton);
-
-	mainVirtualCamGroup = new QFrame;
-	mainVirtualCamGroup->setLayout(l2);
-	mainLayout->addWidget(mainVirtualCamGroup);
 
 	connect(&videoCheckTimer, &QTimer::timeout, [this] {
 		if (exiting) {
@@ -359,40 +278,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 			} else if (active) {
 				auto t = QTime::fromMSecsSinceStartOfDay(mainRecordStartTime.msecsTo(QDateTime::currentDateTime()));
 				mainRecordButton->setText(t.toString(t.hour() ? "hh:mm:ss" : "mm:ss"));
-			}
-		}
-
-		if (mainBacktrackEnabled) {
-			auto enabled = obs_frontend_replay_buffer_active();
-			if (mainBacktrackCheckboxButton->isChecked() != enabled) {
-				mainBacktrackCheckboxButton->setChecked(enabled);
-				if (!enabled) {
-					mainBacktrackButton->setText("");
-				}
-			} else if (enabled) {
-				auto t = QTime::fromMSecsSinceStartOfDay(
-					mainBacktrackStartTime.msecsTo(QDateTime::currentDateTime()));
-				mainBacktrackButton->setText(t.toString(t.hour() ? "hh:mm:ss" : "mm:ss"));
-			}
-			if (mainBacktrackCheckbox->isChecked() != enabled) {
-				mainBacktrackCheckbox->setChecked(enabled);
-			}
-			if (mainBacktrackButton->isChecked() != enabled) {
-				mainBacktrackButton->setChecked(enabled);
-			}
-		}
-
-		if (mainVirtualCamEnabled) {
-			auto active = obs_frontend_virtualcam_active();
-			if (mainVirtualCamButton->isChecked() != active) {
-				mainVirtualCamButton->setChecked(active);
-				if (!active) {
-					mainVirtualCamButton->setText("");
-				}
-			} else if (active) {
-				auto t = QTime::fromMSecsSinceStartOfDay(
-					mainVirtualCamStartTime.msecsTo(QDateTime::currentDateTime()));
-				mainVirtualCamButton->setText(t.toString(t.hour() ? "hh:mm:ss" : "mm:ss"));
 			}
 		}
 
@@ -489,30 +374,30 @@ void OutputDock::LoadSettings()
 	mainRecordEnabled = obs_data_get_bool(current_profile_config, "main_record_output_show");
 	mainRecordGroup->setVisible(mainRecordEnabled);
 
-	mainBacktrackEnabled = obs_data_get_bool(current_profile_config, "main_backtrack_output_show");
-	mainBacktrackGroup->setVisible(mainBacktrackEnabled);
-
-	mainVirtualCamEnabled = obs_data_get_bool(current_profile_config, "main_virtual_cam_output_show");
-	mainVirtualCamGroup->setVisible(mainVirtualCamEnabled);
-
 	auto outputs2 = obs_data_get_array(current_profile_config, "outputs");
 	for (auto it = outputWidgets.begin(); it != outputWidgets.end();) {
 		bool found = false;
 		auto count = obs_data_array_count(outputs2);
 		for (size_t i = 0; i < count; i++) {
 			obs_data_t *data2 = obs_data_array_item(outputs2, i);
+			auto type = obs_data_get_string(data2, "type");
+			if (strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0) {
+				obs_data_release(data2);
+				continue;
+			}
 			auto name = QString::fromUtf8(obs_data_get_string(data2, "name"));
-			obs_data_release(data2);
 			if (name == (*it)->objectName()) {
 				(*it)->UpdateSettings(data2);
 				auto j = mainLayout->indexOf(*it);
-				if (j >= 0 && i + 4 != (size_t)j) {
+				if (j >= 0 && i + 2 != (size_t)j) {
 					mainLayout->takeAt(j);
-					mainLayout->insertWidget((int)i + 4, (*it));
+					mainLayout->insertWidget((int)i + 2, (*it));
 				}
 				found = true;
+				obs_data_release(data2);
 				break;
 			}
+			obs_data_release(data2);
 		}
 		if (!found) {
 			mainLayout->removeWidget(*it);
@@ -524,15 +409,22 @@ void OutputDock::LoadSettings()
 	}
 
 	auto count = obs_data_array_count(outputs2);
+	size_t visibleIdx = 0;
 	for (size_t i = 0; i < count; i++) {
 		obs_data_t *data2 = obs_data_array_item(outputs2, i);
+		auto type = obs_data_get_string(data2, "type");
+		if (strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0) {
+			obs_data_release(data2);
+			continue;
+		}
 		auto name = QString::fromUtf8(obs_data_get_string(data2, "name"));
 		if (std::find_if(outputWidgets.begin(), outputWidgets.end(),
 				 [&name](OutputWidget *ow) { return ow->objectName() == name; }) == outputWidgets.end()) {
 			auto outputWidget = new OutputWidget(data2, this);
 			outputWidgets.push_back(outputWidget);
-			mainLayout->insertWidget((int)i + 4, outputWidget);
+			mainLayout->insertWidget((int)visibleIdx + 2, outputWidget);
 		}
+		visibleIdx++;
 		obs_data_release(data2);
 	}
 
@@ -676,30 +568,6 @@ void OutputDock::UpdateMainRecordingStatus(bool active)
 	}
 }
 
-void OutputDock::UpdateMainBacktrackStatus(bool active)
-{
-	mainBacktrackCheckboxButton->setChecked(active);
-	mainBacktrackCheckbox->setChecked(active);
-	mainBacktrackButton->setChecked(active);
-	if (active) {
-		mainBacktrackStartTime = QDateTime::currentDateTime();
-		mainBacktrackButton->setText("00:00");
-	} else {
-		mainBacktrackButton->setText("");
-	}
-}
-
-void OutputDock::UpdateMainVirtualCameraStatus(bool active)
-{
-	mainVirtualCamButton->setChecked(active);
-	if (active) {
-		mainVirtualCamStartTime = QDateTime::currentDateTime();
-		mainVirtualCamButton->setText("00:00");
-	} else {
-		mainVirtualCamButton->setText("");
-	}
-}
-
 obs_data_array_t *OutputDock::GetOutputsArray()
 {
 	auto outputs2 = obs_data_array_create();
@@ -788,34 +656,6 @@ void OutputDock::frontend_event(enum obs_frontend_event event, void *private_dat
 			dock->mainRecordOnStarted = nullptr;
 		}
 		break;
-	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
-		if (dock->mainBacktrackOnStarted) {
-			blog(LOG_INFO, "[Aitum Stream Suite] Main replay buffer started, starting next output");
-			dock->mainBacktrackOnStarted();
-			dock->mainBacktrackOnStarted = nullptr;
-		}
-		break;
-	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
-		if (dock->mainBacktrackOnStarted) {
-			blog(LOG_INFO, "[Aitum Stream Suite] Main replay buffer stopped, starting next output");
-			dock->mainBacktrackOnStarted();
-			dock->mainBacktrackOnStarted = nullptr;
-		}
-		break;
-	case OBS_FRONTEND_EVENT_VIRTUALCAM_STARTED:
-		if (dock->mainVirtualCamOnStarted) {
-			blog(LOG_INFO, "[Aitum Stream Suite] Main virtual camera started, starting next output");
-			dock->mainVirtualCamOnStarted();
-			dock->mainVirtualCamOnStarted = nullptr;
-		}
-		break;
-	case OBS_FRONTEND_EVENT_VIRTUALCAM_STOPPED:
-		if (dock->mainVirtualCamOnStarted) {
-			blog(LOG_INFO, "[Aitum Stream Suite] Main virtual camera stopped, starting next output");
-			dock->mainVirtualCamOnStarted();
-			dock->mainVirtualCamOnStarted = nullptr;
-		}
-		break;
 	default:
 		break;
 	}
@@ -867,44 +707,6 @@ void OutputDock::StartAll(bool streamOnly, bool recordOnly)
 			return true;
 		});
 	}
-	if (mainBacktrackEnabled && !streamOnly) {
-		outputsToStart.push_back([this](std::function<void()> onStarted) {
-			if (obs_frontend_replay_buffer_active()) {
-				blog(LOG_INFO, "[Aitum Stream Suite] Skipped starting main replay buffer, already active");
-				onStarted();
-				return true;
-			}
-			this->mainBacktrackOnStarted = onStarted;
-			obs_frontend_replay_buffer_start();
-			auto output = obs_frontend_get_replay_buffer_output();
-			if (!output) {
-				blog(LOG_INFO, "[Aitum Stream Suite] No main replay buffer output found");
-				this->mainBacktrackOnStarted = nullptr;
-				onStarted();
-			}
-			obs_output_release(output);
-			return true;
-		});
-	}
-	if (mainVirtualCamEnabled && !streamOnly && !recordOnly) {
-		outputsToStart.push_back([this](std::function<void()> onStarted) {
-			if (obs_frontend_virtualcam_active()) {
-				blog(LOG_INFO, "[Aitum Stream Suite] Skipped starting main virtual camera, already active");
-				onStarted();
-				return true;
-			}
-			this->mainVirtualCamOnStarted = onStarted;
-			obs_frontend_start_virtualcam();
-			auto output = obs_frontend_get_virtualcam_output();
-			if (!output) {
-				blog(LOG_INFO, "[Aitum Stream Suite] No main virtual camera output found");
-				this->mainVirtualCamOnStarted = nullptr;
-				onStarted();
-			}
-			obs_output_release(output);
-			return true;
-		});
-	}
 	for (auto &ow : outputWidgets) {
 		if (streamOnly && !ow->IsStream()) {
 			continue;
@@ -948,12 +750,6 @@ void OutputDock::StopAll(bool streamOnly, bool recordOnly)
 	}
 	if (mainRecordEnabled && !streamOnly && obs_frontend_recording_active()) {
 		obs_frontend_recording_stop();
-	}
-	if (mainBacktrackEnabled && !streamOnly && obs_frontend_replay_buffer_active()) {
-		obs_frontend_replay_buffer_stop();
-	}
-	if (mainVirtualCamEnabled && !streamOnly && !recordOnly && obs_frontend_virtualcam_active()) {
-		obs_frontend_stop_virtualcam();
 	}
 	for (auto &ow : outputWidgets) {
 		if (streamOnly && !ow->IsStream()) {

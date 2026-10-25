@@ -26,6 +26,7 @@
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTextEdit>
 #include <QUrl>
@@ -93,16 +94,11 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	listWidget = new QListWidget(this);
 
-	listWidget->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
-	listWidget->setMaximumWidth(180);
-	QListWidgetItem *listwidgetitem = new QListWidgetItem(listWidget);
-	listwidgetitem->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/general.svg")));
-	//listwidgetitem->setProperty("themeID", QVariant(QString::fromUtf8("configIconSmall")));
-	//listwidgetitem->setProperty("class", "icon-gear");
-	//cogsIcon
-	listwidgetitem->setText(QString::fromUtf8(obs_module_text("General")));
+	listWidget->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+	listWidget->setFixedWidth(160);
+	listWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-	listwidgetitem = new QListWidgetItem(listWidget);
+	QListWidgetItem *listwidgetitem = new QListWidgetItem(listWidget);
 	listwidgetitem->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/output.svg")));
 	listwidgetitem->setText(QString::fromUtf8(obs_module_text("Canvas")));
 
@@ -115,14 +111,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	listwidgetitem->setText(QString::fromUtf8(obs_module_text("SetupTroubleshooter")));
 	listwidgetitem->setHidden(true);
 
-	listwidgetitem = new QListWidgetItem(listWidget);
-	listwidgetitem->setIcon(main_window->property("defaultIcon").value<QIcon>());
-	listwidgetitem->setText(QString::fromUtf8(obs_module_text("Help")));
-
-	listwidgetitem = new QListWidgetItem(listWidget);
-	listwidgetitem->setIcon(QIcon(QString::fromUtf8(":/aitum/media/aitum.png")));
-	listwidgetitem->setText(QString::fromUtf8(obs_module_text("SupportButton")));
-
 	listWidget->setCurrentRow(0);
 	listWidget->setSpacing(1);
 
@@ -131,67 +119,12 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	settingsPages->setFrameShape(QFrame::NoFrame);
 	settingsPages->setLineWidth(0);
 
-	QWidget *generalPage = new QWidget;
-	auto generalPageLayout = new QVBoxLayout;
-	generalPage->setLayout(generalPageLayout);
-
-	auto infoBox = new QGroupBox(QString::fromUtf8(obs_module_text("WelcomeTitle")));
-	infoBox->setStyleSheet("padding-top: 12px");
-	auto infoLayout = new QVBoxLayout;
-	infoBox->setLayout(infoLayout);
-
-	auto infoLabel = new QLabel(QString::fromUtf8(obs_module_text("WelcomeText")));
-	infoLabel->setWordWrap(true);
-	infoLayout->addWidget(infoLabel, 1);
-
-	auto buttonGroupBox = new QWidget();
-	auto buttonLayout = new QHBoxLayout;
-	buttonLayout->setSpacing(8);
-	buttonLayout->setAlignment(Qt::AlignCenter);
-
-	generalCanvasButton = new QToolButton();
-	generalCanvasButton->setText(QString::fromUtf8(obs_module_text("SettingsCanvasButton")));
-	generalCanvasButton->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/output.svg")));
-	//generalCanvasButton->setIconSize(QSize(100, 100));
-
-	generalOutputsButton = new QToolButton();
-	generalOutputsButton->setText(QString::fromUtf8(obs_module_text("SettingsOutputsButton")));
-	generalOutputsButton->setIcon(QIcon(QString::fromUtf8(":/settings/images/settings/stream.svg")));
-	//generalOutputsButton->setIconSize(QSize(100, 100));
-
-	generalHelpButton = new QToolButton();
-	generalHelpButton->setText(QString::fromUtf8(obs_module_text("SettingsHelpButton")));
-	generalHelpButton->setIcon(main_window->property("defaultIcon").value<QIcon>());
-	//generalHelpButton->setIconSize(QSize(100, 100));
-
-	generalSupportAitumButton = new QToolButton();
-	generalSupportAitumButton->setText(QString::fromUtf8(obs_module_text("SupportButton")));
-	generalSupportAitumButton->setIcon(QIcon(QString::fromUtf8(":/aitum/media/aitum.png")));
-	//generalSupportAitumButton->setIconSize(QSize(100, 100));
-
-	buttonLayout->addWidget(generalCanvasButton, 0);
-	buttonLayout->addWidget(generalOutputsButton, 0);
-	buttonLayout->addWidget(generalHelpButton, 0);
-	buttonLayout->addWidget(generalSupportAitumButton, 0);
-
-	buttonGroupBox->setLayout(buttonLayout);
-
-	generalPageLayout->addWidget(infoBox, 0);
-	generalPageLayout->addWidget(buttonGroupBox, 1);
-
-	QScrollArea *scrollArea = new QScrollArea;
-	scrollArea->setWidget(generalPage);
-	scrollArea->setWidgetResizable(true);
-	scrollArea->setLineWidth(0);
-	scrollArea->setFrameShape(QFrame::NoFrame);
-	settingsPages->addWidget(scrollArea);
-
 	auto canvasPage = new QGroupBox;
 	canvasPage->setProperty("customTitle", QVariant(true));
 	canvasPage->setStyleSheet(QString("QGroupBox[customTitle=\"true\"]{ padding-top: 4px;}"));
 	canvasPage->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
-	scrollArea = new QScrollArea;
+	QScrollArea *scrollArea = new QScrollArea;
 	scrollArea->setWidget(canvasPage);
 	scrollArea->setWidgetResizable(true);
 	scrollArea->setLineWidth(0);
@@ -220,36 +153,12 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	scrollArea->setFrameShape(QFrame::NoFrame);
 	settingsPages->addWidget(scrollArea);
 
-	// Help page
-	auto helpPage = new QWidget;
-	auto helpPageLayout = new QVBoxLayout;
-	helpPage->setLayout(helpPageLayout);
-	scrollArea = new QScrollArea;
-	scrollArea->setWidget(helpPage);
-	scrollArea->setWidgetResizable(true);
-	scrollArea->setLineWidth(0);
-	scrollArea->setFrameShape(QFrame::NoFrame);
-
-	auto helpInfoBox = new QGroupBox(QString::fromUtf8(obs_module_text("HelpTitle")));
-	helpInfoBox->setStyleSheet("padding-top: 12px");
-	auto helpLayout = new QVBoxLayout;
-	helpInfoBox->setLayout(helpLayout);
-
-	auto helpLabel = new QLabel(QString::fromUtf8(obs_module_text("HelpText")));
-	helpLabel->setStyleSheet("font-size: 14px");
-	helpLabel->setWordWrap(true);
-	helpLabel->setTextFormat(Qt::RichText);
-	helpLabel->setOpenExternalLinks(true);
-	helpLayout->addWidget(helpLabel, 1);
-	helpPageLayout->addWidget(helpInfoBox, 1, Qt::AlignTop);
-
-	settingsPages->addWidget(scrollArea);
-
 	//canvasPage
 
 	canvasLayout = new QFormLayout;
 	canvasLayout->setContentsMargins(9, 2, 9, 9);
-	canvasLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	canvasLayout->setSpacing(4);
+	canvasLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 	canvasLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 
 	auto canvas_title_layout = new QHBoxLayout;
@@ -272,12 +181,12 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	auto mainCanvasGroup = new QGroupBox;
 	mainCanvasGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-	mainCanvasGroup->setStyleSheet(QString("QGroupBox{background-color: %1; padding-top: 4px;}")
-					       .arg(palette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb)));
+	StyleSettingsCard(mainCanvasGroup);
 
 	auto mainCanvasGroupLayout = new QFormLayout;
-	mainCanvasGroupLayout->setContentsMargins(9, 2, 9, 9);
-	mainCanvasGroupLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	mainCanvasGroupLayout->setContentsMargins(4, 2, 4, 2);
+	mainCanvasGroupLayout->setSpacing(2);
+	mainCanvasGroupLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 	mainCanvasGroupLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 
 	auto mainTitle = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainCanvasTitle")));
@@ -285,7 +194,7 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	mainCanvasGroupLayout->addRow(mainTitle);
 
 	auto mainDescription = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainCanvasDescription")));
-	//	mainTitle->setStyleSheet(QString::fromUtf8("font-weight: bold;"));
+	mainDescription->setWordWrap(true);
 	mainCanvasGroupLayout->addRow(mainDescription);
 
 	mainCanvasGroup->setLayout(mainCanvasGroupLayout);
@@ -296,7 +205,8 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	outputsLayout = new QFormLayout;
 	outputsLayout->setContentsMargins(9, 2, 9, 9);
-	outputsLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	outputsLayout->setSpacing(4);
+	outputsLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 	outputsLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 
 	auto output_title_layout = new QHBoxLayout;
@@ -329,16 +239,7 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 		connect(a, &QAction::triggered, [this] { AddStream(); });
 
 		a = addMenu.addAction(QIcon(":/aitum/media/record.svg"), QString::fromUtf8(obs_module_text("AddRecordOutput")));
-		connect(a, &QAction::triggered, [this] { AddRecord(false); });
-		//a->setEnabled(false);
-		a = addMenu.addAction(QIcon(":/aitum/media/backtrack_off.svg"),
-				      QString::fromUtf8(obs_module_text("AddBacktrackOutput")));
-		connect(a, &QAction::triggered, [this] { AddRecord(true); });
-		a = addMenu.addAction(QIcon(":/aitum/media/virtual_cam_off.svg"),
-				      QString::fromUtf8(obs_module_text("AddVirtualCameraOutput")));
-		connect(a, &QAction::triggered, [this] { AddVirtualCam(); });
-		a = addMenu.addAction(QIcon(":/aitum/media/ffmpeg_off.svg"), QString::fromUtf8(obs_module_text("AddFfmpegOutput")));
-		connect(a, &QAction::triggered, [this] { AddFfmpeg(); });
+		connect(a, &QAction::triggered, [this] { AddRecord(); });
 		addMenu.exec(QCursor::pos());
 	});
 
@@ -348,12 +249,12 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	auto outputGroup = new QGroupBox;
 	outputGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-	outputGroup->setStyleSheet(QString("QGroupBox{background-color: %1; padding-top: 4px;}")
-					   .arg(palette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb)));
+	StyleSettingsCard(outputGroup);
 
 	auto outputLayout = new QFormLayout;
-	outputLayout->setContentsMargins(9, 2, 9, 9);
-	outputLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	outputLayout->setContentsMargins(4, 2, 4, 2);
+	outputLayout->setSpacing(2);
+	outputLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 	outputLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 
 	auto mainTitle2 = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputTitle")));
@@ -361,13 +262,15 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	outputLayout->addRow(mainTitle2);
 
 	auto mainDescription2 = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputDescription")));
-
-	//	mainTitle->setStyleSheet(QString::fromUtf8("font-weight: bold;"));
+	mainDescription2->setWordWrap(true);
 	outputLayout->addRow(mainDescription2);
 
 	auto mainOutputLayout = new QHBoxLayout;
+	mainOutputLayout->setContentsMargins(0, 0, 0, 0);
+	mainOutputLayout->setSpacing(16);
 	mainStream = new QCheckBox(QString::fromUtf8(obs_module_text("Stream")));
 	mainStream->setIcon(QIcon(":/aitum/media/stream.svg"));
+	mainStream->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
 	connect(mainStream, &QCheckBox::checkStateChanged, [this] {
 #else
@@ -375,9 +278,10 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 #endif
 		obs_data_set_bool(main_settings, "main_stream_output_show", mainStream->isChecked());
 	});
-	mainOutputLayout->addWidget(mainStream);
+	mainOutputLayout->addWidget(mainStream, 0, Qt::AlignVCenter);
 	mainRecord = new QCheckBox(QString::fromUtf8(obs_module_text("Record")));
 	mainRecord->setIcon(QIcon(":/aitum/media/record.svg"));
+	mainRecord->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
 	connect(mainRecord, &QCheckBox::checkStateChanged, [this] {
 #else
@@ -385,28 +289,11 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 #endif
 		obs_data_set_bool(main_settings, "main_record_output_show", mainRecord->isChecked());
 	});
-	mainOutputLayout->addWidget(mainRecord);
-	mainBacktrack = new QCheckBox(QString::fromUtf8(obs_module_text("Backtrack")));
-	mainBacktrack->setIcon(QIcon(":/aitum/media/backtrack_off.svg"));
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-	connect(mainBacktrack, &QCheckBox::checkStateChanged, [this] {
-#else
-	connect(mainBacktrack, &QCheckBox::stateChanged, [this] {
-#endif
-		obs_data_set_bool(main_settings, "main_backtrack_output_show", mainBacktrack->isChecked());
-	});
-	mainOutputLayout->addWidget(mainBacktrack);
-	mainVirtualCam = new QCheckBox(QString::fromUtf8(obs_module_text("VirtualCamera")));
-	mainVirtualCam->setIcon(QIcon(":/aitum/media/virtual_cam_off.svg"));
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-	connect(mainVirtualCam, &QCheckBox::checkStateChanged, [this] {
-#else
-	connect(mainVirtualCam, &QCheckBox::stateChanged, [this] {
-#endif
-		obs_data_set_bool(main_settings, "main_virtual_cam_output_show", mainVirtualCam->isChecked());
-	});
-	mainOutputLayout->addWidget(mainVirtualCam);
-	outputLayout->addRow(QString::fromUtf8(obs_module_text("SettingsMainOutputShow")), mainOutputLayout);
+	mainOutputLayout->addWidget(mainRecord, 0, Qt::AlignVCenter);
+	mainOutputLayout->addStretch(1);
+	auto showLabel = new QLabel(QString::fromUtf8(obs_module_text("SettingsMainOutputShow")));
+	showLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	outputLayout->addRow(showLabel, mainOutputLayout);
 
 	outputGroup->setLayout(outputLayout);
 
@@ -414,31 +301,8 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 
 	outputsPage->setLayout(outputsLayout);
 
-	// Support page
-	QWidget *supportPage = new QWidget;
-	auto supportPageLayout = new QVBoxLayout;
-	supportPage->setLayout(supportPageLayout);
-
-	auto supportInfoBox = new QGroupBox(QString::fromUtf8(obs_module_text("SupportTitle")));
-	supportInfoBox->setStyleSheet("padding-top: 12px");
-	auto supportLayout = new QVBoxLayout;
-	supportInfoBox->setLayout(supportLayout);
-
-	auto supportLabel = new QLabel(QString::fromUtf8(obs_module_text("SupportText")));
-	supportLabel->setStyleSheet("font-size: 14px");
-	supportLabel->setWordWrap(true);
-	supportLabel->setTextFormat(Qt::RichText);
-	supportLabel->setOpenExternalLinks(true);
-	supportLayout->addWidget(supportLabel, 1);
-	supportPageLayout->addWidget(supportInfoBox, 1, Qt::AlignTop);
-
-	settingsPages->addWidget(supportPage);
-
-	///
 	const auto version =
-		new QLabel(QString::fromUtf8(obs_module_text("Version")) + " " + QString::fromUtf8(PROJECT_VERSION) + " " +
-			   QString::fromUtf8(obs_module_text("MadeBy")) + " <a href=\"https://aitum.tv\">Aitum</a>");
-	version->setOpenExternalLinks(true);
+		new QLabel(QString::fromUtf8(obs_module_text("Version")) + " " + QString::fromUtf8(PROJECT_VERSION));
 	version->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 
 	newVersion = new QLabel;
@@ -471,15 +335,46 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	vlayout->addLayout(contentLayout);
 	vlayout->addLayout(bottomLayout);
 	setLayout(vlayout);
+}
 
-	// Button connects for general page, clean this up in the future when we abstract pages
-	connect(generalCanvasButton, &QPushButton::clicked, [this] { listWidget->setCurrentRow(1); });
+void OBSBasicSettings::StyleSettingsCard(QGroupBox *box)
+{
+	if (!box)
+		return;
+	box->setFlat(true);
+	box->setProperty("customTitle", QVariant(true));
+	/* Yami QGroupBox uses large padding-top for a title we never set —
+	 * compact like OBS settings rows. */
+	box->setStyleSheet(QStringLiteral(
+		"QGroupBox[customTitle=\"true\"] {"
+		"  padding-top: 4px;"
+		"  padding-bottom: 4px;"
+		"  padding-left: 6px;"
+		"  padding-right: 6px;"
+		"  margin-top: 0px;"
+		"  margin-bottom: 6px;"
+		"}"
+		"QGroupBox[customTitle=\"true\"]::title {"
+		"  height: 0px;"
+		"  padding: 0px;"
+		"  margin: 0px;"
+		"  subcontrol-origin: padding;"
+		"}"));
+}
 
-	connect(generalOutputsButton, &QPushButton::clicked, [this] { listWidget->setCurrentRow(2); });
-
-	connect(generalHelpButton, &QPushButton::clicked, [this] { listWidget->setCurrentRow(listWidget->count() - 2); });
-
-	connect(generalSupportAitumButton, &QPushButton::clicked, [this] { listWidget->setCurrentRow(listWidget->count() - 1); });
+QCheckBox *OBSBasicSettings::MakeExpandIndicator(bool expanded)
+{
+	/* Same control as Sources groups: checkbox-icon + indicator-expand.
+	 * Theme: checked = collapsed (expand.svg), unchecked = expanded. */
+	auto expand = new QCheckBox;
+	expand->setProperty("class", "checkbox-icon indicator-expand");
+	expand->setText(QString());
+	expand->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+	expand->setCursor(Qt::PointingHandCursor);
+	expand->setChecked(!expanded);
+	expand->style()->unpolish(expand);
+	expand->style()->polish(expand);
+	return expand;
 }
 
 OBSBasicSettings::~OBSBasicSettings()
@@ -494,7 +389,7 @@ OBSBasicSettings::~OBSBasicSettings()
 
 QIcon OBSBasicSettings::GetGeneralIcon() const
 {
-	return listWidget->item(0)->icon();
+	return QIcon();
 }
 
 QIcon OBSBasicSettings::GetAppearanceIcon() const
@@ -504,12 +399,12 @@ QIcon OBSBasicSettings::GetAppearanceIcon() const
 
 QIcon OBSBasicSettings::GetStreamIcon() const
 {
-	return listWidget->item(2)->icon();
+	return listWidget->item(1)->icon();
 }
 
 QIcon OBSBasicSettings::GetOutputIcon() const
 {
-	return listWidget->item(1)->icon();
+	return listWidget->item(0)->icon();
 }
 
 QIcon OBSBasicSettings::GetAudioIcon() const
@@ -539,22 +434,22 @@ QIcon OBSBasicSettings::GetAdvancedIcon() const
 
 QIcon OBSBasicSettings::GetHelpIcon() const
 {
-	return listWidget->item(4)->icon();
+	return QIcon();
 }
 
 QIcon OBSBasicSettings::GetCanvasIcon() const
 {
-	return listWidget->item(1)->icon();
+	return listWidget->item(0)->icon();
 }
 
 QIcon OBSBasicSettings::GetAitumIcon() const
 {
-	return listWidget->item(5)->icon();
+	return QIcon();
 }
 
 void OBSBasicSettings::SetGeneralIcon(const QIcon &icon)
 {
-	listWidget->item(0)->setIcon(icon);
+	UNUSED_PARAMETER(icon);
 }
 
 void OBSBasicSettings::SetAppearanceIcon(const QIcon &icon)
@@ -564,16 +459,12 @@ void OBSBasicSettings::SetAppearanceIcon(const QIcon &icon)
 
 void OBSBasicSettings::SetStreamIcon(const QIcon &icon)
 {
-	//listWidget->item(1)->setIcon(icon);
-	listWidget->item(2)->setIcon(icon);
-	generalOutputsButton->setIcon(icon);
+	listWidget->item(1)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetOutputIcon(const QIcon &icon)
 {
-	UNUSED_PARAMETER(icon);
-	listWidget->item(1)->setIcon(icon);
-	generalCanvasButton->setIcon(icon);
+	listWidget->item(0)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetAudioIcon(const QIcon &icon)
@@ -603,90 +494,89 @@ void OBSBasicSettings::SetAdvancedIcon(const QIcon &icon)
 
 void OBSBasicSettings::SetHelpIcon(const QIcon &icon)
 {
-	listWidget->item(4)->setIcon(icon);
-	generalHelpButton->setIcon(icon);
+	UNUSED_PARAMETER(icon);
 }
 
 void OBSBasicSettings::SetCanvasIcon(const QIcon &icon)
 {
-	listWidget->item(1)->setIcon(icon);
-	generalCanvasButton->setIcon(icon);
+	listWidget->item(0)->setIcon(icon);
 }
 
 void OBSBasicSettings::SetAitumIcon(const QIcon &icon)
 {
-	listWidget->item(5)->setIcon(icon);
-	generalSupportAitumButton->setIcon(icon);
+	UNUSED_PARAMETER(icon);
 }
 
 void OBSBasicSettings::AddCanvas(QFormLayout *canvasesLayout, obs_data_t *settings, obs_data_array_t *canvas)
 {
 	auto canvasGroup = new QGroupBox;
 	canvasGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-	canvasGroup->setProperty("altColor", QVariant(true));
-	canvasGroup->setProperty("customTitle", QVariant(true));
-	canvasGroup->setStyleSheet(
-		QString("QGroupBox[altColor=\"true\"]{background-color: %1;} QGroupBox[customTitle=\"true\"]{padding-top: 4px;}")
-			.arg(palette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb)));
+	StyleSettingsCard(canvasGroup);
 
 	auto canvasLayout = new QFormLayout;
-	canvasLayout->setContentsMargins(9, 2, 9, 2);
+	canvasLayout->setContentsMargins(2, 2, 2, 2);
+	canvasLayout->setSpacing(4);
 
-	canvasLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	canvasLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 	canvasLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 
-	// Title
 	auto canvas_title_layout = new QHBoxLayout;
+	canvas_title_layout->setContentsMargins(0, 0, 0, 0);
+	canvas_title_layout->setSpacing(6);
 
-	//auto platformIconLabel = new QLabel;
-	//auto platformIcon = ConfigUtils::getPlatformIconFromEndpoint(QString::fromUtf8(obs_data_get_string(settings, "stream_server")));
-	//platformIconLabel->setPixmap(platformIcon.pixmap(36, 36));
-	//canvas_title_layout->addWidget(platformIconLabel, 0);
+	const bool expanded = obs_data_get_bool(settings, "expanded");
 
-	//auto canvas_title = new QLabel(QString::fromUtf8(obs_data_get_string(settings, "name")));
-	auto canvas_title = new QToolButton;
-	canvas_title->setText(QString::fromUtf8(obs_data_get_string(settings, "name")));
-	canvas_title->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	canvas_title->setArrowType(Qt::ArrowType::RightArrow);
-	canvas_title->setCheckable(true);
-	canvas_title->setChecked(false);
-	canvas_title->setStyleSheet(QString("QToolButton{background-color: %1;font-weight: bold;border: none;}")
-					    .arg(palette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb)));
-	canvas_title_layout->addWidget(canvas_title, 1, Qt::AlignLeft);
+	auto expand = MakeExpandIndicator(expanded);
+	canvas_title_layout->addWidget(expand, 0, Qt::AlignVCenter);
 
-	auto canvas_color = new QPushButton(QString::fromUtf8("Color"));
+	auto canvas_title = new QLabel(QString::fromUtf8(obs_data_get_string(settings, "name")));
+	canvas_title->setStyleSheet(QStringLiteral("font-weight: bold;"));
+	canvas_title_layout->addWidget(canvas_title, 0, Qt::AlignVCenter);
+	canvas_title_layout->addStretch(1);
+
+	auto canvas_color = new QPushButton;
+	canvas_color->setFixedSize(22, 22);
+	canvas_color->setFlat(true);
+	canvas_color->setCursor(Qt::PointingHandCursor);
+	canvas_color->setToolTip(QString::fromUtf8(obs_module_text("SelectColor")));
 	auto c = color_from_int(obs_data_get_int(settings, "color"));
-	canvas_color->setStyleSheet(QString("border: 2px solid %1;").arg(c.name(QColor::HexRgb)));
-	canvas_title_layout->addWidget(canvas_color, 0, Qt::AlignCenter);
+	canvas_color->setStyleSheet(
+		QStringLiteral(
+			"QPushButton { background-color: %1; border: 2px solid #888888; border-radius: 3px; min-width: 22px; min-height: 22px; }")
+			.arg(c.name(QColor::HexRgb)));
+	canvas_title_layout->addWidget(canvas_color, 0, Qt::AlignVCenter);
 	connect(canvas_color, &QPushButton::clicked, [this, canvas_color, settings] {
 		auto currentColor = color_from_int(obs_data_get_int(settings, "color"));
 		QColor newColor = QColorDialog::getColor(currentColor, this, QString::fromUtf8(obs_module_text("SelectColor")));
 		if (newColor.isValid()) {
 			obs_data_set_int(settings, "color", color_to_int(newColor));
-			canvas_color->setStyleSheet(QString("border: 2px solid %1;").arg(newColor.name(QColor::HexRgb)));
+			canvas_color->setStyleSheet(
+				QStringLiteral(
+					"QPushButton { background-color: %1; border: 2px solid #888888; border-radius: 3px; min-width: 22px; min-height: 22px; }")
+					.arg(newColor.name(QColor::HexRgb)));
 		}
 	});
 
-	const bool expanded = obs_data_get_bool(settings, "expanded");
 	auto advancedGroup = new QFrame;
-	advancedGroup->setContentsMargins(0, 4, 0, 0);
+	advancedGroup->setContentsMargins(0, 0, 0, 0);
+	advancedGroup->setVisible(expanded);
 
-	if (expanded) {
-		canvas_title->setArrowType(Qt::ArrowType::DownArrow);
-	} else {
-		advancedGroup->setVisible(false);
-	}
-
-	connect(canvas_title, &QToolButton::toggled, [advancedGroup, canvas_title, settings](bool checked) {
-		advancedGroup->setVisible(checked);
-		obs_data_set_bool(settings, "expanded", checked);
-		canvas_title->setArrowType(checked ? Qt::ArrowType::DownArrow : Qt::ArrowType::RightArrow);
+	/* Sources: checked = collapsed */
+	connect(expand, &QCheckBox::toggled, [advancedGroup, settings](bool collapsed) {
+		const bool isExpanded = !collapsed;
+		advancedGroup->setVisible(isExpanded);
+		obs_data_set_bool(settings, "expanded", isExpanded);
 	});
 
 	auto advancedGroupLayout = new QFormLayout;
+	advancedGroupLayout->setContentsMargins(4, 4, 0, 0);
+	advancedGroupLayout->setSpacing(4);
+	advancedGroupLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+	advancedGroupLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 	advancedGroup->setLayout(advancedGroupLayout);
 
 	auto nameEdit = new QLineEdit(QString::fromUtf8(obs_data_get_string(settings, "name")));
+	nameEdit->setMaximumWidth(420);
 	advancedGroupLayout->addRow(QString::fromUtf8(obs_module_text("CanvasName")), nameEdit);
 	connect(nameEdit, &QLineEdit::textChanged, [this, nameEdit, settings, canvas, canvas_title] {
 		auto newName = nameEdit->text().trimmed();
@@ -700,6 +590,7 @@ void OBSBasicSettings::AddCanvas(QFormLayout *canvasesLayout, obs_data_t *settin
 
 	auto resolution = new QComboBox;
 	resolution->setEditable(true);
+	resolution->setMaximumWidth(220);
 	resolution->addItem("720x1280");
 	resolution->addItem("1080x1920");
 	resolution->addItem("1080x1350");
@@ -790,6 +681,7 @@ void OBSBasicSettings::AddCanvas(QFormLayout *canvasesLayout, obs_data_t *settin
 	bool clone = strcmp(obs_data_get_string(settings, "type"), "clone") == 0;
 
 	auto canvas_type = new QComboBox;
+	canvas_type->setMaximumWidth(280);
 	canvas_type->addItem(QString::fromUtf8(obs_module_text("ExtraCanvas")), "extra");
 	canvas_type->addItem(QString::fromUtf8(obs_module_text("CanvasClone")), "clone");
 	if (clone)
@@ -814,7 +706,6 @@ void OBSBasicSettings::AddCanvas(QFormLayout *canvasesLayout, obs_data_t *settin
 	advancedGroupLayout->addRow(replaceLayout);
 	advancedGroupLayout->setRowVisible(replaceLayout, clone);
 
-	// Remove button
 	auto removeButton =
 		new QPushButton(QIcon(":/res/images/minus.svg"), QString::fromUtf8(obs_frontend_get_locale_string("Remove")));
 	removeButton->setProperty("themeID", QVariant(QString::fromUtf8("removeIconSmall")));
@@ -831,7 +722,7 @@ void OBSBasicSettings::AddCanvas(QFormLayout *canvasesLayout, obs_data_t *settin
 		RemoveWidget(canvasGroup);
 		obs_data_set_bool(settings, "delete", true);
 	});
-	canvas_title_layout->addWidget(removeButton, 0, Qt::AlignRight);
+	canvas_title_layout->addWidget(removeButton, 0, Qt::AlignVCenter);
 
 	canvasLayout->addRow(canvas_title_layout);
 
@@ -846,18 +737,15 @@ void OBSBasicSettings::AddUnmanagedCanvas(std::string name)
 {
 	auto canvasGroup = new QGroupBox();
 	canvasGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-	canvasGroup->setProperty("altColor", QVariant(true));
-	canvasGroup->setProperty("customTitle", QVariant(true));
-	canvasGroup->setStyleSheet(
-		QString("QGroupBox[altColor=\"true\"]{background-color: %1;} QGroupBox[customTitle=\"true\"]{padding-top: 4px;}")
-			.arg(palette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb)));
+	StyleSettingsCard(canvasGroup);
 
-	// Title
 	auto canvas_title_layout = new QHBoxLayout;
+	canvas_title_layout->setContentsMargins(2, 2, 2, 2);
+	canvas_title_layout->setSpacing(6);
 
-	canvas_title_layout->addWidget(new QLabel(QString::fromStdString(name)), 1, Qt::AlignLeft);
-
-	canvas_title_layout->addWidget(new QLabel(QString::fromUtf8(obs_module_text("UnmanagedCanvas"))), 1, Qt::AlignLeft);
+	canvas_title_layout->addWidget(new QLabel(QString::fromStdString(name)), 0, Qt::AlignVCenter);
+	canvas_title_layout->addWidget(new QLabel(QString::fromUtf8(obs_module_text("UnmanagedCanvas"))), 0, Qt::AlignVCenter);
+	canvas_title_layout->addStretch(1);
 
 	auto addButton = new QPushButton(QIcon(":/res/images/plus.svg"), QString::fromUtf8(obs_module_text("ManageCanvas")));
 	addButton->setProperty("themeID", QVariant(QString::fromUtf8("addIconSmall")));
@@ -968,8 +856,6 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 	}
 	mainStream->setChecked(obs_data_get_bool(settings, "main_stream_output_show"));
 	mainRecord->setChecked(obs_data_get_bool(settings, "main_record_output_show"));
-	mainBacktrack->setChecked(obs_data_get_bool(settings, "main_backtrack_output_show"));
-	mainVirtualCam->setChecked(obs_data_get_bool(settings, "main_virtual_cam_output_show"));
 
 	obs_data_array_release(extra_outputs);
 	extra_outputs = obs_data_get_array(settings, "outputs");
@@ -980,6 +866,9 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 	obs_data_array_enum(
 		extra_outputs,
 		[](obs_data_t *data2, void *param) {
+			auto type = obs_data_get_string(data2, "type");
+			if (strcmp(type, "backtrack") == 0 || strcmp(type, "virtual_cam") == 0)
+				return;
 			auto d = (OBSBasicSettings *)param;
 			auto outputs2 = obs_data_get_array(d->main_settings, "outputs");
 			d->AddOutput(d->outputsLayout, data2, outputs2);
@@ -1307,7 +1196,7 @@ void OBSBasicSettings::AddCanvas()
 	obs_data_release(s);
 
 	obs_data_array_release(canvases);
-	listWidget->setCurrentRow(1);
+	listWidget->setCurrentRow(0);
 }
 
 void OBSBasicSettings::ShowTab(int i)
@@ -1322,11 +1211,7 @@ void OBSBasicSettings::SetCreateType(const char *create_type)
 	if (strcmp(create_type, "stream") == 0) {
 		AddStream();
 	} else if (strcmp(create_type, "record") == 0) {
-		AddRecord(false);
-	} else if (strcmp(create_type, "backtrack") == 0) {
-		AddRecord(true);
-	} else if (strcmp(create_type, "virtual_cam") == 0) {
-		AddVirtualCam();
+		AddRecord();
 	} else if (strcmp(create_type, "ffmpeg") == 0) {
 		AddFfmpeg();
 	}
@@ -1338,68 +1223,63 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 {
 	auto outputGroup = new QGroupBox;
 	outputGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-	outputGroup->setProperty("altColor", QVariant(true));
-	outputGroup->setProperty("customTitle", QVariant(true));
-	outputGroup->setStyleSheet(
-		QString("QGroupBox[altColor=\"true\"]{background-color: %1;} QGroupBox[customTitle=\"true\"]{padding-top: 4px;}")
-			.arg(palette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb)));
+	StyleSettingsCard(outputGroup);
 
 	auto outputLayout = new QFormLayout;
-	outputLayout->setContentsMargins(9, 2, 9, 2);
+	outputLayout->setContentsMargins(2, 2, 2, 2);
+	outputLayout->setSpacing(4);
 
-	outputLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+	outputLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
 	outputLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignTrailing | Qt::AlignVCenter);
 
-	// Title
 	auto output_title_layout = new QHBoxLayout;
-
-	auto iconLabel = new QLabel;
-	auto output_type = obs_data_get_string(settings, "type");
-	if (strcmp(output_type, "record") == 0) {
-		iconLabel->setPixmap(QIcon(":/aitum/media/record.svg").pixmap(36, 36));
-	} else if (strcmp(output_type, "backtrack") == 0) {
-		iconLabel->setPixmap(QIcon(":/aitum/media/backtrack_off.svg").pixmap(36, 36));
-	} else if (strcmp(output_type, "virtual_cam") == 0) {
-		iconLabel->setPixmap(QIcon(":/aitum/media/virtual_cam_off.svg").pixmap(36, 36));
-	} else if (strcmp(output_type, "ffmpeg") == 0) {
-		iconLabel->setPixmap(QIcon(":/aitum/media/ffmpeg_off.svg").pixmap(36, 36));
-	} else {
-		auto platformIcon = getPlatformIconFromEndpoint(QString::fromUtf8(obs_data_get_string(settings, "stream_server")));
-		iconLabel->setPixmap(platformIcon.pixmap(36, 36));
-	}
-	output_title_layout->addWidget(iconLabel, 0);
+	output_title_layout->setContentsMargins(0, 0, 0, 0);
+	output_title_layout->setSpacing(6);
 
 	const bool expanded = obs_data_get_bool(settings, "expanded");
 
-	auto streaming_title = new QToolButton;
-	streaming_title->setText(QString::fromUtf8(obs_data_get_string(settings, "name")));
-	streaming_title->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-	streaming_title->setArrowType(expanded ? Qt::ArrowType::DownArrow : Qt::ArrowType::RightArrow);
-	streaming_title->setCheckable(true);
-	streaming_title->setChecked(expanded);
-	streaming_title->setStyleSheet(QString::fromUtf8("font-weight: bold;"));
+	auto expand = MakeExpandIndicator(expanded);
+	output_title_layout->addWidget(expand, 0, Qt::AlignVCenter);
 
-	connect(streaming_title, &QToolButton::toggled,
-		[this, streaming_title, settings, outputLayout, outputs, isNew](bool checked) {
-			obs_data_set_bool(settings, "expanded", checked);
-			streaming_title->setArrowType(checked ? Qt::ArrowType::DownArrow : Qt::ArrowType::RightArrow);
-			if (outputLayout->rowCount() == 1 && checked) {
-				LoadOutputLayout(settings, outputLayout, outputs, streaming_title, isNew);
-				return;
-			}
-			for (auto i = 1; i < outputLayout->rowCount(); ++i) {
-				outputLayout->setRowVisible(i, checked);
-			}
-		});
+	auto iconLabel = new QLabel;
+	iconLabel->setFixedSize(18, 18);
+	iconLabel->setScaledContents(true);
+	auto output_type = obs_data_get_string(settings, "type");
+	if (strcmp(output_type, "record") == 0) {
+		iconLabel->setPixmap(QIcon(":/aitum/media/record.svg").pixmap(18, 18));
+	} else if (strcmp(output_type, "ffmpeg") == 0) {
+		iconLabel->setPixmap(QIcon(":/aitum/media/ffmpeg_off.svg").pixmap(18, 18));
+	} else {
+		auto platformIcon = getPlatformIconFromEndpoint(QString::fromUtf8(obs_data_get_string(settings, "stream_server")));
+		iconLabel->setPixmap(platformIcon.pixmap(18, 18));
+	}
+	output_title_layout->addWidget(iconLabel, 0, Qt::AlignVCenter);
 
-	output_title_layout->addWidget(streaming_title, 1, Qt::AlignLeft);
+	auto streaming_title = new QLabel(QString::fromUtf8(obs_data_get_string(settings, "name")));
+	streaming_title->setStyleSheet(QStringLiteral("font-weight: bold;"));
+	output_title_layout->addWidget(streaming_title, 0, Qt::AlignVCenter);
+	output_title_layout->addStretch(1);
+
+	connect(expand, &QCheckBox::toggled, [this, settings, outputLayout, outputs, streaming_title, expand, isNew](bool collapsed) {
+		const bool isExpanded = !collapsed;
+		obs_data_set_bool(settings, "expanded", isExpanded);
+		if (outputLayout->rowCount() == 1 && isExpanded) {
+			LoadOutputLayout(settings, outputLayout, outputs, streaming_title, expand, isNew);
+			return;
+		}
+		for (auto i = 1; i < outputLayout->rowCount(); ++i) {
+			outputLayout->setRowVisible(i, isExpanded);
+		}
+	});
 
 	auto moveUpButton = new QToolButton();
 	moveUpButton->setIcon(QIcon(":/res/images/up.svg"));
-	moveUpButton->setText(QString::fromUtf8(obs_module_text("MoveUp")));
+	moveUpButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	moveUpButton->setAutoRaise(true);
+	moveUpButton->setToolTip(QString::fromUtf8(obs_module_text("MoveUp")));
 	moveUpButton->setProperty("themeID", QVariant(QString::fromUtf8("upArrowIconSmall")));
-	moveUpButton->setProperty("class", "icon-up");
-	connect(moveUpButton, &QPushButton::clicked, [this, outputsLayout, outputGroup, outputs, settings] {
+	moveUpButton->setProperty("class", "icon-up btn-tool");
+	connect(moveUpButton, &QToolButton::clicked, [this, outputsLayout, outputGroup, outputs, settings] {
 		for (int i = 0; i < outputsLayout->rowCount(); i++) {
 			auto item = outputsLayout->itemAt(i, QFormLayout::FieldRole);
 			if (item && item->widget() == outputGroup) {
@@ -1428,9 +1308,11 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 	});
 	auto moveDownButton = new QToolButton();
 	moveDownButton->setIcon(QIcon(":/res/images/down.svg"));
-	moveDownButton->setText(QString::fromUtf8(obs_module_text("MoveDown")));
+	moveDownButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+	moveDownButton->setAutoRaise(true);
+	moveDownButton->setToolTip(QString::fromUtf8(obs_module_text("MoveDown")));
 	moveDownButton->setProperty("themeID", QVariant(QString::fromUtf8("downArrowIconSmall")));
-	moveDownButton->setProperty("class", "icon-down");
+	moveDownButton->setProperty("class", "icon-down btn-tool");
 
 	connect(moveDownButton, &QToolButton::clicked, [this, outputsLayout, outputGroup, outputs, settings] {
 		for (int i = 2; i < outputsLayout->rowCount() - 1; i++) {
@@ -1599,16 +1481,15 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 		}
 	});
 
-	// Buttons to layout
-	output_title_layout->addWidget(editButton, 0, Qt::AlignRight);
-	output_title_layout->addWidget(removeButton, 0, Qt::AlignRight);
-	output_title_layout->addWidget(moveUpButton, 0, Qt::AlignRight);
-	output_title_layout->addWidget(moveDownButton, 0, Qt::AlignRight);
+	output_title_layout->addWidget(editButton, 0, Qt::AlignVCenter);
+	output_title_layout->addWidget(removeButton, 0, Qt::AlignVCenter);
+	output_title_layout->addWidget(moveUpButton, 0, Qt::AlignVCenter);
+	output_title_layout->addWidget(moveDownButton, 0, Qt::AlignVCenter);
 
 	outputLayout->addRow(output_title_layout);
 
 	if (expanded) {
-		LoadOutputLayout(settings, outputLayout, outputs, streaming_title, isNew);
+		LoadOutputLayout(settings, outputLayout, outputs, streaming_title, expand, isNew);
 	}
 
 	outputGroup->setLayout(outputLayout);
@@ -1617,9 +1498,11 @@ void OBSBasicSettings::AddOutput(QFormLayout *outputsLayout, obs_data_t *setting
 }
 
 void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outputLayout, obs_data_array_t *outputs,
-					QToolButton *streaming_title, bool isNew)
+					QLabel *titleLabel, QCheckBox *expandToggle, bool isNew)
 {
+	UNUSED_PARAMETER(titleLabel);
 	auto canvasCombo = new QComboBox;
+	canvasCombo->setMaximumWidth(320);
 	obs_enum_canvases(
 		[](void *param, obs_canvas_t *canvas) {
 			auto c = (QComboBox *)param;
@@ -1636,7 +1519,8 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 	canvasLayout->setContentsMargins(0, 0, 0, 0);
 	auto canvasSubLayout = new QHBoxLayout;
 	canvasSubLayout->setContentsMargins(0, 0, 0, 0);
-	canvasSubLayout->addWidget(canvasCombo);
+	canvasSubLayout->setSpacing(6);
+	canvasSubLayout->addWidget(canvasCombo, 0);
 	QToolButton *add = nullptr;
 	auto streamServer = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
 	auto format = obs_data_get_string(settings, "format");
@@ -1650,8 +1534,9 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 		add->setProperty("themeID", "addIconSmall");
 		add->setProperty("class", "icon-plus");
 		add->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("Add")));
-		canvasSubLayout->addWidget(add);
+		canvasSubLayout->addWidget(add, 0);
 	}
+	canvasSubLayout->addStretch(1);
 	canvasLayout->addLayout(canvasSubLayout);
 	outputLayout->addRow(QString::fromUtf8(obs_module_text("Canvas")), canvasLayout);
 	//QList<QWidget *> canvasWidgets;
@@ -1975,7 +1860,7 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 
 		customDelayLayout->addRow(QString::fromUtf8(""), streamDelayPreserve);
 
-		outputLayout->addWidget(customDelayCheckBox);
+		outputLayout->addRow(customDelayCheckBox);
 		outputLayout->addRow(customDelayGroup);
 	}
 
@@ -2156,10 +2041,11 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 		obs_data_set_bool(settings, "advanced", is_advanced);
 	});
 
-	connect(streaming_title, &QToolButton::toggled, [this, advancedGroup, settings, customDelayGroup](bool checked) {
-		advancedGroup->setVisible(checked && obs_data_get_bool(settings, "advanced"));
+	connect(expandToggle, &QCheckBox::toggled, [this, advancedGroup, settings, customDelayGroup](bool collapsed) {
+		const bool isExpanded = !collapsed;
+		advancedGroup->setVisible(isExpanded && obs_data_get_bool(settings, "advanced"));
 		if (customDelayGroup)
-			customDelayGroup->setVisible(checked && obs_data_get_bool(settings, "custom_delay"));
+			customDelayGroup->setVisible(isExpanded && obs_data_get_bool(settings, "custom_delay"));
 	});
 
 	if (!advanced)
@@ -2170,7 +2056,7 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 	advancedTabWidget->addTab(audioPage, QString::fromUtf8(obs_module_text("AudioEncoderSettings")));
 	advancedGroupLayout->addWidget(advancedTabWidget, 1);
 
-	outputLayout->addWidget(advancedButton);
+	outputLayout->addRow(advancedButton);
 
 	outputLayout->addRow(advancedGroup);
 
@@ -2634,7 +2520,7 @@ void OBSBasicSettings::AddStream()
 	delete outputDialog;
 }
 
-void OBSBasicSettings::AddRecord(bool backtrack)
+void OBSBasicSettings::AddRecord()
 {
 	QStringList otherNames;
 	obs_data_array_enum(
@@ -2644,19 +2530,18 @@ void OBSBasicSettings::AddRecord(bool backtrack)
 		},
 		&otherNames);
 	otherNames.removeDuplicates();
-	auto outputDialog = new RecordOutputDialog(this, otherNames, backtrack);
+	auto outputDialog = new RecordOutputDialog(this, otherNames, false);
 
 	outputDialog->setWindowModality(Qt::WindowModal);
 	outputDialog->setModal(true);
 
 	if (outputDialog->exec() == QDialog::Accepted) {
-		// create a new output
 		if (!extra_outputs)
 			return;
 		auto s = obs_data_create();
 		obs_data_set_bool(s, "enabled", true);
 		obs_data_set_bool(s, "expanded", true);
-		obs_data_set_string(s, "type", backtrack ? "backtrack" : "record");
+		obs_data_set_string(s, "type", "record");
 		obs_data_set_string(s, "name", outputDialog->outputName.toUtf8().constData());
 		obs_data_set_string(s, "path", outputDialog->recordPath.toUtf8().constData());
 		obs_data_set_string(s, "filename", outputDialog->filenameFormat.toUtf8().constData());
@@ -2669,37 +2554,6 @@ void OBSBasicSettings::AddRecord(bool backtrack)
 	}
 
 	delete outputDialog;
-}
-
-void OBSBasicSettings::AddVirtualCam()
-{
-	QStringList otherNames;
-	obs_data_array_enum(
-		extra_outputs,
-		[](obs_data_t *data2, void *param) {
-			((QStringList *)param)->append(QString::fromUtf8(obs_data_get_string(data2, "name")));
-		},
-		&otherNames);
-	otherNames.removeDuplicates();
-
-	std::string name = obs_module_text("VirtualCamera");
-	while (true) {
-		if (!NameDialog::AskForName(this, QString::fromUtf8(obs_module_text("OutputName")), name))
-			break;
-
-		if (otherNames.contains(QString::fromUtf8(name)))
-			continue;
-
-		auto s = obs_data_create();
-		obs_data_set_bool(s, "enabled", true);
-		obs_data_set_bool(s, "expanded", true);
-		obs_data_set_string(s, "type", "virtual_cam");
-		obs_data_set_string(s, "name", name.c_str());
-		obs_data_array_push_back(extra_outputs, s);
-		AddOutput(outputsLayout, s, extra_outputs, true);
-		obs_data_release(s);
-		break;
-	}
 }
 
 void OBSBasicSettings::AddFfmpeg()

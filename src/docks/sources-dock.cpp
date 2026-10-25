@@ -260,7 +260,18 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 
 SourcesDock::~SourcesDock()
 {
+	auto old_scene = obs_weak_source_get_source(scene);
+	if (old_scene) {
+		auto sh = obs_source_get_signal_handler(old_scene);
+		if (sh) {
+			signal_handler_disconnect(sh, "item_add", SceneItemAdded, this);
+			signal_handler_disconnect(sh, "reorder", SceneReordered, this);
+			signal_handler_disconnect(sh, "refresh", SceneRefreshed, this);
+		}
+		obs_source_release(old_scene);
+	}
 	obs_weak_source_release(scene);
+	scene = nullptr;
 	sources_dock = nullptr;
 }
 

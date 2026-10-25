@@ -14,6 +14,7 @@ private:
 
 	void ChangeSceneIndex(bool relative, int offset, int invalidIdx);
 	void SwitchToCanvas(obs_canvas_t *new_canvas);
+	void DisconnectSignals();
 
 	void ShowScenesContextMenu(QListWidgetItem *widget_item);
 	void SetGridMode(bool checked);
@@ -39,4 +40,5 @@ private slots:
 public:
 	ScenesDock(QWidget *parent = nullptr);
 	~ScenesDock();
+	void Shutdown() { DisconnectSignals(); }
 };

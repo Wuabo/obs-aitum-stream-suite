@@ -37,7 +37,6 @@
 
 std::list<CanvasDock *> canvas_docks;
 
-extern QTabBar *modesTabBar;
 extern obs_websocket_vendor vendor;
 
 CanvasDock::CanvasDock(obs_data_t *settings_, QWidget *parent)
@@ -1011,17 +1010,7 @@ void CanvasDock::LoadUI()
 	}
 
 	if (settings) {
-		if (modesTabBar) {
-			auto index = modesTabBar->currentIndex();
-			if (index >= 0) {
-				auto d = modesTabBar->tabData(modesTabBar->currentIndex());
-				if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-					LoadMode(d.toString());
-				} else {
-					LoadMode(modesTabBar->tabText(index));
-				}
-			}
-		}
+		LoadMode(QStringLiteral("default"));
 		LoadScenes();
 		LogScenes();
 
@@ -1265,34 +1254,17 @@ void CanvasDock::SaveSettings(bool closing, QString mode)
 			auto state = canvas_split->saveState();
 			auto b64 = state.toBase64();
 			auto state_chars = b64.constData();
-			if (mode.isEmpty() && modesTabBar) {
-				auto d = modesTabBar->tabData(modesTabBar->currentIndex());
-				if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-					mode = d.toString();
-				} else {
-					mode = modesTabBar->tabText(modesTabBar->currentIndex());
-				}
+			if (mode.isEmpty()) {
+				mode = QStringLiteral("default");
 			}
-			std::string setting_name = canvas_name + "_canvas_split";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			std::string setting_name = canvas_name + "_canvas_split_" + mode.toStdString();
 			obs_data_set_string(current_profile_config, setting_name.c_str(), state_chars);
-			setting_name = canvas_name + "_canvas_split_automatic";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = canvas_name + "_canvas_split_automatic_" + mode.toStdString();
 			obs_data_set_bool(current_profile_config, setting_name.c_str(), canvas_split->automaticSwitching);
-			setting_name = canvas_name + "_canvas_split_horizontal";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = canvas_name + "_canvas_split_horizontal_" + mode.toStdString();
 			obs_data_set_bool(current_profile_config, setting_name.c_str(),
 					  canvas_split->orientation() == Qt::Horizontal);
-			setting_name = canvas_name + "_canvas_split_order";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = canvas_name + "_canvas_split_order_" + mode.toStdString();
 			obs_data_set_string(current_profile_config, setting_name.c_str(),
 					    canvas_split->savePanelOrder().toUtf8().constData());
 
@@ -1322,57 +1294,28 @@ void CanvasDock::SaveSettings(bool closing, QString mode)
 		auto state = canvas_split->saveState();
 		auto b64 = state.toBase64();
 		auto state_chars = b64.constData();
-		if (mode.isEmpty() && modesTabBar) {
-			auto d = modesTabBar->tabData(modesTabBar->currentIndex());
-			if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-				mode = d.toString();
-			} else {
-				mode = modesTabBar->tabText(modesTabBar->currentIndex());
-			}
+		if (mode.isEmpty()) {
+			mode = QStringLiteral("default");
 		}
-		std::string setting_name = "canvas_split";
-		if (!mode.isEmpty()) {
-			setting_name += "_" + mode.toStdString();
-		}
+		std::string setting_name = "canvas_split_" + mode.toStdString();
 		obs_data_set_string(settings, setting_name.c_str(), state_chars);
-		setting_name = "canvas_split_automatic";
-		if (!mode.isEmpty()) {
-			setting_name += "_" + mode.toStdString();
-		}
+		setting_name = "canvas_split_automatic_" + mode.toStdString();
 		obs_data_set_bool(settings, setting_name.c_str(), canvas_split->automaticSwitching);
-		setting_name = "canvas_split_horizontal";
-		if (!mode.isEmpty()) {
-			setting_name += "_" + mode.toStdString();
-		}
+		setting_name = "canvas_split_horizontal_" + mode.toStdString();
 		obs_data_set_bool(settings, setting_name.c_str(), canvas_split->orientation() == Qt::Horizontal);
-		setting_name = "canvas_split_order";
-		if (!mode.isEmpty()) {
-			setting_name += "_" + mode.toStdString();
-		}
+		setting_name = "canvas_split_order_" + mode.toStdString();
 		obs_data_set_string(settings, setting_name.c_str(), canvas_split->savePanelOrder().toUtf8().constData());
 		if (panel_split) {
 			state = panel_split->saveState();
 			b64 = state.toBase64();
 			state_chars = b64.constData();
-			setting_name = "panel_split";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = "panel_split_" + mode.toStdString();
 			obs_data_set_string(settings, setting_name.c_str(), state_chars);
-			setting_name = "panel_split_automatic";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = "panel_split_automatic_" + mode.toStdString();
 			obs_data_set_bool(settings, setting_name.c_str(), panel_split->automaticSwitching);
-			setting_name = "panel_split_horizontal";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = "panel_split_horizontal_" + mode.toStdString();
 			obs_data_set_bool(settings, setting_name.c_str(), panel_split->orientation() == Qt::Horizontal);
-			setting_name = "panel_split_order";
-			if (!mode.isEmpty()) {
-				setting_name += "_" + mode.toStdString();
-			}
+			setting_name = "panel_split_order_" + mode.toStdString();
 			obs_data_set_string(settings, setting_name.c_str(), panel_split->savePanelOrder().toUtf8().constData());
 		}
 
@@ -6113,17 +6056,7 @@ void CanvasDock::save_load(obs_data_t *save_data, bool saving, void *param)
 					signal_handler_connect(sh, "source_add", source_add, window);
 				}
 			}
-			if (modesTabBar) {
-				auto index = modesTabBar->currentIndex();
-				if (index >= 0) {
-					auto d = modesTabBar->tabData(modesTabBar->currentIndex());
-					if (!d.isNull() && d.isValid() && !d.toString().isEmpty()) {
-						window->LoadMode(d.toString());
-					} else {
-						window->LoadMode(modesTabBar->tabText(index));
-					}
-				}
-			}
+			window->LoadMode(QStringLiteral("default"));
 			window->LoadScenes();
 			window->LogScenes();
 		}

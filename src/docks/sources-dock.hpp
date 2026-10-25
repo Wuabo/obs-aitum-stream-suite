@@ -35,4 +35,5 @@ public:
 	SourcesDock(QWidget *parent = nullptr);
 	~SourcesDock();
 	void SetScene(obs_source_t *scene);
+	void Shutdown() { SetScene(nullptr); }
 };

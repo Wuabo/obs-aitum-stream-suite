@@ -32,8 +32,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Components]
 Name: "AitumStreamSuite"; Description: "Aitum Stream Suite"; Types: full compact custom; Flags: fixed checkablealone
-Name: "AitumStreamSuite\Theme"; Description: "Aitum Stream Suite Theme"; Types: full custom
-Name: "AitumStreamSuite\PresetSceneCollections"; Description: "Aitum Preset Scene Collections"; Types: full custom
 Name: "Plugins"; Description: "featured OBS plugins"; Types: full
 Name: "Plugins\3DEffect"; Description: "3D Effect (Exeldro)"; Types: full
 Name: "Plugins\AdvancedMasks"; Description: "Advanced Masks (FiniteSingularity)"; Types: full
@@ -52,8 +50,6 @@ Name: "Plugins\SVGSource"; Description: "SVG Source (FiniteSingularity)"; Types:
 [Files]
 Source: "..\release\Package\obs-plugins\64bit\aitum-stream-suite.*"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: "AitumStreamSuite"
 Source: "..\release\Package\data\obs-plugins\aitum-stream-suite\locale\*"; DestDir: "{app}\data\obs-plugins\aitum-stream-suite\locale"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: "AitumStreamSuite"
-Source: "..\release\Package\data\obs-studio\themes\*"; DestDir: "{app}\data\obs-studio\themes"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: "AitumStreamSuite\Theme"
-Source: "..\release\Package\data\obs-plugins\aitum-stream-suite\scenecollections\*"; DestDir: "{app}\data\obs-plugins\aitum-stream-suite\scenecollections"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: "AitumStreamSuite\PresetSceneCollections"
 
 Source: "..\release\Package\obs-plugins\64bit\3d-effect.*"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: "Plugins\3DEffect"
 Source: "..\release\Package\data\obs-plugins\3d-effect\*"; DestDir: "{app}\data\obs-plugins\3d-effect"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: "Plugins\3DEffect"
@@ -101,15 +97,7 @@ Type: files; Name: "{app}\obs-plugins\64bit\vertical-canvas.pdb"
 Type: files; Name: "{app}\obs-plugins\64bit\aitum-multistream.dll"
 Type: files; Name: "{app}\obs-plugins\64bit\aitum-multistream.pdb"
 
-[Ini]
-filename: {commonappdata}\obs-studio\global.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Components: "AitumStreamSuite\Theme"
-filename: {commonappdata}\obs-studio\user.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Components: "AitumStreamSuite\Theme"
-filename: {userappdata}\obs-studio\global.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Flags: createkeyifdoesntexist;  Components: "AitumStreamSuite\Theme"
-filename: {userappdata}\obs-studio\user.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Flags: createkeyifdoesntexist;  Components: "AitumStreamSuite\Theme"
-filename: {localappdata}\obs-studio\global.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Components: "AitumStreamSuite\Theme"
-filename: {localappdata}\obs-studio\user.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Components: "AitumStreamSuite\Theme"
-filename: {app}\config\obs-studio\global.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Flags: createkeyifdoesntexist; Components: "AitumStreamSuite\Theme"
-filename: {app}\config\obs-studio\user.ini; section: Appearance; key: Theme; string: com.obsproject.Aitum.Original; Flags: createkeyifdoesntexist; Components: "AitumStreamSuite\Theme"
+; Do not override the user's OBS theme (keep Yami/Acri/etc.)
 
 [Icons]
 Name: "{group}\{cm:ProgramOnTheWeb,{#MyAppName}}"; Filename: "{#MyAppURL}"

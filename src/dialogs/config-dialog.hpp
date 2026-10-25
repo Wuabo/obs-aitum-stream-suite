@@ -57,7 +57,7 @@ private:
 	void AddCanvas();
 
 	void LoadOutputLayout(obs_data_t *settings, QFormLayout *outputLayout, obs_data_array_t *outputs,
-			      QToolButton *streaming_title, bool isNew);
+			      QLabel *titleLabel, QCheckBox *expandToggle, bool isNew);
 	bool UpdateVideoEncoderIndexCombo(QComboBox *videoEncoderIndex, obs_data_t *settings, obs_data_array_t *outputs);
 
 	obs_data_t *main_settings = nullptr;
@@ -75,23 +75,17 @@ private:
 
 	QTextEdit *troubleshooterText;
 
-	QToolButton *generalCanvasButton;
-	QToolButton *generalOutputsButton;
-	QToolButton *generalHelpButton;
-	QToolButton *generalSupportAitumButton;
-
 	QCheckBox *mainStream;
 	QCheckBox *mainRecord;
-	QCheckBox *mainBacktrack;
-	QCheckBox *mainVirtualCam;
 
 	std::vector<OBSHotkeyWidget *> hotkeys;
 
 	void AddStream();
-	void AddRecord(bool backtrack);
-	void AddVirtualCam();
+	void AddRecord();
 	void AddFfmpeg();
 	void LoadSourceCombos();
+	void StyleSettingsCard(QGroupBox *box);
+	QCheckBox *MakeExpandIndicator(bool expanded);
 
 	obs_hotkey_t *GetHotkeyByName(const char *name);
 	std::vector<obs_key_combination_t> GetCombosForHotkey(obs_hotkey_id hotkey);
