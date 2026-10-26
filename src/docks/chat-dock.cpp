@@ -22,6 +22,7 @@
 #include <QListWidgetItem>
 #include <QPixmap>
 #include <QPointer>
+#include <QPushButton>
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QSizePolicy>
@@ -365,6 +366,16 @@ void ChatDock::BuildUi()
 		barLayout->addWidget(viewerChips[i]);
 	}
 	barLayout->addStretch(1);
+	clearSystemButton = new QPushButton(Tr("ChatDockClearSystem"), viewerBar);
+	clearSystemButton->setCursor(Qt::PointingHandCursor);
+	clearSystemButton->setFlat(true);
+	clearSystemButton->setStyleSheet(QStringLiteral(
+		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
+		" border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
+		"QPushButton:hover { color: #eee; border-color: #666; background: #222; }"
+		"QPushButton:pressed { background: #1a1a1a; }"));
+	connect(clearSystemButton, &QPushButton::clicked, this, &ChatDock::ClearSystemMessages);
+	barLayout->addWidget(clearSystemButton);
 	root->addWidget(viewerBar);
 
 	messageList = new QListWidget(this);
@@ -373,11 +384,13 @@ void ChatDock::BuildUi()
 	messageList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	messageList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 	messageList->setUniformItemSizes(false);
-	messageList->setSpacing(4);
+	messageList->setSpacing(6);
 	messageList->setStyleSheet(QStringLiteral(
 		"QListWidget#chatMessageList { background: #141414; border: none; color: #eee; outline: none; }"
-		"QListWidget#chatMessageList::item { padding: 0; margin: 0; border: none; }"
-		"QListWidget#chatMessageList::item:selected { background: transparent; }"));
+		"QListWidget#chatMessageList::item { padding: 0px; margin: 0px; border: none;"
+		" background: transparent; }"
+		"QListWidget#chatMessageList::item:selected { background: transparent; }"
+		"QListWidget#chatMessageList::item:hover { background: transparent; }"));
 	messageList->viewport()->installEventFilter(this);
 	root->addWidget(messageList, 1);
 
@@ -1329,10 +1342,7 @@ void ChatDock::StartYouTubeChat()
 			auto startPoll = [this] {
 				if (ytLiveChatId.isEmpty())
 					return;
-				if (!youtubeConnectedAnnounced) {
-					youtubeConnectedAnnounced = true;
-					AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
-				}
+				ytNextPage.clear();
 				PollYouTubeChat();
 			};
 			if (!ytLiveChatId.isEmpty()) {
@@ -1431,37 +1441,68 @@ void ChatDock::PollYouTubeChat()
 	if (ytLiveChatId.isEmpty())
 		return;
 	EnsureToken(YouTube, [this](bool ok) {
-		if (!ok || ytLiveChatId.isEmpty())
+		if (!ok || ytLiveChatId.isEmpty()) {
+			if (!ok)
+				blog(LOG_WARNING, "[Stream Suite] YouTube chat poll: token failed");
 			return;
+		}
 		const Account &acc = accounts[YouTube];
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChatMessages"));
 		QUrlQuery query;
 		query.addQueryItem("liveChatId", ytLiveChatId);
 		query.addQueryItem("part", "snippet,authorDetails");
+		query.addQueryItem("maxResults", "200");
 		if (!ytNextPage.isEmpty())
 			query.addQueryItem("pageToken", ytNextPage);
 		url.setQuery(query);
 		Http(url.toString(),
 		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
-		     [this](int status, const QByteArray &body, const QString &) {
+		     [this](int status, const QByteArray &body, const QString &error) {
 			     int interval = 5000;
 			     if (status >= 200 && status < 300) {
 				     const QJsonObject root = QJsonDocument::fromJson(body).object();
+				     if (root.contains(QStringLiteral("offlineAt"))) {
+					     SetViewerCount(YouTube, 0, false);
+					     ytLiveChatId.clear();
+					     ytNextPage.clear();
+					     blog(LOG_INFO, "[Stream Suite] YouTube live chat went offline");
+					     return;
+				     }
 				     ytNextPage = root.value("nextPageToken").toString();
 				     interval = qMax(2000, root.value("pollingIntervalMillis").toInt(5000));
+				     if (!youtubeConnectedAnnounced) {
+					     youtubeConnectedAnnounced = true;
+					     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
+				     }
 				     const QJsonArray items = root.value("items").toArray();
 				     for (const QJsonValue &row : items) {
 					     const QJsonObject obj = row.toObject();
 					     const QJsonObject snip = obj.value("snippet").toObject();
-					     if (snip.value("type").toString() != QLatin1String("textMessageEvent"))
+					     const QString type = snip.value("type").toString();
+					     QString text =
+						     snip.value("textMessageDetails").toObject().value("messageText").toString();
+					     if (text.isEmpty())
+						     text = snip.value("displayMessage").toString();
+					     /* Skip empty / pure membership noise without display text. */
+					     if (text.isEmpty())
+						     continue;
+					     if (!type.isEmpty() && type != QLatin1String("textMessageEvent") &&
+						 type != QLatin1String("superChatEvent") &&
+						 type != QLatin1String("superStickerEvent") &&
+						 type != QLatin1String("membershipGiftingEvent") &&
+						 type != QLatin1String("giftMembershipReceivedEvent") &&
+						 type != QLatin1String("newSponsorEvent") &&
+						 type != QLatin1String("memberMilestoneChatEvent"))
 						     continue;
 					     const QJsonObject author = obj.value("authorDetails").toObject();
 					     ChatMessage msg;
 					     msg.platform = YouTube;
 					     msg.id = obj.value("id").toString();
 					     msg.user = author.value("displayName").toString();
+					     if (msg.user.isEmpty())
+						     msg.user = QStringLiteral("YouTube");
 					     msg.color = QStringLiteral("#FF5555");
-					     msg.text = snip.value("textMessageDetails").toObject().value("messageText").toString();
+					     msg.text = text;
 					     msg.ts = QDateTime::currentMSecsSinceEpoch();
 					     if (author.value("isChatOwner").toBool())
 						     msg.badges.append({QStringLiteral("owner"), QString(), QStringLiteral("Owner")});
@@ -1475,8 +1516,18 @@ void ChatDock::PollYouTubeChat()
 							     {QStringLiteral("verified"), QString(), QStringLiteral("Verified")});
 					     AppendMessage(msg);
 				     }
+			     } else {
+				     blog(LOG_WARNING, "[Stream Suite] YouTube chat poll HTTP %d: %s", status,
+					  error.isEmpty() ? body.left(200).constData() : error.toUtf8().constData());
+				     if (status == 401 || status == 403) {
+					     youtubeConnectStarted = false;
+					     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
+					     return;
+				     }
+				     interval = 8000;
 			     }
-			     youtubeTimer->start(interval);
+			     if (connectionsActive && !ytLiveChatId.isEmpty())
+				     youtubeTimer->start(interval);
 		     });
 	});
 }
@@ -1605,7 +1656,7 @@ void ChatDock::FetchKickViewerToken(std::function<void(QString)> done)
 	     });
 }
 
-void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId)
+void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId, bool allowFallback)
 {
 	DisconnectKickChat();
 	if (chatroomId.isEmpty() || !connectionsActive)
@@ -1618,7 +1669,8 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId)
 	QPointer<ChatDock> alive(this);
 	const QByteArray urlBytes = wsUrl.toUtf8();
 	const QString chatroom = chatroomId;
-	std::thread([alive, session, gen, urlBytes, chatroom] {
+	const bool fallback = allowFallback;
+	std::thread([alive, session, gen, urlBytes, chatroom, fallback] {
 		CURL *curl = curl_easy_init();
 		if (!curl)
 			return;
@@ -1633,9 +1685,28 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId)
 			if (alive) {
 				QMetaObject::invokeMethod(
 					alive,
-					[alive] {
+					[alive, chatroom, fallback] {
 						if (!alive || !alive->connectionsActive)
 							return;
+						if (fallback) {
+							alive->FetchKickViewerToken([alive, chatroom](const QString &token) {
+								if (!alive || !alive->connectionsActive)
+									return;
+								if (token.isEmpty()) {
+									blog(LOG_WARNING,
+									     "[Stream Suite] Kick viewer token unavailable");
+									if (!alive->kickReconnectTimer->isActive())
+										alive->kickReconnectTimer->start(10000);
+									return;
+								}
+								alive->StartKickWs(
+									QStringLiteral(
+										"wss://websockets.kick.com/viewer/v1/connect?token=") +
+										token,
+									chatroom, false);
+							});
+							return;
+						}
 						if (!alive->kickReconnectTimer->isActive())
 							alive->kickReconnectTimer->start(10000);
 					},
@@ -1644,28 +1715,70 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId)
 			return;
 		}
 
-		/* Pusher protocol: data must be an object in JSON (Kick still accepts this). */
-		const QJsonObject sub{
-			{QStringLiteral("event"), QStringLiteral("pusher:subscribe")},
-			{QStringLiteral("data"),
-			 QJsonObject{{QStringLiteral("auth"), QString()},
-				     {QStringLiteral("channel"), QStringLiteral("chatrooms.%1.v2").arg(chatroom)}}}};
-		CurlWsSendText(curl, QJsonDocument(sub).toJson(QJsonDocument::Compact));
-		if (alive) {
+		const QByteArray subscribePayload = QJsonDocument(QJsonObject{
+								       {QStringLiteral("event"), QStringLiteral("pusher:subscribe")},
+								       {QStringLiteral("data"),
+									QJsonObject{{QStringLiteral("auth"), QString()},
+										    {QStringLiteral("channel"),
+										     QStringLiteral("chatrooms.%1.v2").arg(chatroom)}}}})
+							    .toJson(QJsonDocument::Compact);
+
+		bool established = false;
+		bool subscribed = false;
+		QByteArray frameBuf;
+
+		auto handleText = [&](const QByteArray &text) {
+			const QJsonObject root = QJsonDocument::fromJson(text).object();
+			const QString event = root.value(QStringLiteral("event")).toString();
+			if (event.isEmpty())
+				return;
+
+			if (event == QLatin1String("pusher:connection_established") && !established) {
+				established = true;
+				CurlWsSendText(curl, subscribePayload);
+				return;
+			}
+			if (event == QLatin1String("pusher:ping")) {
+				CurlWsSendText(curl, QByteArrayLiteral("{\"event\":\"pusher:pong\",\"data\":{}}"));
+				return;
+			}
+			if ((event == QLatin1String("pusher_internal:subscription_succeeded") ||
+			     event.endsWith(QLatin1String("subscription_succeeded"))) &&
+			    !subscribed) {
+				subscribed = true;
+				if (alive) {
+					QMetaObject::invokeMethod(
+						alive,
+						[alive, gen] {
+							if (!alive || alive->kickWsGen != gen)
+								return;
+							alive->kickSubscribed = true;
+							if (!alive->kickConnectedAnnounced) {
+								alive->kickConnectedAnnounced = true;
+								alive->AppendSystemMessage(
+									Tr("ChatDockConnected").arg(PlatformLabel(Kick)), Kick);
+							}
+						},
+						Qt::QueuedConnection);
+				}
+				return;
+			}
+			if (event == QLatin1String("pusher:error")) {
+				blog(LOG_WARNING, "[Stream Suite] Kick Pusher error: %s", text.constData());
+				return;
+			}
+			if (!alive)
+				return;
+			const QString message = QString::fromUtf8(text);
 			QMetaObject::invokeMethod(
 				alive,
-				[alive, gen] {
+				[alive, gen, message] {
 					if (!alive || alive->kickWsGen != gen)
 						return;
-					alive->kickSubscribed = true;
-					if (!alive->kickConnectedAnnounced) {
-						alive->kickConnectedAnnounced = true;
-						alive->AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Kick)),
-									   Kick);
-					}
+					alive->OnKickWsMessage(message);
 				},
 				Qt::QueuedConnection);
-		}
+		};
 
 		while (!session->stop.load()) {
 			for (const QByteArray &out : session->takeOutbound()) {
@@ -1691,28 +1804,44 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId)
 				curl_ws_send(curl, buffer, n, &sent, 0, CURLWS_PONG);
 				continue;
 			}
-			if (!(meta->flags & CURLWS_TEXT) || n == 0)
+			if (!(meta->flags & CURLWS_TEXT) && !(meta->flags & CURLWS_BINARY))
 				continue;
-			const QString message = QString::fromUtf8(buffer, static_cast<int>(n));
-			if (!alive)
+			if (n > 0)
+				frameBuf.append(buffer, static_cast<int>(n));
+			if (meta->flags & CURLWS_CONT)
 				continue;
-			QMetaObject::invokeMethod(
-				alive,
-				[alive, gen, message] {
-					if (!alive || alive->kickWsGen != gen)
-						return;
-					alive->OnKickWsMessage(message);
-				},
-				Qt::QueuedConnection);
+			if (frameBuf.isEmpty())
+				continue;
+			const QByteArray complete = frameBuf;
+			frameBuf.clear();
+			handleText(complete);
 		}
 		curl_easy_cleanup(curl);
+
+		const bool needFallback = fallback && !subscribed;
 		if (alive) {
 			QMetaObject::invokeMethod(
 				alive,
-				[alive, gen] {
+				[alive, gen, chatroom, needFallback] {
 					if (!alive || alive->kickWsGen != gen || !alive->connectionsActive)
 						return;
 					alive->kickSubscribed = false;
+					if (needFallback) {
+						alive->FetchKickViewerToken([alive, chatroom](const QString &token) {
+							if (!alive || !alive->connectionsActive)
+								return;
+							if (token.isEmpty()) {
+								if (!alive->kickReconnectTimer->isActive())
+									alive->kickReconnectTimer->start(10000);
+								return;
+							}
+							alive->StartKickWs(QStringLiteral(
+													   "wss://websockets.kick.com/viewer/v1/connect?token=") +
+										   token,
+									   chatroom, false);
+						});
+						return;
+					}
 					if (!alive->kickReconnectTimer->isActive())
 						alive->kickReconnectTimer->start(10000);
 				},
@@ -1725,18 +1854,10 @@ void ChatDock::ConnectKickChat()
 {
 	if (kickChatroomId.isEmpty() || !connectionsActive)
 		return;
-	FetchKickViewerToken([this](const QString &token) {
-		if (!connectionsActive)
-			return;
-		if (!token.isEmpty()) {
-			StartKickWs(QStringLiteral("wss://websockets.kick.com/viewer/v1/connect?token=") + token,
-				    kickChatroomId);
-			return;
-		}
-		blog(LOG_WARNING, "[Stream Suite] Kick viewer token unavailable — trying legacy Pusher");
-		StartKickWs(QStringLiteral("wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false"),
-			    kickChatroomId);
-	});
+	/* Public Pusher first (no token). Fall back to Kick's self-hosted viewer WS. */
+	StartKickWs(QStringLiteral(
+			    "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false"),
+		    kickChatroomId, true);
 }
 
 void ChatDock::DisconnectKickChat()
@@ -1756,16 +1877,34 @@ void ChatDock::SendKickWsText(const QString &text)
 	kickWs->enqueue(text.toUtf8());
 }
 
+void ChatDock::OnKickStreamOffline()
+{
+	SetViewerCount(Kick, 0, false);
+}
+
 void ChatDock::OnKickWsMessage(const QString &message)
 {
 	const QJsonObject root = QJsonDocument::fromJson(message.toUtf8()).object();
 	const QString event = root.value("event").toString();
-	if (event == QLatin1String("pusher:ping")) {
-		SendKickWsText(QStringLiteral("{\"event\":\"pusher:pong\",\"data\":{}}"));
+	if (event.isEmpty() || event.startsWith(QLatin1String("pusher:"))) {
+		if (event == QLatin1String("pusher:ping"))
+			SendKickWsText(QStringLiteral("{\"event\":\"pusher:pong\",\"data\":{}}"));
 		return;
 	}
+	if (event.startsWith(QLatin1String("pusher_internal:")))
+		return;
+
+	if (event.contains(QStringLiteral("StopStreamBroadcast")) || event.contains(QStringLiteral("StreamerIsLive")) ||
+	    event.contains(QStringLiteral("StreamHostEvent"))) {
+		if (event.contains(QStringLiteral("StopStreamBroadcast")))
+			OnKickStreamOffline();
+		/* StreamerIsLive: next viewer poll will refresh the count. */
+		return;
+	}
+
 	if (!event.contains(QStringLiteral("ChatMessage")))
 		return;
+
 	QJsonObject data = root.value("data").toObject();
 	if (data.isEmpty()) {
 		const QString raw = root.value("data").toString();
@@ -1777,10 +1916,14 @@ void ChatDock::OnKickWsMessage(const QString &message)
 	msg.platform = Kick;
 	msg.id = JsonId(data.value("id"));
 	msg.user = sender.value("username").toString(sender.value("slug").toString());
+	if (msg.user.isEmpty())
+		msg.user = QStringLiteral("Kick");
 	msg.color = identity.value("color").toString(QStringLiteral("#53FC18"));
-	msg.text = data.value("content").toString();
+	msg.text = data.value("content").toString(data.value("message").toString());
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
 	msg.badges = KickBadgesFromIdentity(identity);
+	if (msg.text.isEmpty())
+		return;
 	if (msg.id.isEmpty())
 		msg.id = QStringLiteral("kick-%1-%2").arg(msg.ts).arg(msg.user);
 	AppendMessage(msg);
@@ -1925,6 +2068,7 @@ int ChatDock::MessageTextHeight(const QString &html, int width, const QFont &fon
 {
 	QTextDocument doc;
 	doc.setDefaultFont(font);
+	doc.setDocumentMargin(0);
 	doc.setHtml(html);
 	doc.setTextWidth(qMax(40, width));
 	return qMax(16, int(std::ceil(doc.size().height())));
@@ -1945,6 +2089,70 @@ void ChatDock::AppendSystemMessage(const QString &text, Platform platform, bool 
 	AppendMessage(msg);
 }
 
+void ChatDock::ClearSystemMessages()
+{
+	if (!messageList)
+		return;
+	for (int i = messageList->count() - 1; i >= 0; --i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || !item->data(Qt::UserRole).toBool())
+			continue;
+		const QString id = item->data(Qt::UserRole + 1).toString();
+		if (!id.isEmpty())
+			seenMessageIds.remove(id);
+		delete messageList->takeItem(i);
+	}
+}
+
+int ChatDock::LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewportWidth) const
+{
+	if (!row || !item)
+		return 0;
+
+	auto *label = row->findChild<QLabel *>(QStringLiteral("chatMsgText"));
+	if (!label)
+		return 0;
+
+	/* Leave a small gutter so the rounded card never clips against the scrollbar. */
+	const int rowW = qMax(120, viewportWidth - 8);
+	row->setFixedWidth(rowW);
+
+	auto *lay = qobject_cast<QHBoxLayout *>(row->layout());
+	const int marginL = lay ? lay->contentsMargins().left() : 10;
+	const int marginR = lay ? lay->contentsMargins().right() : 12;
+	const int marginT = lay ? lay->contentsMargins().top() : 8;
+	const int marginB = lay ? lay->contentsMargins().bottom() : 8;
+	const int spacing = lay ? lay->spacing() : 8;
+
+	/* Fixed icon/badge sizes — sizeHint is unreliable before the row is shown. */
+	int side = 0;
+	int sideCount = 0;
+	if (lay) {
+		for (int i = 0; i < lay->count(); ++i) {
+			QWidget *w = lay->itemAt(i) ? lay->itemAt(i)->widget() : nullptr;
+			if (!w || w == label)
+				continue;
+			side += w->objectName() == QLatin1String("chatMsgIcon") ? 18 : 14;
+			++sideCount;
+		}
+	}
+	const int chrome = marginL + marginR + side + sideCount * spacing;
+	const int textW = qMax(60, rowW - chrome);
+
+	label->setMinimumWidth(0);
+	label->setMaximumWidth(textW);
+	label->setFixedWidth(textW);
+
+	const int textH = MessageTextHeight(label->text(), textW, label->font());
+	label->setFixedHeight(textH);
+
+	const int contentH = qMax(18, textH);
+	const int rowH = contentH + marginT + marginB;
+	row->setFixedHeight(rowH);
+	item->setSizeHint(QSize(rowW, rowH));
+	return rowH;
+}
+
 void ChatDock::RelayoutMessageItems()
 {
 	if (!messageList)
@@ -1953,18 +2161,7 @@ void ChatDock::RelayoutMessageItems()
 	for (int i = 0; i < messageList->count(); ++i) {
 		QListWidgetItem *item = messageList->item(i);
 		QWidget *row = messageList->itemWidget(item);
-		if (!item || !row)
-			continue;
-		row->setFixedWidth(vw);
-		auto *label = row->findChild<QLabel *>(QStringLiteral("chatMsgText"));
-		if (!label)
-			continue;
-		const int textW = qMax(80, vw - 28);
-		label->setFixedWidth(textW);
-		const int h = MessageTextHeight(label->text(), textW, label->font());
-		label->setMinimumHeight(h);
-		item->setSizeHint(QSize(vw, h + 12));
-		row->updateGeometry();
+		LayoutMessageRow(row, item, vw);
 	}
 }
 
@@ -1999,26 +2196,35 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 			.arg(nameColor, badgesHtml, EscapeHtml(msg.user), Linkify(EscapeHtml(msg.text)));
 
 	auto *item = new QListWidgetItem(messageList);
-	auto *row = new QWidget(messageList);
+	item->setData(Qt::UserRole, msg.system);
+	item->setData(Qt::UserRole + 1, msg.id);
+
+	auto *row = new QFrame(messageList);
+	row->setObjectName(QStringLiteral("chatMsgRow"));
+	row->setAttribute(Qt::WA_StyledBackground, true);
+	row->setStyleSheet(QStringLiteral(
+		"QFrame#chatMsgRow { background: #1b2230; border-radius: 6px; border: none; }"));
+
 	auto *layout = new QHBoxLayout(row);
-	layout->setContentsMargins(8, 4, 10, 4);
-	layout->setSpacing(6);
-	layout->setAlignment(Qt::AlignTop);
+	layout->setContentsMargins(10, 8, 12, 8);
+	layout->setSpacing(8);
 
 	auto *icon = new QLabel(row);
+	icon->setObjectName(QStringLiteral("chatMsgIcon"));
 	icon->setFixedSize(18, 18);
 	icon->setScaledContents(true);
+	icon->setAlignment(Qt::AlignCenter);
 	if (msg.showPlatformIcon)
 		icon->setPixmap(PlatformIcon(msg.platform).pixmap(18, 18));
 	layout->addWidget(icon, 0, Qt::AlignTop);
 
-	/* Image badges sit beside the text label. */
 	for (const ChatBadge &badge : msg.badges) {
 		if (badge.url.isEmpty())
 			continue;
 		auto *badgeLabel = new QLabel(row);
 		badgeLabel->setFixedSize(14, 14);
 		badgeLabel->setScaledContents(true);
+		badgeLabel->setAlignment(Qt::AlignCenter);
 		badgeLabel->setToolTip(badge.label.isEmpty() ? badge.key : badge.label);
 		FetchBadgePixmap(badge.url, badgeLabel);
 		layout->addWidget(badgeLabel, 0, Qt::AlignTop);
@@ -2031,25 +2237,23 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	label->setOpenExternalLinks(true);
 	label->setTextInteractionFlags(Qt::TextBrowserInteraction);
 	label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-	label->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6;"));
+	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+	label->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
 	label->setText(html);
-	layout->addWidget(label, 1);
-
-	const int vw = qMax(160, messageList->viewport()->width());
-	const int textW = qMax(80, vw - 28 - qMax(0, msg.badges.size()) * 18);
-	row->setFixedWidth(vw);
-	label->setFixedWidth(textW);
-	const int textH = MessageTextHeight(html, textW, label->font());
-	label->setMinimumHeight(textH);
-	item->setSizeHint(QSize(vw, textH + 12));
+	layout->addWidget(label, 1, Qt::AlignTop);
 
 	messageList->addItem(item);
 	messageList->setItemWidget(item, row);
+	LayoutMessageRow(row, item, messageList->viewport()->width());
 
 	while (messageList->count() > maxMessages) {
-		auto *old = messageList->takeItem(0);
-		delete old;
+		QListWidgetItem *old = messageList->takeItem(0);
+		if (old) {
+			const QString id = old->data(Qt::UserRole + 1).toString();
+			if (!id.isEmpty())
+				seenMessageIds.remove(id);
+			delete old;
+		}
 	}
 	messageList->scrollToBottom();
 }

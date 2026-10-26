@@ -14,6 +14,8 @@
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QListWidgetItem;
+class QPushButton;
 class QTimer;
 
 struct ChatCurlWsSession {
@@ -100,6 +102,7 @@ private:
 	QFrame *viewerBar = nullptr;
 	QLabel *viewerLabels[3] = {};
 	QFrame *viewerChips[3] = {};
+	QPushButton *clearSystemButton = nullptr;
 	QListWidget *messageList = nullptr;
 	QLabel *sendPlatformIcon = nullptr;
 	QLineEdit *messageEdit = nullptr;
@@ -171,15 +174,18 @@ private:
 	void DisconnectKickChat();
 	void ResolveKickChatroom();
 	void FetchKickViewerToken(std::function<void(QString token)> done);
-	void StartKickWs(const QString &wsUrl, const QString &chatroomId);
+	void StartKickWs(const QString &wsUrl, const QString &chatroomId, bool allowFallback = false);
 	void SendKickWsText(const QString &text);
 	void OnKickWsMessage(const QString &message);
+	void OnKickStreamOffline();
 	void SendKickMessage(const QString &text);
 	static QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity);
 
 	void AppendMessage(const ChatMessage &msg);
 	void AppendSystemMessage(const QString &text, Platform platform, bool withIcon = true);
+	void ClearSystemMessages();
 	void RelayoutMessageItems();
+	int LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewportWidth) const;
 	void FetchBadgePixmap(const QString &url, QLabel *target);
 	static int MessageTextHeight(const QString &html, int width, const QFont &font);
 	bool DockIsOpen() const;
