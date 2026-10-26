@@ -11,6 +11,7 @@
 #include <QDateTime>
 #include <QDockWidget>
 #include <QEvent>
+#include <QFile>
 #include <QFrame>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
@@ -34,6 +35,7 @@
 #include <QSet>
 #include <QShowEvent>
 #include <QSizePolicy>
+#include <QSvgRenderer>
 #include <QTextDocument>
 #include <QTimer>
 #include <QUrl>
@@ -42,6 +44,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <util/bmem.h>
 
 namespace {
 
@@ -1849,6 +1852,7 @@ void ChatDock::ResolveKickChatroom()
 							  kickChatroomId = roomId;
 						  if (kickChatroomId.isEmpty())
 							  kickChatroomId = channelId;
+						  IngestKickSubscriberBadges(root.value(QStringLiteral("subscriber_badges")).toArray());
 					  }
 					  if (kickChatroomId.isEmpty() && kickChannelId.isEmpty()) {
 						  AppendSystemMessage(Tr("ChatDockKickResolveFailed"), Kick);
@@ -2623,6 +2627,34 @@ QWidget *ChatDock::BuildKickEmoteBody(const ChatMessage &msg, const QString &pre
 	return flow;
 }
 
+void ChatDock::IngestKickSubscriberBadges(const QJsonArray &badges)
+{
+	kickSubBadges.clear();
+	for (const QJsonValue &row : badges) {
+		const QJsonObject obj = row.toObject();
+		KickSubBadgeTier tier;
+		tier.months = obj.value(QStringLiteral("months")).toInt();
+		tier.url = obj.value(QStringLiteral("badge_image")).toObject().value(QStringLiteral("src")).toString();
+		if (tier.url.isEmpty())
+			tier.url = obj.value(QStringLiteral("badge_image")).toString();
+		if (tier.url.isEmpty())
+			continue;
+		kickSubBadges.append(tier);
+	}
+	std::sort(kickSubBadges.begin(), kickSubBadges.end(),
+		  [](const KickSubBadgeTier &a, const KickSubBadgeTier &b) { return a.months < b.months; });
+}
+
+QString ChatDock::KickSubscriberBadgeUrl(int months) const
+{
+	QString best;
+	for (const KickSubBadgeTier &tier : kickSubBadges) {
+		if (tier.months <= months)
+			best = tier.url;
+	}
+	return best;
+}
+
 QString ChatDock::KickRoleBadgeKey(const QString &type, int count)
 {
 	QString t = type.trimmed().toLower();
@@ -2634,10 +2666,12 @@ QString ChatDock::KickRoleBadgeKey(const QString &type, int count)
 		QStringLiteral("broadcaster"), QStringLiteral("moderator"), QStringLiteral("vip"),
 		QStringLiteral("og"),          QStringLiteral("verified"),  QStringLiteral("staff"),
 		QStringLiteral("founder"),     QStringLiteral("sidekick"),  QStringLiteral("subscriber"),
-		QStringLiteral("sub_gifter"),
+		QStringLiteral("sub_gifter"),  QStringLiteral("bot"),
 	};
 	if (!kKnown.contains(t))
 		return {};
+	if (t == QLatin1String("sub_gifter") && count > 0)
+		return QStringLiteral("kick-role:sub_gifter:%1").arg(count);
 	if (t == QLatin1String("subscriber") && count > 0)
 		return QStringLiteral("kick-role:subscriber:%1").arg(count);
 	return QStringLiteral("kick-role:%1").arg(t);
@@ -2646,133 +2680,82 @@ QString ChatDock::KickRoleBadgeKey(const QString &type, int count)
 QPixmap ChatDock::KickRoleBadgePixmap(const QString &role, int size)
 {
 	QString r = role.trimmed().toLower();
-	if (r.startsWith(QLatin1String("subscriber:")))
+	int gifterCount = 0;
+	if (r.startsWith(QLatin1String("subscriber:"))) {
 		r = QStringLiteral("subscriber");
-	const QString cacheKey = r + QLatin1Char('@') + QString::number(size);
+	} else if (r.startsWith(QLatin1String("sub_gifter:"))) {
+		gifterCount = r.section(QLatin1Char(':'), 1).toInt();
+		r = QStringLiteral("sub_gifter");
+	}
+
+	QString fileStem = r;
+	if (r == QLatin1String("sub_gifter")) {
+		if (gifterCount >= 200)
+			fileStem = QStringLiteral("subGifter200");
+		else if (gifterCount >= 100)
+			fileStem = QStringLiteral("subGifter100");
+		else if (gifterCount >= 50)
+			fileStem = QStringLiteral("subGifter50");
+		else if (gifterCount >= 25)
+			fileStem = QStringLiteral("subGifter25");
+		else
+			fileStem = QStringLiteral("sub_gifter");
+	}
+
+	const QString cacheKey = fileStem + QLatin1Char('@') + QString::number(size);
 	static QHash<QString, QPixmap> cache;
 	if (cache.contains(cacheKey))
 		return cache.value(cacheKey);
 
 	QPixmap pix(size, size);
 	pix.fill(Qt::transparent);
+
+	/* Official Kick badge SVGs shipped under data/kick-badges/. */
+	const QString rel = QStringLiteral("kick-badges/%1.svg").arg(fileStem);
+	char *modPath = obs_module_file(rel.toUtf8().constData());
+	QString svgPath = modPath ? QString::fromUtf8(modPath) : QString();
+	if (modPath)
+		bfree(modPath);
+
+	QSvgRenderer renderer;
+	if (!svgPath.isEmpty() && QFile::exists(svgPath))
+		renderer.load(svgPath);
+	if (!renderer.isValid()) {
+		/* Dev/rundir fallback next to the source tree data folder. */
+		const QString local = QStringLiteral("data/kick-badges/%1.svg").arg(fileStem);
+		if (QFile::exists(local))
+			renderer.load(local);
+	}
+	if (renderer.isValid()) {
+		QPainter p(&pix);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		renderer.render(&p, QRectF(0, 0, size, size));
+		cache.insert(cacheKey, pix);
+		return pix;
+	}
+
+	/* Minimal fallback if the SVG asset is missing (e.g. staff). */
 	QPainter p(&pix);
 	p.setRenderHint(QPainter::Antialiasing, true);
-	p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-
-	auto fillRounded = [&](const QColor &c) {
-		p.setPen(Qt::NoPen);
-		p.setBrush(c);
-		p.drawRoundedRect(QRectF(0, 0, size, size), size * 0.22, size * 0.22);
-	};
-
-	if (r == QLatin1String("broadcaster")) {
-		/* Kick host badge: purple tile + white mic. */
-		fillRounded(QColor(0x8B, 0x5C, 0xF6));
-		p.setPen(Qt::NoPen);
-		p.setBrush(Qt::white);
-		const qreal cx = size / 2.0;
-		const qreal micW = size * 0.22;
-		const qreal micH = size * 0.34;
-		const qreal micTop = size * 0.16;
-		p.drawRoundedRect(QRectF(cx - micW / 2.0, micTop, micW, micH), micW / 2.0, micW / 2.0);
-		QPen pen(Qt::white, qMax(1.2, size * 0.09));
-		pen.setCapStyle(Qt::RoundCap);
-		pen.setJoinStyle(Qt::RoundJoin);
-		p.setPen(pen);
-		p.setBrush(Qt::NoBrush);
-		p.drawArc(QRectF(cx - size * 0.26, micTop + micH * 0.28, size * 0.52, size * 0.40), 0, -180 * 16);
-		p.drawLine(QPointF(cx, micTop + micH * 0.72), QPointF(cx, size * 0.80));
-		p.drawLine(QPointF(cx - size * 0.13, size * 0.80), QPointF(cx + size * 0.13, size * 0.80));
-	} else if (r == QLatin1String("moderator")) {
-		fillRounded(QColor(0x00, 0xC9, 0x7B));
-		p.setPen(QPen(Qt::white, qMax(1.2, size * 0.10), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-		p.setBrush(Qt::NoBrush);
-		const qreal m = size * 0.22;
-		p.drawLine(QPointF(m, size - m), QPointF(size - m, m));
-		p.drawLine(QPointF(size - m, m), QPointF(size - m * 1.35, m * 1.55));
-		p.drawLine(QPointF(size - m, m), QPointF(size - m * 1.55, m * 1.35));
-	} else if (r == QLatin1String("vip")) {
-		fillRounded(QColor(0xE9, 0x1E, 0x63));
-		p.setPen(Qt::NoPen);
-		p.setBrush(Qt::white);
-		QPainterPath diamond;
-		const qreal cx = size / 2.0;
-		const qreal cy = size / 2.0;
-		const qreal s = size * 0.28;
-		diamond.moveTo(cx, cy - s);
-		diamond.lineTo(cx + s, cy);
-		diamond.lineTo(cx, cy + s);
-		diamond.lineTo(cx - s, cy);
-		diamond.closeSubpath();
-		p.drawPath(diamond);
-	} else if (r == QLatin1String("og")) {
-		fillRounded(QColor(0xFF, 0xB3, 0x00));
-		p.setPen(Qt::white);
-		QFont f = p.font();
-		f.setBold(true);
-		f.setPixelSize(qMax(7, int(size * 0.42)));
-		p.setFont(f);
-		p.drawText(QRect(0, 0, size, size), Qt::AlignCenter, QStringLiteral("OG"));
-	} else if (r == QLatin1String("verified")) {
-		fillRounded(QColor(0x1D, 0x9B, 0xF0));
-		p.setPen(QPen(Qt::white, qMax(1.2, size * 0.12), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-		p.setBrush(Qt::NoBrush);
-		p.drawLine(QPointF(size * 0.22, size * 0.52), QPointF(size * 0.42, size * 0.72));
-		p.drawLine(QPointF(size * 0.42, size * 0.72), QPointF(size * 0.78, size * 0.30));
-	} else if (r == QLatin1String("staff")) {
-		fillRounded(QColor(0x53, 0xFC, 0x18));
+	p.setPen(Qt::NoPen);
+	p.setBrush(r == QLatin1String("staff") ? QColor(0x53, 0xFC, 0x18) : QColor(0x66, 0x66, 0x66));
+	p.drawRoundedRect(QRectF(0, 0, size, size), size * 0.22, size * 0.22);
+	if (r == QLatin1String("staff")) {
 		p.setPen(Qt::black);
 		QFont f = p.font();
 		f.setBold(true);
 		f.setPixelSize(qMax(7, int(size * 0.55)));
 		p.setFont(f);
 		p.drawText(QRect(0, 0, size, size), Qt::AlignCenter, QStringLiteral("K"));
-	} else if (r == QLatin1String("founder")) {
-		fillRounded(QColor(0xF5, 0xA6, 0x23));
-		p.setPen(Qt::NoPen);
-		p.setBrush(Qt::white);
-		QPainterPath star;
-		const qreal cx = size / 2.0;
-		const qreal cy = size / 2.0;
-		const qreal outer = size * 0.32;
-		const qreal inner = size * 0.14;
-		for (int i = 0; i < 10; ++i) {
-			const qreal ang = -M_PI / 2.0 + i * M_PI / 5.0;
-			const qreal rad = (i % 2 == 0) ? outer : inner;
-			const QPointF pt(cx + std::cos(ang) * rad, cy + std::sin(ang) * rad);
-			if (i == 0)
-				star.moveTo(pt);
-			else
-				star.lineTo(pt);
-		}
-		star.closeSubpath();
-		p.drawPath(star);
-	} else if (r == QLatin1String("sidekick")) {
-		fillRounded(QColor(0x00, 0xB8, 0xD4));
-		p.setPen(Qt::NoPen);
-		p.setBrush(Qt::white);
-		p.drawEllipse(QRectF(size * 0.28, size * 0.18, size * 0.44, size * 0.44));
-		p.drawRoundedRect(QRectF(size * 0.22, size * 0.55, size * 0.56, size * 0.28), size * 0.14,
-				   size * 0.14);
-	} else if (r == QLatin1String("subscriber") || r == QLatin1String("sub_gifter")) {
-		fillRounded(r == QLatin1String("sub_gifter") ? QColor(0xFF, 0x6D, 0x00) : QColor(0x7C, 0x4D, 0xFF));
-		p.setPen(Qt::NoPen);
-		p.setBrush(Qt::white);
-		p.drawEllipse(QRectF(size * 0.30, size * 0.22, size * 0.40, size * 0.40));
-		p.drawRoundedRect(QRectF(size * 0.20, size * 0.58, size * 0.60, size * 0.26), size * 0.13,
-				   size * 0.13);
-	} else {
-		fillRounded(QColor(0x55, 0x55, 0x55));
 	}
-
 	cache.insert(cacheKey, pix);
 	return pix;
 }
 
-QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject &identity)
+QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject &identity) const
 {
 	QVector<ChatBadge> out;
-	QSet<QString> seenRoles;
+	QSet<QString> seenKeys;
 	bool hasBroadcaster = false;
 
 	auto normalizeRole = [](QString t) {
@@ -2784,36 +2767,12 @@ QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject 
 		return t;
 	};
 
-	auto addRole = [&](const QString &type, const QString &label, int count) {
-		const QString role = normalizeRole(type);
-		if (role.isEmpty() || seenRoles.contains(role))
-			return;
-		const QString url = KickRoleBadgeKey(role, count);
-		if (url.isEmpty())
-			return;
-		seenRoles.insert(role);
-		if (role == QLatin1String("broadcaster"))
-			hasBroadcaster = true;
-		ChatBadge badge;
-		badge.key = role;
-		badge.label = label.isEmpty() ? type : label;
-		badge.url = url;
-		out.append(badge);
-	};
-
-	/* Role badges from legacy identity.badges (broadcaster/mod/vip/...). */
+	/* 1) Role badges from legacy identity.badges — official Kick SVGs (or channel sub art). */
 	struct LegacyBadge {
 		QString type;
 		QString label;
 		int count = 0;
 		int order = 100;
-	};
-	static const QHash<QString, int> kRoleOrder{
-		{QStringLiteral("broadcaster"), 0}, {QStringLiteral("staff"), 1},
-		{QStringLiteral("verified"), 2},    {QStringLiteral("moderator"), 3},
-		{QStringLiteral("vip"), 4},         {QStringLiteral("og"), 5},
-		{QStringLiteral("founder"), 6},     {QStringLiteral("sidekick"), 7},
-		{QStringLiteral("sub_gifter"), 8},  {QStringLiteral("subscriber"), 9},
 	};
 	QVector<LegacyBadge> legacy;
 	for (const QJsonValue &row : identity.value(QStringLiteral("badges")).toArray()) {
@@ -2823,19 +2782,37 @@ QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject 
 					       .toString(obj.value(QStringLiteral("name")).toString()));
 		b.label = obj.value(QStringLiteral("text")).toString(b.type);
 		b.count = obj.value(QStringLiteral("count")).toInt(obj.value(QStringLiteral("months")).toInt());
-		b.order = kRoleOrder.value(b.type, 100);
+		b.order = obj.value(QStringLiteral("sort_order")).toInt(100);
 		if (!b.type.isEmpty())
 			legacy.append(b);
 	}
 	std::sort(legacy.begin(), legacy.end(),
 		  [](const LegacyBadge &a, const LegacyBadge &b) { return a.order < b.order; });
-	for (const LegacyBadge &b : legacy)
-		addRole(b.type, b.label, b.count);
+
+	for (const LegacyBadge &b : legacy) {
+		if (seenKeys.contains(b.type))
+			continue;
+		ChatBadge badge;
+		badge.key = b.type;
+		badge.label = b.label.isEmpty() ? b.type : b.label;
+		if (b.type == QLatin1String("subscriber")) {
+			const QString channelUrl = KickSubscriberBadgeUrl(qMax(1, b.count));
+			badge.url = channelUrl.isEmpty() ? KickRoleBadgeKey(b.type, b.count) : channelUrl;
+		} else {
+			badge.url = KickRoleBadgeKey(b.type, b.count);
+		}
+		if (badge.url.isEmpty())
+			continue;
+		seenKeys.insert(b.type);
+		if (b.type == QLatin1String("broadcaster"))
+			hasBroadcaster = true;
+		out.append(badge);
+	}
 
 	/*
-	 * badges_v2 carries channel/custom images (sub badges, etc).
-	 * Broadcaster rows on Kick only show the host mic — skip v2 there so we don't
-	 * paint the grey "level" badge (and a duplicate letter pill) next to the name.
+	 * 2) badges_v2 — Kick cosmetics the user opted to show (selected:true), including
+	 *    viewer level + global/custom badges. Broadcaster rows on Kick only show the
+	 *    host mic, so skip v2 there.
 	 */
 	if (!hasBroadcaster) {
 		QVector<QJsonObject> v2;
@@ -2856,17 +2833,22 @@ QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject 
 				normalizeRole(obj.value(QStringLiteral("name"))
 						      .toString(obj.value(QStringLiteral("badge_type")).toString()));
 			const QString badgeType = normalizeRole(obj.value(QStringLiteral("badge_type")).toString());
-			if (seenRoles.contains(name) || (!badgeType.isEmpty() && seenRoles.contains(badgeType)))
-				continue;
-			if (name == QLatin1String("level") || badgeType == QLatin1String("level"))
+			/* Don't duplicate a role we already rendered from legacy badges. */
+			if ((!name.isEmpty() && seenKeys.contains(name)) ||
+			    (!badgeType.isEmpty() && seenKeys.contains(badgeType)))
 				continue;
 			ChatBadge badge;
 			badge.key = name.isEmpty() ? badgeType : name;
 			badge.label = obj.value(QStringLiteral("text")).toString(badge.key);
+			if (badge.key == QLatin1String("level")) {
+				const int level = obj.value(QStringLiteral("metadata")).toObject().value(QStringLiteral("level")).toInt();
+				if (level > 0)
+					badge.label = QStringLiteral("Level %1").arg(level);
+			}
 			badge.url = obj.value(QStringLiteral("image_url")).toString();
-			if (badge.url.isEmpty())
+			if (badge.url.isEmpty() || badge.key.isEmpty())
 				continue;
-			seenRoles.insert(badge.key.toLower());
+			seenKeys.insert(badge.key.toLower());
 			out.append(badge);
 		}
 	}

@@ -109,6 +109,11 @@ private:
 	QString kickChatroomId;
 	QString kickChannelId;
 	QString kickRealtimeClientId;
+	struct KickSubBadgeTier {
+		int months = 0;
+		QString url;
+	};
+	QVector<KickSubBadgeTier> kickSubBadges;
 	QString twitchLogin;
 
 	QFrame *viewerBar = nullptr;
@@ -201,9 +206,11 @@ private:
 	void OnKickWsMessage(const QString &message);
 	void OnKickStreamOffline();
 	void SendKickMessage(const QString &text);
-	static QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity);
+	QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity) const;
 	static QString KickRoleBadgeKey(const QString &type, int count = 0);
 	static QPixmap KickRoleBadgePixmap(const QString &role, int size = 14);
+	QString KickSubscriberBadgeUrl(int months) const;
+	void IngestKickSubscriberBadges(const QJsonArray &badges);
 	static QString KickEmoteImageUrl(const QString &emoteId);
 	static QVector<ChatEmoteSpan> KickEmotesFromText(const QString &raw);
 	QString FormatKickContentHtml(const QString &raw) const;
