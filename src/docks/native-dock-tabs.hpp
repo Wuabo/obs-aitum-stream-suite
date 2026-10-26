@@ -10,3 +10,6 @@ void shutdown_native_canvas_tabs();
  * BasicWindow DockState so bottom strip and Canvas Previews sizes stick. */
 void restore_obs_dock_layout();
 void schedule_restore_obs_dock_layout();
+/* Keep Canvas Previews / canvas docks free like Scenes/Sources — never
+ * leave them tabbed together with the Controls dock. */
+void ensure_preview_docks_independent();

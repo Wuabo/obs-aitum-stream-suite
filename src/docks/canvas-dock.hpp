@@ -12,13 +12,20 @@
 #include <QComboBox>
 #include <QFrame>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLayout>
 #include <QListWidget>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QWheelEvent>
 #include <util/config-file.h>
+
+#define MAX_SCALING_LEVEL 32
+#define MAX_SCALING_AMOUNT 8.0f
+#define ZOOM_SENSITIVITY pow(MAX_SCALING_AMOUNT, 1.0f / MAX_SCALING_LEVEL)
+#define PREVIEW_EDGE_SIZE 10
 
 #define ITEM_LEFT (1 << 0)
 #define ITEM_RIGHT (1 << 1)
@@ -87,6 +94,21 @@ private:
 	float scrollY = 0.5f;
 	float groupRot = 0.0f;
 	float previewScale = 1.0f;
+	int previewX = 0;
+	int previewY = 0;
+	int32_t scalingLevel = 0;
+	float scalingAmount = 1.0f;
+	QPushButton *previewZoomOutButton = nullptr;
+	QLabel *previewScalePercent = nullptr;
+	QPushButton *previewZoomInButton = nullptr;
+	QComboBox *previewScalingMode = nullptr;
+	QFrame *contextContainer = nullptr;
+	QLabel *contextSourceIcon = nullptr;
+	QLabel *contextSourceIconSpacer = nullptr;
+	QLabel *contextSourceLabel = nullptr;
+	QPushButton *sourcePropertiesButton = nullptr;
+	QPushButton *sourceFiltersButton = nullptr;
+	QPushButton *sourceInteractButton = nullptr;
 
 	SourceTree *sourceList = nullptr;
 	QListWidget *sceneList = nullptr;
@@ -127,6 +149,18 @@ private:
 	ItemHandle stretchHandle = ItemHandle::None;
 	matrix4 invGroupTransform{};
 	inline bool IsFixedScaling() const { return fixedScaling; }
+	void SetFixedScaling(bool fixed);
+	void SetScalingLevel(int32_t level);
+	void SetScalingAmount(float amount);
+	void IncreaseScalingLevel();
+	void DecreaseScalingLevel();
+	void SetPreviewScalingWindow();
+	void SetPreviewScalingCanvas();
+	void SetPreviewScalingOutput();
+	void ResizePreview();
+	void UpdatePreviewScaleControls();
+	void BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayout *outerLayout);
+	void UpdateContextBar();
 	vec2 GetMouseEventPos(QMouseEvent *event);
 	bool SelectedAtPos(obs_scene_t *scene, const vec2 &pos);
 
@@ -231,6 +265,8 @@ private:
 	static void DrawSquareAtPos(float x, float y, float pixelRatio);
 	static void DrawRotationHandle(gs_vertbuffer_t *circle, float rot, float pixelRatio);
 	static void GetScaleAndCenterPos(int baseCX, int baseCY, int windowCX, int windowCY, int &x, int &y, float &scale);
+	static void GetCenterPosFromFixedScale(int baseCX, int baseCY, int windowCX, int windowCY, int &x, int &y,
+					      float scale);
 	static vec2 GetItemSize(obs_sceneitem_t *item);
 	static vec3 GetTransformedPos(float x, float y, const matrix4 &mat);
 	static obs_source_t *CreateLabel(float pixelRatio, int i);

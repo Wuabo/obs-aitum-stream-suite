@@ -10,15 +10,18 @@
 #include <graphics/matrix4.h>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <QAbstractItemDelegate>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QFileInfo>
+#include <QFrame>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QGuiApplication>
-#include <QListView>
-#include <QAbstractItemDelegate>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
@@ -27,11 +30,14 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QToolBar>
 #include <QUrlQuery>
 #include <QWidgetAction>
+#include <algorithm>
+#include <cmath>
 #include <src/utils/obs-websocket-api.h>
 #include <util/dstr.h>
 #include <util/platform.h>
@@ -273,21 +279,34 @@ void CanvasDock::LoadUI()
 
 	obs_leave_graphics();
 
-	setObjectName(QStringLiteral("contextContainer"));
+	/* Do NOT name the dock root "contextContainer" — Yami styles that
+	 * object and would pad every child button (incl. zoom). */
+	setObjectName(QStringLiteral("CanvasDock"));
 	setContentsMargins(0, 0, 0, 0);
 
-	canvas_split = new SwitchingSplitter;
+	/* Match OBSBasic.ui centralwidget verticalLayout: margins 4,0,4,0. */
+	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(4, 0, 4, 0);
+	outer->setSpacing(0);
+
+	/* Match canvasEditor + previewLayout: margins 1 all, spacing 2. */
+	auto *canvasEditor = new QWidget(this);
+	canvasEditor->setObjectName(QStringLiteral("canvasEditor"));
+	auto *previewLayout = new QHBoxLayout(canvasEditor);
+	previewLayout->setContentsMargins(1, 1, 1, 1);
+	previewLayout->setSpacing(2);
+
+	canvas_split = new SwitchingSplitter(canvasEditor);
 	canvas_split->setContentsMargins(0, 0, 0, 0);
-	auto l = new QBoxLayout(QBoxLayout::TopToBottom, this);
-	l->setContentsMargins(0, 0, 0, 0);
-	setLayout(l);
-	l->addWidget(canvas_split);
 	canvas_split->setOrientation(Qt::Vertical);
+	previewLayout->addWidget(canvas_split);
+	outer->addWidget(canvasEditor, 1);
 
 	auto canvas_preview = new QWidget;
-	canvas_preview->setObjectName(QStringLiteral("canvasPreview"));
-	auto cwl = new QVBoxLayout;
-	canvas_preview->setLayout(cwl);
+	canvas_preview->setObjectName(QStringLiteral("previewContainer"));
+	auto cwl = new QVBoxLayout(canvas_preview);
+	cwl->setContentsMargins(0, 0, 0, 0);
+	cwl->setSpacing(0);
 	if (!settings) {
 		auto canvas_combo_layout = new QHBoxLayout;
 		sceneCombo = new QComboBox;
@@ -347,29 +366,24 @@ void CanvasDock::LoadUI()
 
 		cwl->addLayout(canvas_combo_layout);
 	}
-	cwl->addWidget(preview);
-
-	//setLayout(mainLayout);
-
 	preview->setObjectName(QStringLiteral("preview"));
-	preview->setMinimumSize(QSize(24, 24));
+	preview->setMinimumSize(QSize(32, 32));
 	QSizePolicy sizePolicy1(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	sizePolicy1.setHorizontalStretch(0);
 	sizePolicy1.setVerticalStretch(0);
 	sizePolicy1.setHeightForWidth(preview->sizePolicy().hasHeightForWidth());
 	preview->setSizePolicy(sizePolicy1);
-
 	preview->setMouseTracking(true);
-	preview->setFocusPolicy(Qt::StrongFocus);
+	preview->setFocusPolicy(Qt::ClickFocus);
 	preview->installEventFilter(eventFilter.get());
-
 	preview->show();
 	connect(preview, &OBSQTDisplay::DisplayCreated,
 		[this]() { obs_display_add_draw_callback(preview->GetDisplay(), DrawPreview, this); });
 
 	previewDisabledWidget = new QFrame;
+	previewDisabledWidget->setObjectName(QStringLiteral("previewDisabledWidget"));
 	auto lv = new QVBoxLayout;
-
+	lv->setContentsMargins(1, 1, 1, 1);
 	auto enablePreviewButton =
 		new QPushButton(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.PreviewConextMenu.Enable")));
 	connect(enablePreviewButton, &QPushButton::clicked, [this] {
@@ -379,12 +393,14 @@ void CanvasDock::LoadUI()
 		previewDisabledWidget->setVisible(false);
 	});
 	lv->addWidget(enablePreviewButton);
-
 	previewDisabledWidget->setLayout(lv);
-
 	previewDisabledWidget->setVisible(preview_disabled);
-	cwl->addWidget(previewDisabledWidget);
+
+	/* Scale row inside preview container; context bar is a sibling of canvasEditor. */
+	BuildPreviewChrome(cwl, outer);
 	canvas_split->addWidget(canvas_preview);
+
+	connect(preview, &OBSQTDisplay::DisplayResized, this, [this]() { ResizePreview(); });
 
 	//obs_display_set_enabled(preview->GetDisplay(), !preview_disabled);
 
@@ -613,6 +629,8 @@ void CanvasDock::LoadUI()
 	sourceList->setDefaultDropAction(Qt::TargetMoveAction);
 
 	connect(sourceList, &SourceTree::customContextMenuRequested, [this] { ShowSourcesContextMenu(GetCurrentSceneItem()); });
+	connect(sourceList->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+		[this](const QItemSelection &, const QItemSelection &) { UpdateContextBar(); });
 
 	auto renameAction = new QAction(sourceList);
 #ifdef __APPLE__
@@ -1021,7 +1039,11 @@ void CanvasDock::LoadUI()
 		panel_split->addWidget(transitionsGroup);
 		panel_split->setCollapsible(0, false);
 
-		canvas_split->addWidget(panel_split);
+		/* Keep scenes/sources/transitions off this dock — they are shown
+		 * via the native Scenes/Sources/Transitions docks (canvas tabs).
+		 * panel_split stays as a hidden holder for Borrow*Pane(). */
+		panel_split->setParent(this);
+		panel_split->hide();
 
 		LoadTransitions();
 
@@ -1132,6 +1154,436 @@ void CanvasDock::GetScaleAndCenterPos(int baseCX, int baseCY, int windowCX, int 
 	y = windowCY / 2 - newCY / 2;
 }
 
+void CanvasDock::GetCenterPosFromFixedScale(int baseCX, int baseCY, int windowCX, int windowCY, int &x, int &y,
+					    float scale)
+{
+	x = int((float(windowCX) - float(baseCX) * scale) / 2.0f);
+	y = int((float(windowCY) - float(baseCY) * scale) / 2.0f);
+}
+
+void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayout *outerLayout)
+{
+	if (!previewContainerLayout || !outerLayout) {
+		return;
+	}
+
+	/* Mirror OBSBasic.ui gridLayout: preview + scale row (previewXContainer). */
+	auto *gridHost = new QWidget(this);
+	auto *grid = new QGridLayout(gridHost);
+	grid->setContentsMargins(0, 0, 0, 0);
+	grid->setSpacing(0);
+
+	grid->addWidget(preview, 1, 0, 1, 2);
+	if (previewDisabledWidget) {
+		grid->addWidget(previewDisabledWidget, 1, 0, 1, 2);
+	}
+
+	auto *scaleRow = new QWidget(gridHost);
+	scaleRow->setObjectName(QStringLiteral("previewXContainer"));
+	auto *scaleLayout = new QHBoxLayout(scaleRow);
+	scaleLayout->setContentsMargins(0, 0, 0, 0);
+	scaleLayout->setSpacing(0);
+
+	previewZoomOutButton = new QPushButton(scaleRow);
+	previewZoomOutButton->setObjectName(QStringLiteral("previewZoomOutButton"));
+	previewZoomOutButton->setFixedSize(20, 16);
+	previewZoomOutButton->setIcon(QIcon(QStringLiteral(":/res/images/minus.svg")));
+	previewZoomOutButton->setIconSize(QSize(8, 8));
+	previewZoomOutButton->setProperty("toolButton", true);
+	previewZoomOutButton->setProperty("class", QStringLiteral("icon-minus"));
+	previewZoomOutButton->setToolTip(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.ZoomOut")));
+	connect(previewZoomOutButton, &QPushButton::clicked, this, [this] { DecreaseScalingLevel(); });
+
+	previewScalePercent = new QLabel(QStringLiteral("100%"), scaleRow);
+	previewScalePercent->setObjectName(QStringLiteral("previewScalePercent"));
+	previewScalePercent->setAlignment(Qt::AlignCenter);
+
+	previewZoomInButton = new QPushButton(scaleRow);
+	previewZoomInButton->setObjectName(QStringLiteral("previewZoomInButton"));
+	previewZoomInButton->setFixedSize(20, 16);
+	previewZoomInButton->setIcon(QIcon(QStringLiteral(":/res/images/plus.svg")));
+	previewZoomInButton->setIconSize(QSize(8, 8));
+	previewZoomInButton->setProperty("toolButton", true);
+	previewZoomInButton->setProperty("class", QStringLiteral("icon-plus"));
+	previewZoomInButton->setToolTip(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.ZoomIn")));
+	connect(previewZoomInButton, &QPushButton::clicked, this, [this] { IncreaseScalingLevel(); });
+
+	previewScalingMode = new QComboBox(scaleRow);
+	previewScalingMode->setObjectName(QStringLiteral("previewScalingMode"));
+	previewScalingMode->addItem(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.Window")));
+	previewScalingMode->addItem(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.Canvas"))
+			.arg(QString::number(canvas_width), QString::number(canvas_height)));
+	connect(previewScalingMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+		if (index == 0) {
+			SetPreviewScalingWindow();
+		} else if (index == 1) {
+			SetPreviewScalingCanvas();
+		} else if (index == 2) {
+			SetPreviewScalingOutput();
+		}
+	});
+
+	scaleLayout->addWidget(previewZoomOutButton);
+	scaleLayout->addWidget(previewScalePercent);
+	scaleLayout->addWidget(previewZoomInButton);
+	scaleLayout->addWidget(previewScalingMode);
+	scaleLayout->addSpacing(4);
+	scaleLayout->addStretch(1);
+	grid->addWidget(scaleRow, 2, 1);
+
+	previewContainerLayout->addWidget(gridHost, 1);
+
+	/* Mirror OBSBasic.ui: contextContainer is sibling of canvasEditor. */
+	contextContainer = new QFrame(this);
+	contextContainer->setObjectName(QStringLiteral("contextContainer"));
+	auto *hl = new QHBoxLayout(contextContainer);
+	hl->setContentsMargins(6, 4, 6, 4);
+	hl->setSpacing(6);
+
+	auto *contextSub = new QFrame(contextContainer);
+	contextSub->setObjectName(QStringLiteral("contextSubContainer"));
+	auto *sub = new QHBoxLayout(contextSub);
+	sub->setContentsMargins(0, 0, 0, 0);
+	sub->setSpacing(6);
+
+	contextSourceIcon = new QLabel(contextSub);
+	contextSourceIcon->setObjectName(QStringLiteral("contextSourceIcon"));
+	contextSourceIcon->setFixedSize(22, 22);
+	contextSourceIcon->hide();
+
+	contextSourceLabel = new QLabel(contextSub);
+	contextSourceLabel->setObjectName(QStringLiteral("contextSourceLabel"));
+	contextSourceLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+	contextSourceLabel->setMinimumSize(160, 22);
+	contextSourceLabel->setMaximumSize(160, 22);
+	contextSourceLabel->setText(
+		QString::fromUtf8(obs_frontend_get_locale_string("ContextBar.NoSelectedSource")));
+
+	contextSourceIconSpacer = new QLabel(contextSub);
+	contextSourceIconSpacer->setObjectName(QStringLiteral("contextSourceIconSpacer"));
+	contextSourceIconSpacer->setFixedSize(22, 22);
+
+	auto *sep = new QFrame(contextSub);
+	sep->setFrameShape(QFrame::VLine);
+	sep->setFrameShadow(QFrame::Plain);
+	sep->setObjectName(QStringLiteral("line_3"));
+
+	sourcePropertiesButton = new QPushButton(contextSub);
+	sourcePropertiesButton->setObjectName(QStringLiteral("sourcePropertiesButton"));
+	sourcePropertiesButton->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+	sourcePropertiesButton->setMinimumHeight(22);
+	sourcePropertiesButton->setToolTip(
+		QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")));
+	sourcePropertiesButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Properties")));
+	sourcePropertiesButton->setIcon(QIcon(QStringLiteral(":/settings/images/settings/general.svg")));
+	sourcePropertiesButton->setFlat(false);
+	sourcePropertiesButton->setEnabled(false);
+	connect(sourcePropertiesButton, &QPushButton::clicked, this, [this] {
+		obs_sceneitem_t *item = GetSelectedItem(scene);
+		if (!item) {
+			item = GetCurrentSceneItem();
+		}
+		if (!item) {
+			return;
+		}
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		if (source) {
+			obs_frontend_open_source_properties(source);
+		}
+	});
+
+	sourceFiltersButton = new QPushButton(contextSub);
+	sourceFiltersButton->setObjectName(QStringLiteral("sourceFiltersButton"));
+	sourceFiltersButton->setMinimumHeight(22);
+	sourceFiltersButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SourceFilters")));
+	sourceFiltersButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Filters")));
+	sourceFiltersButton->setIcon(QIcon(QStringLiteral(":/res/images/filter.svg")));
+	sourceFiltersButton->setFlat(false);
+	sourceFiltersButton->setEnabled(false);
+	connect(sourceFiltersButton, &QPushButton::clicked, this, [this] {
+		obs_sceneitem_t *item = GetSelectedItem(scene);
+		if (!item) {
+			item = GetCurrentSceneItem();
+		}
+		if (!item) {
+			return;
+		}
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		if (source) {
+			obs_frontend_open_source_filters(source);
+		}
+	});
+
+	sourceInteractButton = new QPushButton(contextSub);
+	sourceInteractButton->setObjectName(QStringLiteral("sourceInteractButton"));
+	sourceInteractButton->setMinimumHeight(22);
+	sourceInteractButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("Interact")));
+	sourceInteractButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Interact")));
+	sourceInteractButton->setIcon(QIcon(QStringLiteral(":/res/images/interact.svg")));
+	sourceInteractButton->setProperty("class", QStringLiteral("icon-touch"));
+	sourceInteractButton->setFlat(false);
+	sourceInteractButton->hide();
+	connect(sourceInteractButton, &QPushButton::clicked, this, [this] {
+		obs_sceneitem_t *item = GetSelectedItem(scene);
+		if (!item) {
+			item = GetCurrentSceneItem();
+		}
+		if (!item) {
+			return;
+		}
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		if (source) {
+			obs_frontend_open_source_interaction(source);
+		}
+	});
+
+	/* Native order: icon → label → iconSpacer → line → Properties → Filters → Interact */
+	sub->addWidget(contextSourceIcon);
+	sub->addWidget(contextSourceLabel);
+	sub->addWidget(contextSourceIconSpacer);
+	sub->addWidget(sep);
+	sub->addWidget(sourcePropertiesButton);
+	sub->addWidget(sourceFiltersButton);
+	sub->addWidget(sourceInteractButton);
+
+	auto *emptySpace = new QFrame(contextContainer);
+	emptySpace->setObjectName(QStringLiteral("emptySpace"));
+	emptySpace->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+	emptySpace->setMinimumHeight(22);
+
+	hl->addWidget(contextSub);
+	hl->addWidget(emptySpace, 1);
+	outerLayout->addWidget(contextContainer);
+
+	UpdatePreviewScaleControls();
+	UpdateContextBar();
+}
+
+void CanvasDock::UpdateContextBar()
+{
+	if (!contextContainer) {
+		return;
+	}
+	obs_sceneitem_t *item = GetSelectedItem(scene);
+	if (!item && sourceList) {
+		item = GetCurrentSceneItem();
+	}
+	if (item) {
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		const char *id = obs_source_get_unversioned_id(source);
+		const uint32_t flags = obs_source_get_output_flags(source);
+		QIcon icon;
+		if (strcmp(id, "scene") == 0) {
+			icon = GetSceneIcon();
+		} else if (strcmp(id, "group") == 0) {
+			icon = GetGroupIcon();
+		} else {
+			icon = GetIconFromType(obs_source_get_icon_type(id), id);
+		}
+		contextSourceIcon->setPixmap(icon.pixmap(QSize(16, 16)));
+		contextSourceIcon->show();
+		contextSourceIconSpacer->hide();
+		contextSourceLabel->setText(QString::fromUtf8(obs_source_get_name(source)));
+		sourceFiltersButton->setEnabled(true);
+		sourcePropertiesButton->setEnabled(obs_source_configurable(source));
+		if (sourceInteractButton) {
+			sourceInteractButton->setVisible(flags & OBS_SOURCE_INTERACTION);
+		}
+	} else {
+		contextSourceIcon->hide();
+		contextSourceIconSpacer->show();
+		contextSourceLabel->setText(
+			QString::fromUtf8(obs_frontend_get_locale_string("ContextBar.NoSelectedSource")));
+		sourceFiltersButton->setEnabled(false);
+		sourcePropertiesButton->setEnabled(false);
+		if (sourceInteractButton) {
+			sourceInteractButton->hide();
+		}
+	}
+}
+
+void CanvasDock::SetFixedScaling(bool fixed)
+{
+	fixedScaling = fixed;
+	UpdatePreviewScaleControls();
+}
+
+void CanvasDock::SetScalingAmount(float amount)
+{
+	if (scalingAmount == amount) {
+		return;
+	}
+	if (scalingAmount > 0.0f) {
+		scrollingOffset.x *= amount / scalingAmount;
+		scrollingOffset.y *= amount / scalingAmount;
+	}
+	scalingAmount = amount;
+	if (!fixedScaling) {
+		scalingLevel = int32_t(std::round(log(scalingAmount) / log(ZOOM_SENSITIVITY)));
+	}
+}
+
+void CanvasDock::SetScalingLevel(int32_t level)
+{
+	level = std::clamp(level, -MAX_SCALING_LEVEL, MAX_SCALING_LEVEL);
+	scalingLevel = level;
+	SetScalingAmount(float(pow(ZOOM_SENSITIVITY, float(level))));
+}
+
+void CanvasDock::IncreaseScalingLevel()
+{
+	SetFixedScaling(true);
+	SetScalingLevel(scalingLevel + 1);
+	ResizePreview();
+	if (preview) {
+		emit preview->DisplayResized();
+	}
+}
+
+void CanvasDock::DecreaseScalingLevel()
+{
+	SetFixedScaling(true);
+	SetScalingLevel(scalingLevel - 1);
+	ResizePreview();
+	if (preview) {
+		emit preview->DisplayResized();
+	}
+}
+
+void CanvasDock::SetPreviewScalingWindow()
+{
+	SetFixedScaling(false);
+	vec2_zero(&scrollingOffset);
+	scrollX = 0.5f;
+	scrollY = 0.5f;
+	zoom = 1.0f;
+	ResizePreview();
+	if (preview) {
+		emit preview->DisplayResized();
+	}
+}
+
+void CanvasDock::SetPreviewScalingCanvas()
+{
+	SetFixedScaling(true);
+	SetScalingLevel(0);
+	vec2_zero(&scrollingOffset);
+	ResizePreview();
+	if (preview) {
+		emit preview->DisplayResized();
+	}
+}
+
+void CanvasDock::SetPreviewScalingOutput()
+{
+	obs_video_info ovi{};
+	if (!obs_canvas_get_video_info(canvas, &ovi)) {
+		obs_get_video_info(&ovi);
+	}
+	SetFixedScaling(true);
+	const float amount = float(ovi.output_width) / float(ovi.base_width > 0 ? ovi.base_width : 1);
+	const int32_t level = int32_t(std::round(log(amount) / log(ZOOM_SENSITIVITY)));
+	scalingLevel = std::clamp(level, -MAX_SCALING_LEVEL, MAX_SCALING_LEVEL);
+	SetScalingAmount(amount);
+	ResizePreview();
+	if (preview) {
+		emit preview->DisplayResized();
+	}
+}
+
+void CanvasDock::ResizePreview()
+{
+	if (!preview) {
+		return;
+	}
+	const QSize target = preview->size() * preview->devicePixelRatioF();
+	uint32_t sourceCX = canvas_width ? canvas_width : 1;
+	uint32_t sourceCY = canvas_height ? canvas_height : 1;
+	if (!settings && scene) {
+		obs_source_t *source = obs_scene_get_source(scene);
+		if (source) {
+			const uint32_t w = obs_source_get_width(source);
+			const uint32_t h = obs_source_get_height(source);
+			if (w > 0) {
+				sourceCX = w;
+			}
+			if (h > 0) {
+				sourceCY = h;
+			}
+		}
+	}
+
+	const int usableW = std::max(1, target.width() - PREVIEW_EDGE_SIZE * 2);
+	const int usableH = std::max(1, target.height() - PREVIEW_EDGE_SIZE * 2);
+	int x = 0;
+	int y = 0;
+	float scale = 1.0f;
+	if (fixedScaling) {
+		scale = scalingAmount;
+		GetCenterPosFromFixedScale(int(sourceCX), int(sourceCY), usableW, usableH, x, y, scale);
+		x += int(scrollingOffset.x);
+		y += int(scrollingOffset.y);
+	} else {
+		GetScaleAndCenterPos(int(sourceCX), int(sourceCY), usableW, usableH, x, y, scale);
+		SetScalingAmount(scale);
+	}
+	x += PREVIEW_EDGE_SIZE;
+	y += PREVIEW_EDGE_SIZE;
+	previewScale = scale;
+	previewX = x;
+	previewY = y;
+	/* Keep legacy zoom path in sync for any code still reading zoom. */
+	zoom = fixedScaling ? (scale > 0.0f ? scalingAmount / scale : 1.0f) : 1.0f;
+	UpdatePreviewScaleControls();
+}
+
+void CanvasDock::UpdatePreviewScaleControls()
+{
+	if (previewScalePercent) {
+		previewScalePercent->setText(QString::number(int(floor(previewScale * 100.0f))) + QStringLiteral("%"));
+	}
+	if (!previewScalingMode) {
+		return;
+	}
+	QSignalBlocker block(previewScalingMode);
+	obs_video_info ovi{};
+	if (!obs_canvas_get_video_info(canvas, &ovi)) {
+		obs_get_video_info(&ovi);
+	}
+	const bool showOutput = ovi.output_width != ovi.base_width || ovi.output_height != ovi.base_height;
+	while (previewScalingMode->count() > 2) {
+		previewScalingMode->removeItem(2);
+	}
+	previewScalingMode->setItemText(
+		1, QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.Canvas"))
+			   .arg(QString::number(canvas_width), QString::number(canvas_height)));
+	if (showOutput) {
+		previewScalingMode->addItem(
+			QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.Output"))
+				.arg(QString::number(ovi.output_width), QString::number(ovi.output_height)));
+	}
+
+	const float outputScale =
+		float(ovi.output_width) / float(ovi.base_width > 0 ? ovi.base_width : 1);
+	if (!fixedScaling) {
+		previewScalingMode->setCurrentIndex(0);
+	} else if (fabsf(previewScale - 1.0f) < 0.0001f) {
+		previewScalingMode->setCurrentIndex(1);
+	} else if (showOutput && fabsf(previewScale - outputScale) < 0.0001f) {
+		previewScalingMode->setCurrentIndex(2);
+	} else {
+		previewScalingMode->setCurrentIndex(-1);
+		previewScalingMode->setPlaceholderText(
+			QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.Manual"))
+				.arg(QString::number(floor(canvas_width * previewScale)),
+				     QString::number(floor(canvas_height * previewScale))));
+	}
+}
+
 void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 {
 	CanvasDock *window = static_cast<CanvasDock *>(data);
@@ -1155,44 +1607,50 @@ void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 		sourceCY = 1;
 	}
 
+	const int usableW = std::max(1, int(cx) - PREVIEW_EDGE_SIZE * 2);
+	const int usableH = std::max(1, int(cy) - PREVIEW_EDGE_SIZE * 2);
 	int x, y;
 	float scale;
-
-	GetScaleAndCenterPos(sourceCX, sourceCY, cx, cy, x, y, scale);
-	if (window->previewScale != scale) {
-		window->previewScale = scale;
+	if (window->fixedScaling) {
+		scale = window->scalingAmount;
+		GetCenterPosFromFixedScale(int(sourceCX), int(sourceCY), usableW, usableH, x, y, scale);
+		x += int(window->scrollingOffset.x);
+		y += int(window->scrollingOffset.y);
+	} else {
+		GetScaleAndCenterPos(sourceCX, sourceCY, usableW, usableH, x, y, scale);
 	}
-	auto newCX = scale * float(sourceCX);
-	auto newCY = scale * float(sourceCY);
+	x += PREVIEW_EDGE_SIZE;
+	y += PREVIEW_EDGE_SIZE;
+	window->previewScale = scale;
+	window->previewX = x;
+	window->previewY = y;
 
-	auto extraCx = (window->zoom - 1.0f) * newCX;
-	auto extraCy = (window->zoom - 1.0f) * newCY;
-	int newCx = newCX * window->zoom;
-	int newCy = newCY * window->zoom;
-	x -= extraCx * window->scrollX;
-	y -= extraCy * window->scrollY;
+	const int previewCX = int(scale * float(sourceCX));
+	const int previewCY = int(scale * float(sourceCY));
+	const float right = float(cx) - float(x);
+	const float bottom = float(cy) - float(y);
 
 	gs_viewport_push();
 	gs_projection_push();
 
-	gs_ortho(0.0f, newCx, 0.0f, newCy, -100.0f, 100.0f);
-	gs_set_viewport(x, y, newCx, newCy);
-	window->DrawBackdrop(newCx, newCy);
-
-	const bool previous = gs_set_linear_srgb(true);
+	/* Same projection pattern as OBSBasic::RenderMain — edge padding is
+	 * the cleared display background (PREVIEW_EDGE_SIZE). */
+	gs_ortho(-float(x), right, -float(y), bottom, -100.0f, 100.0f);
 
 	gs_ortho(0.0f, float(sourceCX), 0.0f, float(sourceCY), -100.0f, 100.0f);
-	gs_set_viewport(x, y, (int)newCX, (int)newCY);
-	//obs_view_render(window->view);
+	gs_set_viewport(x, y, previewCX, previewCY);
+	window->DrawBackdrop(float(sourceCX), float(sourceCY));
+
+	const bool previous = gs_set_linear_srgb(true);
 	if (source) {
 		obs_source_video_render(source);
 	} else {
 		obs_canvas_render(window->canvas);
 	}
-
 	gs_set_linear_srgb(previous);
+	gs_load_vertexbuffer(nullptr);
 
-	gs_ortho(float(-x), newCX + float(x), float(-y), newCY + float(y), -100.0f, 100.0f);
+	gs_ortho(-float(x), right, -float(y), bottom, -100.0f, 100.0f);
 	gs_reset_viewport();
 
 	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
@@ -1229,8 +1687,8 @@ void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	gs_technique_end(tech);
 
 	if (window->drawSpacingHelpers) {
-		window->DrawSpacingHelpers(window->scene, (float)x, (float)y, newCX, newCY, scale, float(sourceCX),
-					   float(sourceCY));
+		window->DrawSpacingHelpers(window->scene, (float)x, (float)y, float(previewCX), float(previewCY), scale,
+					   float(sourceCX), float(sourceCY));
 	}
 
 	gs_projection_pop();
@@ -2319,6 +2777,7 @@ void CanvasDock::ReturnScenesPane()
 	}
 	if (panel_split && scenesGroup->parentWidget() != panel_split) {
 		panel_split->insertWidget(0, scenesGroup);
+		panel_split->hide();
 	}
 }
 
@@ -2338,6 +2797,7 @@ void CanvasDock::ReturnTransitionsPane()
 	}
 	if (panel_split && transitionsGroup->parentWidget() != panel_split) {
 		panel_split->addWidget(transitionsGroup);
+		panel_split->hide();
 	}
 }
 
@@ -4695,32 +5155,13 @@ bool CanvasDock::HandleMousePressEvent(QMouseEvent *event)
 
 vec2 CanvasDock::GetMouseEventPos(QMouseEvent *event)
 {
-
-	auto s = obs_weak_source_get_source(source);
-	uint32_t sourceCX = obs_source_get_width(s);
-	if (sourceCX <= 0) {
-		sourceCX = 1;
-	}
-	uint32_t sourceCY = obs_source_get_height(s);
-	if (sourceCY <= 0) {
-		sourceCY = 1;
-	}
-	obs_source_release(s);
-
-	int x, y;
-	float scale;
-
-	auto size = preview->size();
-
-	GetScaleAndCenterPos(sourceCX, sourceCY, size.width(), size.height(), x, y, scale);
-	//auto newCX = scale * float(sourceCX);
-	//auto newCY = scale * float(sourceCY);
+	float scale = previewScale > 0.0f ? previewScale : 1.0f;
 	float pixelRatio = GetDevicePixelRatio();
-
 	QPoint qtPos = event->pos();
 
 	vec2 pos;
-	vec2_set(&pos, ((float)qtPos.x() - (float)x / pixelRatio) / scale, ((float)qtPos.y() - (float)y / pixelRatio) / scale);
+	vec2_set(&pos, ((float)qtPos.x() - (float)previewX / pixelRatio) / scale,
+		 ((float)qtPos.y() - (float)previewY / pixelRatio) / scale);
 
 	return pos;
 }
@@ -4907,6 +5348,7 @@ void CanvasDock::DoSelect(const vec2 &pos)
 {
 	OBSSceneItem item = GetItemAtPos(pos, true);
 	obs_scene_enum_items(scene, select_one, (obs_sceneitem_t *)item);
+	UpdateContextBar();
 }
 
 void CanvasDock::DoCtrlSelect(const vec2 &pos)
@@ -4918,6 +5360,7 @@ void CanvasDock::DoCtrlSelect(const vec2 &pos)
 
 	bool selected = obs_sceneitem_selected(item);
 	obs_sceneitem_select(item, !selected);
+	UpdateContextBar();
 }
 
 OBSSceneItem CanvasDock::GetItemAtPos(const vec2 &pos, bool selectBelow)
@@ -6042,7 +6485,11 @@ bool CanvasDock::HandleMouseLeaveEvent(QMouseEvent *event)
 
 bool CanvasDock::HandleMouseWheelEvent(QWheelEvent *event)
 {
-	UNUSED_PARAMETER(event);
+	if (event->angleDelta().y() > 0) {
+		IncreaseScalingLevel();
+	} else if (event->angleDelta().y() < 0) {
+		DecreaseScalingLevel();
+	}
 	return true;
 }
 
@@ -6315,6 +6762,12 @@ void CanvasDock::LoadMode(QString mode)
 		if (state[0] != '\0') {
 			canvas_split->restoreState(QByteArray::fromBase64(state));
 		}
+		/* Extra canvas docks are preview-only; never restore a split that
+		 * would show scenes/sources/transitions inside the canvas dock. */
+		if (panel_split) {
+			panel_split->setParent(this);
+			panel_split->hide();
+		}
 		canvas_split->blockSignals(false);
 	}
 }
@@ -6355,23 +6808,18 @@ void CanvasDock::UpdateSettings(obs_data_t *s)
 void CanvasDock::reset_live_state()
 {
 	if (panel_split) {
-		panel_split->restorePanelOrder("scenesGroup,sourcesGroup,transitionsGroup");
-		panel_split->setSizes({1, 0, 0});
+		panel_split->setParent(this);
+		panel_split->hide();
 	}
-	canvas_split->restorePanelOrder(panel_split ? "canvasPreview,panelSplit" : "canvasPreview,sourcesGroup");
-	canvas_split->setSizes({1, 0});
+	if (canvas_split) {
+		canvas_split->restorePanelOrder(QStringLiteral("canvasPreview"));
+	}
 }
 
 void CanvasDock::reset_build_state()
 {
-	canvas_split->restorePanelOrder(panel_split ? "panelSplit,canvasPreview" : "sourcesGroup,canvasPreview");
-	if (panel_split) {
-		panel_split->restorePanelOrder("scenesGroup,sourcesGroup,transitionsGroup");
-	}
-	canvas_split->setSizes({0, 1});
-	if (panel_split) {
-		panel_split->setSizes({1, 1, 1});
-	}
+	/* Same as live: editing UI lives in the native Scenes/Sources docks. */
+	reset_live_state();
 }
 
 void CanvasDock::LogScenes()
@@ -6661,55 +7109,11 @@ void CanvasDock::Nudge(int dist, MoveDir dir)
 
 void CanvasDock::SetPanelVisible(const QString &panel_name, bool visible)
 {
-	if (panel_name == "canvas") {
-		auto canvas_sizes = canvas_split->sizes();
-		if (canvas_sizes[0] == 0 && visible) {
-			canvas_split->setSizes({1, canvas_sizes[1] > 0 ? 1 : 0});
-		} else if (canvas_sizes[0] > 0 && !visible) {
-			canvas_split->setSizes({0, 1});
-		}
-	} else if (panel_name == "scenes") {
-		auto canvas_sizes = canvas_split->sizes();
-		auto panel_sizes = panel_split->sizes();
-		if (canvas_sizes[1] == 0 && visible) {
-			canvas_split->setSizes({canvas_sizes[0] > 0 ? 1 : 0, 1});
-		} else if (canvas_sizes[1] > 0 && !visible && panel_sizes[1] == 0 && panel_sizes[2] == 0) {
-			canvas_split->setSizes({1, 0});
-		}
-
-		if (panel_sizes[0] == 0 && visible) {
-			panel_split->setSizes({1, panel_sizes[1] > 0 ? 1 : 0, panel_sizes[2] > 0 ? 1 : 0});
-		} else if (panel_sizes[0] > 0 && !visible) {
-			panel_split->setSizes({0, panel_sizes[1] > 0 ? 1 : 0, panel_sizes[2] > 0 ? 1 : 0});
-		}
-	} else if (panel_name == "sources") {
-		auto canvas_sizes = canvas_split->sizes();
-		auto panel_sizes = panel_split->sizes();
-		if (canvas_sizes[1] == 0 && visible) {
-			canvas_split->setSizes({canvas_sizes[0] > 0 ? 1 : 0, 1});
-		} else if (canvas_sizes[1] > 0 && !visible && panel_sizes[0] == 0 && panel_sizes[2] == 0) {
-			canvas_split->setSizes({1, 0});
-		}
-
-		if (panel_sizes[1] == 0 && visible) {
-			panel_split->setSizes({panel_sizes[0] > 0 ? 1 : 0, 1, panel_sizes[2] > 0 ? 1 : 0});
-		} else if (panel_sizes[1] > 0 && !visible) {
-			panel_split->setSizes({panel_sizes[0] > 0 ? 1 : 0, 0, panel_sizes[2] > 0 ? 1 : 0});
-		}
-	} else if (panel_name == "transitions") {
-		auto canvas_sizes = canvas_split->sizes();
-		auto panel_sizes = panel_split->sizes();
-		if (canvas_sizes[1] == 0 && visible) {
-			canvas_split->setSizes({canvas_sizes[0] > 0 ? 1 : 0, 1});
-		} else if (canvas_sizes[1] > 0 && !visible && panel_sizes[0] == 0 && panel_sizes[1] == 0) {
-			canvas_split->setSizes({1, 0});
-		}
-
-		if (panel_sizes[2] == 0 && visible) {
-			panel_split->setSizes({panel_sizes[0] > 0 ? 1 : 0, panel_sizes[1] > 0 ? 1 : 0, 1});
-		} else if (panel_sizes[2] > 0 && !visible) {
-			panel_split->setSizes({panel_sizes[0] > 0 ? 1 : 0, panel_sizes[1] > 0 ? 1 : 0, 0});
-		}
+	/* Canvas docks are preview-only. Scenes/sources/transitions are hosted
+	 * by the native OBS docks (canvas tabs), so ignore panel toggles here. */
+	UNUSED_PARAMETER(visible);
+	if (panel_name == "canvas" && canvas_split) {
+		canvas_split->restorePanelOrder(QStringLiteral("canvasPreview"));
 	}
 }
 

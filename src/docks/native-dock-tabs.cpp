@@ -1,5 +1,6 @@
 #include "native-dock-tabs.hpp"
 #include "controls-other-options.hpp"
+#include "canvas-clone-dock.hpp"
 #include "canvas-dock.hpp"
 #include "sources-dock.hpp"
 #include <obs-frontend-api.h>
@@ -20,6 +21,7 @@
 #include <QVBoxLayout>
 
 extern std::list<CanvasDock *> canvas_docks;
+extern std::list<CanvasCloneDock *> canvas_clone_docks;
 
 namespace {
 
@@ -392,7 +394,7 @@ void HideSuiteDocks()
 	if (!main) {
 		return;
 	}
-	for (const char *id : {"AitumStreamSuiteScenes", "AitumStreamSuiteSources", "AitumStreamSuiteTransitions"}) {
+	for (const char *id : {"AitumStreamSuiteSources", "AitumStreamSuiteTransitions"}) {
 		auto dock = main->findChild<QDockWidget *>(QString::fromUtf8(id));
 		if (!dock) {
 			continue;
@@ -665,6 +667,7 @@ void refresh_native_canvas_tabs()
 	sourcesTabs->blockSignals(false);
 	/* Do not force-show docks here: OBS DockState owns visibility and size. */
 	ApplyIndex(restore);
+	ensure_preview_docks_independent();
 	blog(LOG_INFO, "[Stream Suite] Native canvas tabs: %d extra canvas(es), host %dx%d dock %s", (int)pages.size(),
 	     scenesTabHost ? scenesTabHost->width() : -1, scenesTabHost ? scenesTabHost->height() : -1,
 	     scenesDock && scenesDock->isVisible() ? "shown" : "hidden");
@@ -683,8 +686,7 @@ static QByteArray ReadObsDockState()
 	return QByteArray::fromBase64(QByteArray(dockStateStr));
 }
 
-static const char *kSuiteDockIds[] = {"AitumStreamSuiteScenes", "AitumStreamSuiteSources",
-				      "AitumStreamSuiteTransitions"};
+static const char *kSuiteDockIds[] = {"AitumStreamSuiteSources", "AitumStreamSuiteTransitions"};
 
 /* Rename suite docks so restoreState skips them. Never call setFloating here —
  * doing that while the main window is still settling can crash OBS. */
@@ -705,6 +707,62 @@ static void ParkSuiteDocks(QMainWindow *main, bool park)
 	}
 }
 
+static void UntabifyFromControls(QMainWindow *main, QDockWidget *dock, QDockWidget *controls)
+{
+	if (!main || !dock || !controls || dock == controls) {
+		return;
+	}
+	dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+	dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable |
+			  QDockWidget::DockWidgetFloatable);
+
+	const QList<QDockWidget *> withControls = main->tabifiedDockWidgets(controls);
+	if (!withControls.contains(dock)) {
+		return;
+	}
+
+	const bool visible = dock->isVisible();
+	const bool floating = dock->isFloating();
+	/* Drop out of the Controls tab group and place as its own dock
+	 * (Top is away from the usual bottom Controls strip). */
+	main->removeDockWidget(dock);
+	main->addDockWidget(Qt::TopDockWidgetArea, dock);
+	if (floating) {
+		dock->setFloating(true);
+	}
+	dock->setVisible(visible);
+	blog(LOG_INFO, "[Stream Suite] Untabified '%s' from Controls", dock->objectName().toUtf8().constData());
+}
+
+void ensure_preview_docks_independent()
+{
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main || nativeTabsStopped) {
+		return;
+	}
+	auto *controls = main->findChild<QDockWidget *>(QString::fromUtf8("controlsDock"));
+	if (!controls) {
+		return;
+	}
+
+	static const char *kPreviewDockIds[] = {"AitumStreamSuiteCanvasPreviews", "AitumStreamSuiteMainCanvas"};
+	for (const char *id : kPreviewDockIds) {
+		if (auto *dock = main->findChild<QDockWidget *>(QString::fromUtf8(id))) {
+			UntabifyFromControls(main, dock, controls);
+		}
+	}
+	for (const auto &it : canvas_docks) {
+		if (auto *dock = qobject_cast<QDockWidget *>(it->parentWidget())) {
+			UntabifyFromControls(main, dock, controls);
+		}
+	}
+	for (const auto &it : canvas_clone_docks) {
+		if (auto *dock = qobject_cast<QDockWidget *>(it->parentWidget())) {
+			UntabifyFromControls(main, dock, controls);
+		}
+	}
+}
+
 void restore_obs_dock_layout()
 {
 	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
@@ -717,6 +775,7 @@ void restore_obs_dock_layout()
 	}
 	const QByteArray dockState = ReadObsDockState();
 	if (dockState.isEmpty()) {
+		ensure_preview_docks_independent();
 		return;
 	}
 	restoring = true;
@@ -724,6 +783,7 @@ void restore_obs_dock_layout()
 	const bool ok = main->restoreState(dockState);
 	ParkSuiteDocks(main, false);
 	HideSuiteDocks();
+	ensure_preview_docks_independent();
 	restoring = false;
 	if (!ok) {
 		blog(LOG_WARNING, "[Stream Suite] restoreState(DockState) failed");

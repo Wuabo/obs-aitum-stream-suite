@@ -8,7 +8,6 @@
 #include "docks/filters-dock.hpp"
 #include "docks/output-dock.hpp"
 #include "docks/properties-dock.hpp"
-#include "docks/scenes-dock.hpp"
 #include "docks/sources-dock.hpp"
 #include "docks/stats-dock.hpp"
 #include "docks/transform-dock.hpp"
@@ -39,7 +38,6 @@ QPointer<PropertiesDock> properties_dock;
 QPointer<FiltersDock> filters_dock;
 QPointer<TransformDock> transform_dock;
 StatsDock *stats_dock = nullptr;
-ScenesDock *scenes_dock = nullptr;
 SourcesDock *sources_dock = nullptr;
 TransitionsDock *transitions_dock = nullptr;
 
@@ -90,38 +88,14 @@ void load_dock_state(QString mode)
 		mode = kDefaultMode;
 	}
 
-	QList<QDockWidget *> visible_canvas_docks;
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (main_window) {
-		auto d = main_window->findChild<QDockWidget *>(QStringLiteral("AitumStreamSuiteMainCanvas"));
-		if (!d) {
-			d = main_window->findChild<QDockWidget *>(QStringLiteral("previewDock"));
-		}
-		if (d && d->isVisible()) {
-			visible_canvas_docks.append(d);
-		}
-	}
-
 	for (const auto &it : canvas_docks) {
-		auto dw = qobject_cast<QDockWidget *>(it->parentWidget());
-		if (dw && dw->isVisible()) {
-			visible_canvas_docks.append(dw);
-		}
 		QMetaObject::invokeMethod(it, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
 	}
 	for (const auto &it : canvas_clone_docks) {
-		auto dw = qobject_cast<QDockWidget *>(it->parentWidget());
-		if (dw && dw->isVisible()) {
-			visible_canvas_docks.append(dw);
-		}
 		QMetaObject::invokeMethod(it, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
 	}
 	if (stats_dock) {
 		QMetaObject::invokeMethod(stats_dock, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
-	}
-	if (scenes_dock && !visible_canvas_docks.isEmpty()) {
-		QMetaObject::invokeMethod(scenes_dock, "UpdateCanvasFromDockList",
-					  Q_ARG(QList<QDockWidget *>, visible_canvas_docks));
 	}
 }
 
@@ -506,9 +480,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			}
 			obs_source_release(scene);
 		}
-		if (scenes_dock) {
-			QMetaObject::invokeMethod(scenes_dock, "FinishedLoading", Qt::QueuedConnection);
-		}
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
@@ -529,9 +500,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * (SCRIPTING_SHUTDOWN runs first) so callbacks never hit
 		 * destroyed docks during scene teardown. */
 		shutdown_native_canvas_tabs();
-		if (scenes_dock) {
-			scenes_dock->Shutdown();
-		}
 		if (sources_dock) {
 			sources_dock->Shutdown();
 		}
@@ -540,13 +508,11 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		obs_frontend_remove_dock("AitumStreamSuiteStats");
-		obs_frontend_remove_dock("AitumStreamSuiteScenes");
 		obs_frontend_remove_dock("AitumStreamSuiteSources");
 		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
 		obs_frontend_remove_dock("AitumStreamSuiteCanvasPreviews");
 		output_dock = nullptr;
 		stats_dock = nullptr;
-		scenes_dock = nullptr;
 		sources_dock = nullptr;
 		transitions_dock = nullptr;
 
@@ -575,9 +541,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			output_dock->UpdateMainRecordingStatus(false);
 		}
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_CHANGED || event == OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED) {
-		if (scenes_dock) {
-			QMetaObject::invokeMethod(scenes_dock, "MainSceneChanged", Qt::QueuedConnection);
-		}
 		for (const auto &it : canvas_docks) {
 			QMetaObject::invokeMethod(it, "MainSceneChanged", Qt::QueuedConnection);
 		}
@@ -789,8 +752,7 @@ bool obs_module_load(void)
 	transform_dock->hide();
 	stats_dock = new StatsDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteStats", obs_module_text("AitumStreamSuiteStats"), stats_dock);
-	scenes_dock = new ScenesDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteScenes", obs_module_text("AitumStreamSuiteScenes"), scenes_dock);
+	/* Scenes live in the native Scenes dock (canvas tabs). No suite Scenes dock. */
 	sources_dock = new SourcesDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteSources", obs_module_text("AitumStreamSuiteSources"), sources_dock);
 	transitions_dock = new TransitionsDock(main_window);
@@ -832,16 +794,14 @@ void obs_module_unload()
 	/* Prefer teardown on EXIT. If unload runs without EXIT (e.g. module
 	 * reload), remove registered docks but never delete their widgets —
 	 * obs_frontend_remove_dock already destroys them. */
-	if (output_dock || stats_dock || scenes_dock || sources_dock || transitions_dock) {
+	if (output_dock || stats_dock || sources_dock || transitions_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		obs_frontend_remove_dock("AitumStreamSuiteStats");
-		obs_frontend_remove_dock("AitumStreamSuiteScenes");
 		obs_frontend_remove_dock("AitumStreamSuiteSources");
 		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
 		obs_frontend_remove_dock("AitumStreamSuiteCanvasPreviews");
 		output_dock = nullptr;
 		stats_dock = nullptr;
-		scenes_dock = nullptr;
 		sources_dock = nullptr;
 		transitions_dock = nullptr;
 	}
