@@ -709,7 +709,8 @@ void EnsurePreviewDocksNotTabbed()
 }
 
 /* With exactly one preview visible, Scenes tab switches which canvas preview
- * occupies that slot — never tabify (preview docks must not share a tab bar). */
+ * occupies that exact slot. Temporary tabify steals the splitter cell, then
+ * removeDockWidget shelves the old dock so no preview↔preview tab bar remains. */
 void SyncSoloPreviewToScenesTab(int index)
 {
 	if (nativeTabsStopped || swappingSoloPreview || untabifyingPreviews) {
@@ -751,6 +752,8 @@ void SyncSoloPreviewToScenesTab(int index)
 		return;
 	}
 
+	/* Hold through deferred resize so dockLocationChanged cannot untabify
+	 * mid-swap (that would shove the target out of the stolen slot). */
 	swappingSoloPreview = true;
 	auto *controls = mainWin->findChild<QDockWidget *>(QString::fromUtf8("controlsDock"));
 	const Qt::DockWidgetArea controlsArea = controls ? mainWin->dockWidgetArea(controls) : Qt::NoDockWidgetArea;
@@ -772,18 +775,19 @@ void SyncSoloPreviewToScenesTab(int index)
 		target->setGeometry(keepGeo);
 		target->show();
 	} else {
-		/* Shelf the current preview, then put the target in the same area
-		 * without tabifyDockWidget (that left lasting preview tabs). */
-		visibleOne->setProperty("aitumShelvedArea", static_cast<int>(area));
-		mainWin->removeDockWidget(visibleOne);
-
 		if (target->isFloating()) {
 			target->setFloating(false);
 		}
 		mainWin->addDockWidget(area, target);
+		if (!mainWin->tabifiedDockWidgets(visibleOne).contains(target)) {
+			mainWin->tabifyDockWidget(visibleOne, target);
+		}
 		target->setFloating(false);
 		target->show();
 		target->raise();
+
+		visibleOne->setProperty("aitumShelvedArea", static_cast<int>(area));
+		mainWin->removeDockWidget(visibleOne);
 
 		if (target->isFloating() || mainWin->dockWidgetArea(target) == Qt::NoDockWidgetArea) {
 			mainWin->addDockWidget(area, target);
@@ -808,31 +812,27 @@ void SyncSoloPreviewToScenesTab(int index)
 	const bool floating = wasFloating;
 	const Qt::DockWidgetArea keepArea = area;
 	QTimer::singleShot(0, mainWin, [mainPtr, targetPtr, sz, geo, floating, keepArea]() {
-		if (!targetPtr) {
-			return;
+		if (targetPtr) {
+			if (floating) {
+				targetPtr->setGeometry(geo);
+				targetPtr->resize(sz);
+			} else if (mainPtr) {
+				if (targetPtr->isFloating() ||
+				    mainPtr->dockWidgetArea(targetPtr) == Qt::NoDockWidgetArea) {
+					mainPtr->addDockWidget(keepArea, targetPtr);
+					targetPtr->setFloating(false);
+					targetPtr->show();
+				}
+				if (sz.width() > 0) {
+					mainPtr->resizeDocks({targetPtr.data()}, {sz.width()}, Qt::Horizontal);
+				}
+				if (sz.height() > 0) {
+					mainPtr->resizeDocks({targetPtr.data()}, {sz.height()}, Qt::Vertical);
+				}
+			}
 		}
-		if (floating) {
-			targetPtr->setGeometry(geo);
-			targetPtr->resize(sz);
-			return;
-		}
-		if (!mainPtr) {
-			return;
-		}
-		if (targetPtr->isFloating() || mainPtr->dockWidgetArea(targetPtr) == Qt::NoDockWidgetArea) {
-			mainPtr->addDockWidget(keepArea, targetPtr);
-			targetPtr->setFloating(false);
-			targetPtr->show();
-		}
-		if (sz.width() > 0) {
-			mainPtr->resizeDocks({targetPtr.data()}, {sz.width()}, Qt::Horizontal);
-		}
-		if (sz.height() > 0) {
-			mainPtr->resizeDocks({targetPtr.data()}, {sz.height()}, Qt::Vertical);
-		}
+		swappingSoloPreview = false;
 	});
-
-	swappingSoloPreview = false;
 }
 
 void ApplyIndex(int index)
