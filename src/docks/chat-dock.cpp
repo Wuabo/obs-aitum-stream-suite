@@ -2196,6 +2196,84 @@ void ChatDock::DisconnectKickChat()
 	kickSubscribed = false;
 }
 
+static QString KickEventNameFromObject(const QJsonObject &obj)
+{
+	const QString type = obj.value(QStringLiteral("type")).toString();
+	if (!type.isEmpty())
+		return type;
+	return obj.value(QStringLiteral("event")).toString(obj.value(QStringLiteral("event_type")).toString());
+}
+
+/* Kick wraps Centrifugo pubs as { type/event: "App\\Events\\...", data: {...|json-string} }. */
+static QJsonObject KickUnwrapEventData(QJsonObject data, QString *eventName)
+{
+	for (int depth = 0; depth < 3; ++depth) {
+		if (eventName && eventName->isEmpty())
+			*eventName = KickEventNameFromObject(data);
+		if (!data.contains(QStringLiteral("data")))
+			break;
+		/* Chat messages put content/sender on the outer object — don't unwrap those. */
+		if (data.contains(QStringLiteral("content")) || data.contains(QStringLiteral("sender")))
+			break;
+		const QJsonValue inner = data.value(QStringLiteral("data"));
+		QJsonObject next;
+		if (inner.isObject()) {
+			next = inner.toObject();
+		} else if (inner.isString()) {
+			next = QJsonDocument::fromJson(inner.toString().toUtf8()).object();
+		} else {
+			break;
+		}
+		if (next.isEmpty())
+			break;
+		data = next;
+	}
+	if (eventName && eventName->isEmpty())
+		*eventName = KickEventNameFromObject(data);
+	return data;
+}
+
+static QString KickDeletedMessageId(const QJsonObject &data)
+{
+	/* Prefer the nested original message id — top-level "id" is often the delete event id. */
+	QString msgId = JsonId(data.value(QStringLiteral("message")).toObject().value(QStringLiteral("id")));
+	if (msgId.isEmpty())
+		msgId = JsonId(data.value(QStringLiteral("message_id")));
+	if (msgId.isEmpty())
+		msgId = JsonId(data.value(QStringLiteral("deleted_message_id")));
+	if (msgId.isEmpty()) {
+		const QJsonObject nested = data.value(QStringLiteral("data")).toObject();
+		msgId = JsonId(nested.value(QStringLiteral("message")).toObject().value(QStringLiteral("id")));
+		if (msgId.isEmpty())
+			msgId = JsonId(nested.value(QStringLiteral("message_id")));
+	}
+	if (msgId.isEmpty())
+		msgId = JsonId(data.value(QStringLiteral("id")));
+	return msgId;
+}
+
+static bool KickLooksLikeMessageDeleted(const QString &eventName, const QJsonObject &data)
+{
+	if (eventName.contains(QStringLiteral("MessageDeleted"), Qt::CaseInsensitive) ||
+	    eventName.contains(QStringLiteral("ChatMessageDeleted"), Qt::CaseInsensitive))
+		return true;
+	const QString type = data.value(QStringLiteral("type")).toString();
+	if (type == QLatin1String("message_deleted") || type.contains(QStringLiteral("MessageDeleted")))
+		return true;
+	if (data.contains(QStringLiteral("message_id")) && data.contains(QStringLiteral("chatroom_id")) &&
+	    !data.contains(QStringLiteral("content")) && !data.contains(QStringLiteral("sender")))
+		return true;
+	/* { id, message: { id } } — Kick delete. Pinned events nest full message with content/sender. */
+	if (data.contains(QStringLiteral("message")) && data.value(QStringLiteral("message")).isObject() &&
+	    !data.contains(QStringLiteral("content")) && !data.contains(QStringLiteral("sender"))) {
+		const QJsonObject message = data.value(QStringLiteral("message")).toObject();
+		if (!JsonId(message.value(QStringLiteral("id"))).isEmpty() && !message.contains(QStringLiteral("content")) &&
+		    !message.contains(QStringLiteral("sender")))
+			return true;
+	}
+	return false;
+}
+
 void ChatDock::HandleKickCentrifugoFrame(const QByteArray &text)
 {
 	const QJsonObject root = QJsonDocument::fromJson(text).object();
@@ -2212,19 +2290,10 @@ void ChatDock::HandleKickCentrifugoFrame(const QByteArray &text)
 	QString eventName;
 	if (dataVal.isObject()) {
 		data = dataVal.toObject();
-		eventName = data.value(QStringLiteral("type")).toString(data.value(QStringLiteral("event")).toString());
-		if (data.contains(QStringLiteral("data")) && !data.contains(QStringLiteral("content")) &&
-		    !data.contains(QStringLiteral("sender"))) {
-			const QJsonValue inner = data.value(QStringLiteral("data"));
-			if (inner.isObject())
-				data = inner.toObject();
-			else if (inner.isString())
-				data = QJsonDocument::fromJson(inner.toString().toUtf8()).object();
-		}
 	} else if (dataVal.isString()) {
 		data = QJsonDocument::fromJson(dataVal.toString().toUtf8()).object();
-		eventName = data.value(QStringLiteral("type")).toString(data.value(QStringLiteral("event")).toString());
 	}
+	data = KickUnwrapEventData(data, &eventName);
 	HandleKickChatPayload(data, eventName);
 }
 
@@ -2232,36 +2301,43 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 {
 	if (data.isEmpty())
 		return;
-	if (eventName.contains(QStringLiteral("StopStreamBroadcast")) ||
-	    data.value(QStringLiteral("type")).toString().contains(QStringLiteral("StopStreamBroadcast"))) {
+	QString resolvedEvent = eventName;
+	const QJsonObject payload = KickUnwrapEventData(data, &resolvedEvent);
+
+	if (resolvedEvent.contains(QStringLiteral("StopStreamBroadcast")) ||
+	    payload.value(QStringLiteral("type")).toString().contains(QStringLiteral("StopStreamBroadcast"))) {
 		OnKickStreamOffline();
 		return;
 	}
 
-	const QString type = data.value(QStringLiteral("type")).toString();
-	if (eventName.contains(QStringLiteral("MessageDeleted")) ||
-	    eventName.contains(QStringLiteral("ChatMessageDeleted")) || type == QLatin1String("message_deleted")) {
-		QString msgId = JsonId(data.value(QStringLiteral("message_id")));
-		if (msgId.isEmpty())
-			msgId = JsonId(data.value(QStringLiteral("id")));
-		if (msgId.isEmpty())
-			msgId = JsonId(data.value(QStringLiteral("message")).toObject().value(QStringLiteral("id")));
-		if (!msgId.isEmpty())
+	const QString type = payload.value(QStringLiteral("type")).toString();
+	if (KickLooksLikeMessageDeleted(resolvedEvent, payload)) {
+		const QString msgId = KickDeletedMessageId(payload);
+		if (!msgId.isEmpty()) {
 			MarkMessageDeleted(msgId, Tr("ChatDockMessageRemoved"));
+		} else {
+			blog(LOG_INFO, "[Stream Suite] Kick MessageDeleted without message id: %s",
+			     QJsonDocument(payload).toJson(QJsonDocument::Compact).constData());
+		}
 		return;
 	}
-	if (eventName.contains(QStringLiteral("ChatroomClear")) || eventName.contains(QStringLiteral("ChatCleared")) ||
-	    type == QLatin1String("chatroom_clear") || type == QLatin1String("chat_cleared")) {
+	if (resolvedEvent.contains(QStringLiteral("ChatroomClear")) ||
+	    resolvedEvent.contains(QStringLiteral("ChatCleared")) || type == QLatin1String("chatroom_clear") ||
+	    type == QLatin1String("chat_cleared")) {
 		MarkPlatformMessagesDeleted(Kick, Tr("ChatDockChatCleared"));
 		AppendSystemMessage(Tr("ChatDockChatCleared"), Kick);
 		return;
 	}
-	if (eventName.contains(QStringLiteral("UserBanned"))) {
-		const QString user = data.value(QStringLiteral("username"))
-					     .toString(data.value(QStringLiteral("user"))
-							       .toObject()
-							       .value(QStringLiteral("username"))
-							       .toString());
+	if (resolvedEvent.contains(QStringLiteral("UserBanned"))) {
+		const QString user =
+			payload.value(QStringLiteral("username"))
+				.toString(payload.value(QStringLiteral("user"))
+						  .toObject()
+						  .value(QStringLiteral("username"))
+						  .toString(payload.value(QStringLiteral("user"))
+								    .toObject()
+								    .value(QStringLiteral("slug"))
+								    .toString()));
 		if (!user.isEmpty()) {
 			const QString tip = Tr("ChatDockMessageRemovedUser").arg(user);
 			MarkMessagesDeletedByUser(Kick, user, tip);
@@ -2270,28 +2346,30 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 		return;
 	}
 
-	const bool looksLikeChat = data.contains(QStringLiteral("content")) || data.contains(QStringLiteral("sender")) ||
-				   eventName.contains(QStringLiteral("ChatMessage"));
+	const bool looksLikeChat = payload.contains(QStringLiteral("content")) ||
+				   payload.contains(QStringLiteral("sender")) ||
+				   resolvedEvent.contains(QStringLiteral("ChatMessage"));
 	if (!looksLikeChat)
 		return;
-	if (!eventName.isEmpty() && !eventName.contains(QStringLiteral("ChatMessage")) &&
+	if (!resolvedEvent.isEmpty() && !resolvedEvent.contains(QStringLiteral("ChatMessage")) &&
 	    type != QLatin1String("message") && type != QLatin1String("reply") &&
-	    !data.contains(QStringLiteral("content")))
+	    !payload.contains(QStringLiteral("content")))
 		return;
 
-	const QJsonObject sender = data.value(QStringLiteral("sender")).toObject();
+	const QJsonObject sender = payload.value(QStringLiteral("sender")).toObject();
 	const QJsonObject identity = sender.value(QStringLiteral("identity")).toObject();
 	ChatMessage msg;
 	msg.platform = Kick;
-	msg.id = JsonId(data.value(QStringLiteral("id")));
+	msg.id = JsonId(payload.value(QStringLiteral("id")));
 	if (msg.id.isEmpty())
-		msg.id = JsonId(data.value(QStringLiteral("message_id")));
+		msg.id = JsonId(payload.value(QStringLiteral("message_id")));
 	msg.user = sender.value(QStringLiteral("username")).toString(sender.value(QStringLiteral("slug")).toString());
 	msg.userLogin = sender.value(QStringLiteral("slug")).toString(msg.user).toLower();
 	if (msg.user.isEmpty())
 		msg.user = QStringLiteral("Kick");
 	msg.color = identity.value(QStringLiteral("color")).toString(QStringLiteral("#53FC18"));
-	msg.text = data.value(QStringLiteral("content")).toString(data.value(QStringLiteral("message")).toString());
+	msg.text = payload.value(QStringLiteral("content"))
+			   .toString(payload.value(QStringLiteral("message")).toString());
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
 	msg.badges = KickBadgesFromIdentity(identity);
 	if (msg.text.isEmpty())
@@ -3262,13 +3340,18 @@ void ChatDock::MarkMessageDeleted(const QString &messageId, const QString &toolt
 {
 	if (messageId.isEmpty() || !messageList)
 		return;
+	const QString want = messageId.trimmed();
 	for (int i = 0; i < messageList->count(); ++i) {
 		QListWidgetItem *item = messageList->item(i);
-		if (!item || item->data(Qt::UserRole + 1).toString() != messageId)
+		if (!item)
+			continue;
+		const QString have = item->data(Qt::UserRole + 1).toString().trimmed();
+		if (have != want && have.compare(want, Qt::CaseInsensitive) != 0)
 			continue;
 		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tooltip);
 		return;
 	}
+	blog(LOG_INFO, "[Stream Suite] Deleted message id not in chat list yet: %s", want.toUtf8().constData());
 }
 
 void ChatDock::MarkMessagesDeletedByUser(Platform platform, const QString &userLogin, const QString &tooltip)
