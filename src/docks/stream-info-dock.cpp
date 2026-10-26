@@ -1165,51 +1165,53 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 void StreamInfoDock::LoadYouTubeBroadcast()
 {
 	const int gen = authGeneration;
+	/* broadcastStatus and mine are mutually exclusive in liveBroadcasts.list. */
 	auto requestStatus = [this](const QString &status) {
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 		QUrlQuery query;
 		query.addQueryItem("part", "snippet,status");
 		query.addQueryItem("broadcastStatus", status);
-		query.addQueryItem("mine", "true");
-		query.addQueryItem("maxResults", "5");
+		query.addQueryItem("broadcastType", "all");
+		query.addQueryItem("maxResults", "25");
 		url.setQuery(query);
 		QNetworkRequest req(url);
 		req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
 		return req;
 	};
-	Http(requestStatus("active"), {}, "GET", [this, gen, requestStatus](int code, const QByteArray &body, const QString &) {
+	auto finishWithoutBroadcast = [this] {
+		ytBroadcastId.clear();
+		SetResult(Tr("StreamInfoNoBroadcast"));
+		categorySearch->clear();
+		LoadCategoryCatalog();
+	};
+	Http(requestStatus("active"), {}, "GET", [this, gen, requestStatus, finishWithoutBroadcast](int code, const QByteArray &body,
+													 const QString &) {
 		if (gen != authGeneration)
 			return;
-		const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-		if (code < 200 || code >= 300) {
-			SetResult(JsonError(body));
-			categorySearch->clear();
-			LoadCategoryCatalog();
-			return;
-		}
-		if (!items.isEmpty()) {
-			ApplyYouTubeBroadcast(items.at(0).toObject());
-			return;
-		}
-		Http(requestStatus("upcoming"), {}, "GET", [this, gen](int code2, const QByteArray &body2, const QString &) {
-			if (gen != authGeneration)
-				return;
-			const QJsonArray upcoming = QJsonDocument::fromJson(body2).object().value("items").toArray();
-			if (code2 < 200 || code2 >= 300) {
-				SetResult(JsonError(body2));
-				categorySearch->clear();
-				LoadCategoryCatalog();
+		if (code >= 200 && code < 300) {
+			const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+			if (!items.isEmpty()) {
+				ApplyYouTubeBroadcast(items.at(0).toObject());
 				return;
 			}
-			if (!upcoming.isEmpty()) {
-				ApplyYouTubeBroadcast(upcoming.at(0).toObject());
-				return;
-			}
-			ytBroadcastId.clear();
-			SetResult(Tr("StreamInfoNoBroadcast"));
-			categorySearch->clear();
-			LoadCategoryCatalog();
-		});
+		}
+		Http(requestStatus("upcoming"), {}, "GET",
+		     [this, gen, finishWithoutBroadcast](int code2, const QByteArray &body2, const QString &) {
+			     if (gen != authGeneration)
+				     return;
+			     if (code2 < 200 || code2 >= 300) {
+				     SetResult(JsonError(body2));
+				     categorySearch->clear();
+				     LoadCategoryCatalog();
+				     return;
+			     }
+			     const QJsonArray upcoming = QJsonDocument::fromJson(body2).object().value("items").toArray();
+			     if (!upcoming.isEmpty()) {
+				     ApplyYouTubeBroadcast(upcoming.at(0).toObject());
+				     return;
+			     }
+			     finishWithoutBroadcast();
+		     });
 	});
 }
 
