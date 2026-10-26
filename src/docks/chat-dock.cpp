@@ -2491,6 +2491,50 @@ QWidget *ChatDock::BuildTwitchEmoteBody(const ChatMessage &msg, const QString &p
 	return flow;
 }
 
+QVector<ChatDock::ChatEmoteSpan> ChatDock::KickEmotesFromText(const QString &raw)
+{
+	QVector<ChatEmoteSpan> out;
+	static const QRegularExpression re(QStringLiteral(R"(\[emote:(\d+):([^\]]+)\])"));
+	auto it = re.globalMatch(raw);
+	while (it.hasNext()) {
+		const QRegularExpressionMatch m = it.next();
+		ChatEmoteSpan span;
+		span.id = m.captured(1);
+		span.start = m.capturedStart();
+		span.end = m.capturedEnd() - 1;
+		out.append(span);
+	}
+	return out;
+}
+
+QWidget *ChatDock::BuildKickEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent)
+{
+	auto *flow = new ChatFlowBody(parent);
+	flow->addHtml(prefixHtml);
+
+	const QVector<ChatEmoteSpan> emotes = KickEmotesFromText(msg.text);
+	int last = 0;
+	const QString &raw = msg.text;
+	for (const ChatEmoteSpan &span : emotes) {
+		if (span.start < last || span.end >= raw.size() || span.start > span.end)
+			continue;
+		if (span.start > last)
+			flow->addHtml(Linkify(EscapeHtml(raw.mid(last, span.start - last))));
+		QLabel *slot = flow->addEmoteSlot(18);
+		/* Tooltip = emote name inside [emote:id:name]. */
+		static const QRegularExpression nameRe(QStringLiteral(R"(\[emote:\d+:([^\]]+)\])"));
+		const auto nameMatch = nameRe.match(raw.mid(span.start, span.end - span.start + 1));
+		slot->setToolTip(nameMatch.hasMatch() ? nameMatch.captured(1)
+						      : raw.mid(span.start, span.end - span.start + 1));
+		const QString cacheKey = QStringLiteral("kick-emote:%1").arg(span.id);
+		FetchImageToLabel(KickEmoteImageUrl(span.id), slot, 18, cacheKey);
+		last = span.end + 1;
+	}
+	if (last < raw.size())
+		flow->addHtml(Linkify(EscapeHtml(raw.mid(last))));
+	return flow;
+}
+
 QString ChatDock::KickRoleBadgeKey(const QString &type, int count)
 {
 	QString t = type.trimmed().toLower();
@@ -2854,12 +2898,25 @@ void ChatDock::ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int 
 {
 	if (!label || body.isEmpty() || size <= 0)
 		return;
-	const bool animated = body.startsWith("GIF8") || body.startsWith("GIF87") || body.startsWith("GIF89");
-	if (animated) {
+
+	auto useStatic = [&]() {
+		QPixmap pix;
+		if (!pix.loadFromData(body))
+			return;
+		label->setMovie(nullptr);
+		label->setScaledContents(true);
+		label->setPixmap(pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+	};
+
+	/* GIF (Kick fullsize + Twitch /default when animated) — play via QMovie.
+	 * Do not use HTML <img>: QLabel rich-text only shows the first frame. */
+	const bool looksGif = body.startsWith("GIF87") || body.startsWith("GIF89") || body.startsWith("GIF8");
+	if (looksGif) {
 		auto *buf = new QBuffer(label);
 		buf->setData(body);
 		if (!buf->open(QIODevice::ReadOnly)) {
 			delete buf;
+			useStatic();
 			return;
 		}
 		auto *movie = new QMovie(buf, QByteArrayLiteral("GIF"), label);
@@ -2867,21 +2924,38 @@ void ChatDock::ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int 
 		movie->setScaledSize(QSize(size, size));
 		if (!movie->isValid()) {
 			delete movie;
-			QPixmap pix;
-			if (pix.loadFromData(body))
-				label->setPixmap(pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+			useStatic();
 			return;
 		}
+		label->setScaledContents(false);
 		label->setPixmap(QPixmap());
 		label->setMovie(movie);
 		movie->start();
 		return;
 	}
-	QPixmap pix;
-	if (!pix.loadFromData(body))
-		return;
-	label->setMovie(nullptr);
-	label->setPixmap(pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+
+	/* Animated WebP (RIFF....WEBP) if the Qt image plugin supports it. */
+	if (body.size() > 12 && body.startsWith("RIFF") && body.mid(8, 4) == QByteArrayLiteral("WEBP")) {
+		auto *buf = new QBuffer(label);
+		buf->setData(body);
+		if (buf->open(QIODevice::ReadOnly)) {
+			auto *movie = new QMovie(buf, QByteArrayLiteral("webp"), label);
+			movie->setCacheMode(QMovie::CacheAll);
+			movie->setScaledSize(QSize(size, size));
+			if (movie->isValid() && movie->frameCount() > 1) {
+				label->setScaledContents(false);
+				label->setPixmap(QPixmap());
+				label->setMovie(movie);
+				movie->start();
+				return;
+			}
+			delete movie;
+		} else {
+			delete buf;
+		}
+	}
+
+	useStatic();
 }
 
 void ChatDock::FetchImageToLabel(const QString &url, QLabel *target, int size, const QString &cacheKey)
@@ -2890,23 +2964,14 @@ void ChatDock::FetchImageToLabel(const QString &url, QLabel *target, int size, c
 		return;
 	const QString key = cacheKey.isEmpty() ? url : cacheKey;
 
+	/* Always prefer raw bytes so GIFs keep animating. Never short-circuit to the
+	 * static QPixmap cache (that was freezing Kick/Twitch animated emotes). */
 	if (badgeRawBytes.contains(key)) {
 		ApplyImageDataToLabel(target, badgeRawBytes.value(key), size);
 		return;
 	}
 	if (badgeRawBytes.contains(url)) {
 		ApplyImageDataToLabel(target, badgeRawBytes.value(url), size);
-		return;
-	}
-	if (badgePixmaps.contains(key)) {
-		target->setMovie(nullptr);
-		target->setPixmap(badgePixmaps.value(key));
-		return;
-	}
-	if (badgePixmaps.contains(url)) {
-		target->setMovie(nullptr);
-		target->setPixmap(badgePixmaps.value(url).scaled(size, size, Qt::KeepAspectRatio,
-								 Qt::SmoothTransformation));
 		return;
 	}
 
@@ -3131,8 +3196,11 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 
 	QWidget *body = nullptr;
 	if (twitchEmotes) {
-		/* Flow of text + QLabel/QMovie slots so animated Twitch emotes actually play. */
+		/* Flow + QMovie so animated Twitch GIFs actually play. */
 		body = BuildTwitchEmoteBody(msg, prefixHtml, row);
+	} else if (kickEmotes) {
+		/* Same path for Kick — HTML <img> only showed the first GIF frame. */
+		body = BuildKickEmoteBody(msg, prefixHtml, row);
 	} else {
 		auto *label = new QLabel(row);
 		label->setObjectName(QStringLiteral("chatMsgBody"));
@@ -3144,14 +3212,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 		label->setStyleSheet(
 			QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
-		const QString bodyHtml =
-			kickEmotes ? FormatKickContentHtml(msg.text) : Linkify(EscapeHtml(msg.text));
-		label->setText(prefixHtml + bodyHtml);
-		if (kickEmotes) {
-			label->setProperty("kickRawText", msg.text);
-			label->setProperty("kickPrefixHtml", prefixHtml);
-			PrefetchKickEmotes(msg.text, label);
-		}
+		label->setText(prefixHtml + Linkify(EscapeHtml(msg.text)));
 		body = label;
 	}
 	layout->addWidget(body, 1, Qt::AlignTop);

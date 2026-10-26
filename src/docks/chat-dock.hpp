@@ -204,9 +204,11 @@ private:
 	static QString KickRoleBadgeKey(const QString &type, int count = 0);
 	static QPixmap KickRoleBadgePixmap(const QString &role, int size = 14);
 	static QString KickEmoteImageUrl(const QString &emoteId);
+	static QVector<ChatEmoteSpan> KickEmotesFromText(const QString &raw);
 	QString FormatKickContentHtml(const QString &raw) const;
 	void PrefetchKickEmotes(const QString &raw, QLabel *label);
 	void RefreshKickMessageLabel(QLabel *label);
+	QWidget *BuildKickEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent);
 	void ApplyBadgeToLabel(const ChatBadge &badge, QLabel *target);
 
 	void AppendMessage(const ChatMessage &msg);
