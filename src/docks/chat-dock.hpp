@@ -161,6 +161,8 @@ private:
 	void ConnectKickChat();
 	void DisconnectKickChat();
 	void ResolveKickChatroom();
+	void FetchKickViewerToken(std::function<void(QString token)> done);
+	void StartKickWs(const QString &wsUrl, const QString &chatroomId);
 	void SendKickWsText(const QString &text);
 	void OnKickWsMessage(const QString &message);
 	void SendKickMessage(const QString &text);
