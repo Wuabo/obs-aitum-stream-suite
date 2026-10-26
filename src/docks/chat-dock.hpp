@@ -97,6 +97,8 @@ private:
 	QString ytNextPage;
 	QString kickSlug;
 	QString kickChatroomId;
+	QString kickChannelId;
+	QString kickRealtimeClientId;
 	QString twitchLogin;
 
 	QFrame *viewerBar = nullptr;
@@ -173,13 +175,18 @@ private:
 	void ConnectKickChat();
 	void DisconnectKickChat();
 	void ResolveKickChatroom();
-	void FetchKickViewerToken(std::function<void(QString token)> done);
-	void StartKickWs(const QString &wsUrl, const QString &chatroomId, bool allowFallback = false);
-	void SendKickWsText(const QString &text);
+	void StartKickCentrifugo();
+	void StartKickCentrifugoWs(const QString &wsUrl, const QString &token, const QStringList &channels);
+	void HandleKickCentrifugoFrame(const QByteArray &text);
+	void HandleKickChatPayload(const QJsonObject &data, const QString &eventName = QString());
 	void OnKickWsMessage(const QString &message);
 	void OnKickStreamOffline();
 	void SendKickMessage(const QString &text);
 	static QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity);
+	static QString KickEmoteImageUrl(const QString &emoteId);
+	QString FormatKickContentHtml(const QString &raw) const;
+	void PrefetchKickEmotes(const QString &raw, QLabel *label);
+	void RefreshKickMessageLabel(QLabel *label);
 
 	void AppendMessage(const ChatMessage &msg);
 	void AppendSystemMessage(const QString &text, Platform platform, bool withIcon = true);
@@ -187,6 +194,7 @@ private:
 	void RelayoutMessageItems();
 	int LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewportWidth) const;
 	void FetchBadgePixmap(const QString &url, QLabel *target);
+	static QString PixmapDataUri(const QPixmap &pix);
 	static int MessageTextHeight(const QString &html, int width, const QFont &font);
 	bool DockIsOpen() const;
 	void SendChatMessage();

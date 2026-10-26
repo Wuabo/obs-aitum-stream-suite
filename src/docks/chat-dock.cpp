@@ -6,6 +6,7 @@
 #include <util/config-file.h>
 
 #include <QAbstractItemView>
+#include <QBuffer>
 #include <QColor>
 #include <QDateTime>
 #include <QDockWidget>
@@ -23,6 +24,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QSizePolicy>
@@ -30,7 +32,9 @@
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QUuid>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <util/base.h>
 
 #include <curl/curl.h>
@@ -780,6 +784,8 @@ void ChatDock::StopConnections()
 	ytNextPage.clear();
 	kickSlug.clear();
 	kickChatroomId.clear();
+	kickChannelId.clear();
+	kickRealtimeClientId.clear();
 	connectionsActive = false;
 	twitchConnectedAnnounced = false;
 	kickConnectedAnnounced = false;
@@ -1336,26 +1342,56 @@ void ChatDock::StartYouTubeChat()
 			return;
 		}
 		const Account &acc = accounts[YouTube];
-		auto onBroadcast = [this](const QJsonObject &item) {
-			ytVideoId = item.value("id").toString();
-			ytLiveChatId = item.value("snippet").toObject().value("activeLiveChatId").toString();
-			auto startPoll = [this] {
-				if (ytLiveChatId.isEmpty())
+		auto authHdr = [acc] {
+			return QList<QPair<QByteArray, QByteArray>>{
+				{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}};
+		};
+		auto pickBroadcast = [](const QJsonArray &items) -> QJsonObject {
+			QJsonObject best;
+			int bestScore = -1;
+			for (const QJsonValue &row : items) {
+				const QJsonObject item = row.toObject();
+				const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
+				const bool hasChat = !item.value("snippet").toObject().value("activeLiveChatId").toString().isEmpty();
+				int score = 0;
+				if (life == QLatin1String("live"))
+					score = 50;
+				else if (life == QLatin1String("liveStarting"))
+					score = 40;
+				else if (life == QLatin1String("testing"))
+					score = 30;
+				else if (life == QLatin1String("ready"))
+					score = 20;
+				else if (life == QLatin1String("created") || life == QLatin1String("upcoming"))
+					score = 10;
+				if (hasChat)
+					score += 100;
+				if (score > bestScore) {
+					bestScore = score;
+					best = item;
+				}
+			}
+			return best;
+		};
+		auto startPollOrResolve = [this, authHdr](QString videoId, QString chatId) {
+			ytVideoId = videoId;
+			ytLiveChatId = chatId;
+			auto begin = [this] {
+				if (ytLiveChatId.isEmpty()) {
+					if (!youtubeConnectedAnnounced)
+						AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
 					return;
+				}
 				ytNextPage.clear();
 				PollYouTubeChat();
 			};
-			if (!ytLiveChatId.isEmpty()) {
-				startPoll();
+			if (!ytLiveChatId.isEmpty() || ytVideoId.isEmpty()) {
+				begin();
 				return;
 			}
-			if (ytVideoId.isEmpty())
-				return;
-			const Account &a = accounts[YouTube];
 			Http(QStringLiteral("https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=") +
 				     ytVideoId,
-			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + a.accessToken.toUtf8()}}, {},
-			     "GET", [this, startPoll](int st, const QByteArray &payload, const QString &) {
+			     authHdr(), {}, "GET", [this, begin](int st, const QByteArray &payload, const QString &) {
 				     if (st >= 200 && st < 300) {
 					     const QJsonArray vids =
 						     QJsonDocument::fromJson(payload).object().value("items").toArray();
@@ -1367,71 +1403,84 @@ void ChatDock::StartYouTubeChat()
 									    .value("activeLiveChatId")
 									    .toString();
 				     }
-				     startPoll();
+				     begin();
 			     });
 		};
-		auto tryStatus = [this, acc, onBroadcast](const QString &status, std::function<void()> next) {
-			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		auto trySearchLive = [this, authHdr, startPollOrResolve] {
+			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
 			QUrlQuery query;
-			query.addQueryItem("part", "snippet,contentDetails,status");
-			query.addQueryItem("broadcastStatus", status);
-			query.addQueryItem("broadcastType", "all");
+			query.addQueryItem("part", "snippet");
+			query.addQueryItem("forMine", "true");
+			query.addQueryItem("type", "video");
+			query.addQueryItem("eventType", "live");
 			query.addQueryItem("maxResults", "5");
 			url.setQuery(query);
-			Http(url.toString(),
-			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {},
-			     "GET", [onBroadcast, next](int code, const QByteArray &body, const QString &) {
+			Http(url.toString(), authHdr(), {}, "GET",
+			     [this, startPollOrResolve](int code, const QByteArray &body, const QString &) {
+				     QString videoId;
 				     if (code >= 200 && code < 300) {
 					     const QJsonArray items =
 						     QJsonDocument::fromJson(body).object().value("items").toArray();
-					     if (!items.isEmpty()) {
-						     onBroadcast(items.at(0).toObject());
-						     return;
-					     }
+					     if (!items.isEmpty())
+						     videoId = items.at(0).toObject().value("id").toObject().value("videoId").toString();
 				     }
-				     next();
+				     if (videoId.isEmpty()) {
+					     if (!youtubeConnectedAnnounced)
+						     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
+					     return;
+				     }
+				     startPollOrResolve(videoId, QString());
 			     });
 		};
-		auto tryMine = [this, acc, onBroadcast](std::function<void()> next) {
+		auto tryMine = [this, authHdr, pickBroadcast, startPollOrResolve, trySearchLive] {
 			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 			QUrlQuery query;
 			query.addQueryItem("part", "snippet,contentDetails,status");
 			query.addQueryItem("mine", "true");
 			query.addQueryItem("broadcastType", "all");
-			query.addQueryItem("maxResults", "25");
+			query.addQueryItem("maxResults", "50");
 			url.setQuery(query);
-			Http(url.toString(),
-			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {},
-			     "GET", [onBroadcast, next](int code, const QByteArray &body, const QString &) {
+			Http(url.toString(), authHdr(), {}, "GET",
+			     [pickBroadcast, startPollOrResolve, trySearchLive](int code, const QByteArray &body, const QString &) {
 				     if (code >= 200 && code < 300) {
-					     const QJsonArray items =
-						     QJsonDocument::fromJson(body).object().value("items").toArray();
-					     for (const QJsonValue &row : items) {
-						     const QJsonObject item = row.toObject();
-						     const QString life =
-							     item.value("status").toObject().value("lifeCycleStatus").toString();
-						     if (life == QLatin1String("live") || life == QLatin1String("liveStarting") ||
-							 life == QLatin1String("ready") || life == QLatin1String("testing") ||
-							 life == QLatin1String("created")) {
-							     onBroadcast(item);
-							     return;
-						     }
-					     }
-					     if (!items.isEmpty()) {
-						     onBroadcast(items.at(0).toObject());
+					     const QJsonObject best =
+						     pickBroadcast(QJsonDocument::fromJson(body).object().value("items").toArray());
+					     if (!best.isEmpty()) {
+						     startPollOrResolve(best.value("id").toString(),
+									best.value("snippet").toObject().value("activeLiveChatId").toString());
 						     return;
 					     }
+				     }
+				     trySearchLive();
+			     });
+		};
+		auto tryStatus = [this, authHdr, pickBroadcast, startPollOrResolve](const QString &status,
+										     std::function<void()> next) {
+			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+			QUrlQuery query;
+			query.addQueryItem("part", "snippet,contentDetails,status");
+			query.addQueryItem("broadcastStatus", status);
+			query.addQueryItem("broadcastType", "all");
+			query.addQueryItem("maxResults", "25");
+			url.setQuery(query);
+			Http(url.toString(), authHdr(), {}, "GET",
+			     [pickBroadcast, startPollOrResolve, next](int code, const QByteArray &body, const QString &) {
+				     if (code >= 200 && code < 300) {
+					     const QJsonObject best =
+						     pickBroadcast(QJsonDocument::fromJson(body).object().value("items").toArray());
+					     if (!best.isEmpty()) {
+						     startPollOrResolve(best.value("id").toString(),
+									best.value("snippet").toObject().value("activeLiveChatId").toString());
+						     return;
+					     }
+				     } else if (code == 401 || code == 403) {
+					     blog(LOG_WARNING, "[Stream Suite] YouTube liveBroadcasts HTTP %d", code);
 				     }
 				     next();
 			     });
 		};
 		tryStatus(QStringLiteral("active"), [this, tryStatus, tryMine] {
-			tryStatus(QStringLiteral("upcoming"), [this, tryMine] {
-				tryMine([this] {
-					if (!youtubeConnectedAnnounced)
-						AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
-				});
-			});
+			tryStatus(QStringLiteral("upcoming"), tryMine);
 		});
 	});
 }
@@ -1592,10 +1641,12 @@ void ChatDock::ResolveKickChatroom()
 				     accounts[Kick].userId = JsonId(channel.value("broadcaster_user_id").isUndefined()
 									     ? channel.value("user_id")
 									     : channel.value("broadcaster_user_id"));
-			     /* Public API sometimes embeds chatroom id. */
 			     kickChatroomId = JsonId(channel.value("chatroom_id"));
 			     if (kickChatroomId.isEmpty())
 				     kickChatroomId = JsonId(channel.value("chatroom").toObject().value("id"));
+			     kickChannelId = JsonId(channel.value("broadcaster_user_id").isUndefined()
+							    ? channel.value("user_id")
+							    : channel.value("broadcaster_user_id"));
 			     if (kickSlug.isEmpty()) {
 				     AppendSystemMessage(Tr("ChatDockKickResolveFailed"), Kick);
 				     return;
@@ -1615,13 +1666,16 @@ void ChatDock::ResolveKickChatroom()
 				  browserHeaders, {}, "GET", [this](int code, const QByteArray &payload, const QString &) {
 					  if (code >= 200 && code < 300) {
 						  const QJsonObject root = QJsonDocument::fromJson(payload).object();
-						  const QString id = JsonId(root.value("chatroom").toObject().value("id"));
-						  if (!id.isEmpty())
-							  kickChatroomId = id;
+						  const QString channelId = JsonId(root.value("id"));
+						  if (!channelId.isEmpty())
+							  kickChannelId = channelId;
+						  const QString roomId = JsonId(root.value("chatroom").toObject().value("id"));
+						  if (!roomId.isEmpty())
+							  kickChatroomId = roomId;
 						  if (kickChatroomId.isEmpty())
-							  kickChatroomId = JsonId(root.value("id"));
+							  kickChatroomId = channelId;
 					  }
-					  if (kickChatroomId.isEmpty()) {
+					  if (kickChatroomId.isEmpty() && kickChannelId.isEmpty()) {
 						  AppendSystemMessage(Tr("ChatDockKickResolveFailed"), Kick);
 						  if (!kickReconnectTimer->isActive())
 							  kickReconnectTimer->start(15000);
@@ -1633,34 +1687,136 @@ void ChatDock::ResolveKickChatroom()
 	});
 }
 
-void ChatDock::FetchKickViewerToken(std::function<void(QString)> done)
+void ChatDock::StartKickCentrifugo()
 {
-	static const QByteArray kClientToken =
-		QByteArrayLiteral("e1393935a959b4020a4491574f6490129f678acdaa92760471263db43487f823");
-	Http(QStringLiteral("https://websockets.kick.com/viewer/v1/token"),
-	     {{QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json, text/plain, */*")},
-	      {QByteArrayLiteral("Origin"), QByteArrayLiteral("https://kick.com")},
-	      {QByteArrayLiteral("Referer"), QByteArrayLiteral("https://kick.com/")},
-	      {QByteArrayLiteral("X-CLIENT-TOKEN"), kClientToken},
-	      {QByteArrayLiteral("User-Agent"),
-	       QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-				 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")}},
-	     {}, "GET", [done](int status, const QByteArray &body, const QString &) {
-		     if (status < 200 || status >= 300) {
-			     done(QString());
+	if (!connectionsActive)
+		return;
+	if (kickChatroomId.isEmpty() && kickChannelId.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockKickResolveFailed"), Kick);
+		return;
+	}
+
+	kickRealtimeClientId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+	const QString clientId = kickRealtimeClientId;
+	const QJsonObject body{
+		{QStringLiteral("client"),
+		 QJsonObject{{QStringLiteral("id"), clientId}, {QStringLiteral("type"), QStringLiteral("web")}}},
+		{QStringLiteral("capabilities"),
+		 QJsonObject{{QStringLiteral("accepted_providers"),
+			      QJsonArray{QJsonObject{{QStringLiteral("provider"), QStringLiteral("centrifugo")}}}}}},
+	};
+	const QList<QPair<QByteArray, QByteArray>> headers = {
+		{QByteArrayLiteral("Origin"), QByteArrayLiteral("https://kick.com")},
+		{QByteArrayLiteral("Referer"), QByteArrayLiteral("https://kick.com/")},
+		{QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")},
+		{QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")},
+		{QByteArrayLiteral("User-Agent"),
+		 QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+				   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")},
+	};
+	const QString channelKey = !kickChannelId.isEmpty() ? kickChannelId : kickChatroomId;
+	const QString connUrl =
+		QStringLiteral("https://web.kick.com/api/v1/realtime/channels/%1/chat/connection").arg(channelKey);
+
+	auto fail = [this](const char *why) {
+		blog(LOG_WARNING, "[Stream Suite] Kick Centrifugo setup failed: %s", why);
+		AppendSystemMessage(Tr("ChatDockKickConnectFailed"), Kick);
+		kickConnectStarted = false;
+		if (!kickReconnectTimer->isActive())
+			kickReconnectTimer->start(12000);
+	};
+
+	Http(connUrl, headers, QJsonDocument(body).toJson(QJsonDocument::Compact), "POST",
+	     [this, headers, clientId, body, fail](int status, const QByteArray &resp, const QString &) {
+		     auto parseConnections = [](const QByteArray &payload) -> QString {
+			     const QJsonArray list = QJsonDocument::fromJson(payload)
+							     .object()
+							     .value(QStringLiteral("data"))
+							     .toObject()
+							     .value(QStringLiteral("connections"))
+							     .toArray();
+			     for (const QJsonValue &row : list) {
+				     const QJsonObject obj = row.toObject();
+				     if (obj.value(QStringLiteral("provider")).toString() != QLatin1String("centrifugo"))
+					     continue;
+				     const QString url =
+					     obj.value(QStringLiteral("credentials")).toObject().value(QStringLiteral("url")).toString();
+				     if (!url.isEmpty())
+					     return url;
+			     }
+			     return {};
+		     };
+
+		     QString wsUrl;
+		     if (status >= 200 && status < 300)
+			     wsUrl = parseConnections(resp);
+
+		     auto requestToken = [this, headers, clientId, fail](const QString &url) {
+			     if (url.isEmpty()) {
+				     fail("no centrifugo url");
+				     return;
+			     }
+			     Http(QStringLiteral("https://web.kick.com/api/v1/realtime/auth/connection"), headers,
+				  QJsonDocument(QJsonObject{{QStringLiteral("client_id"), clientId}})
+					  .toJson(QJsonDocument::Compact),
+				  "POST", [this, url, fail](int st, const QByteArray &tokBody, const QString &) {
+					  if (st < 200 || st >= 300) {
+						  fail("token http");
+						  return;
+					  }
+					  const QString token = QJsonDocument::fromJson(tokBody)
+									.object()
+									.value(QStringLiteral("data"))
+									.toObject()
+									.value(QStringLiteral("token"))
+									.toString();
+					  if (token.isEmpty()) {
+						  fail("empty token");
+						  return;
+					  }
+					  QStringList channels;
+					  if (!kickChatroomId.isEmpty()) {
+						  channels << QStringLiteral("chatrooms.%1.v2").arg(kickChatroomId);
+						  channels << QStringLiteral("chatrooms.%1").arg(kickChatroomId);
+						  channels << QStringLiteral("chatroom_%1").arg(kickChatroomId);
+					  }
+					  if (!kickChannelId.isEmpty()) {
+						  channels << QStringLiteral("channel.%1").arg(kickChannelId);
+						  channels << QStringLiteral("channel_%1").arg(kickChannelId);
+					  }
+					  if (channels.isEmpty()) {
+						  fail("no channels");
+						  return;
+					  }
+					  StartKickCentrifugoWs(url, token, channels);
+				  });
+		     };
+
+		     if (!wsUrl.isEmpty()) {
+			     requestToken(wsUrl);
 			     return;
 		     }
-		     const QString token =
-			     QJsonDocument::fromJson(body).object().value("data").toObject().value("token").toString();
-		     done(token);
+
+		     Http(QStringLiteral("https://web.kick.com/api/v1/realtime/connection"), headers,
+			  QJsonDocument(body).toJson(QJsonDocument::Compact), "POST",
+			  [requestToken, parseConnections, fail](int st2, const QByteArray &resp2, const QString &) {
+				  QString url;
+				  if (st2 >= 200 && st2 < 300)
+					  url = parseConnections(resp2);
+				  if (url.isEmpty())
+					  fail("connection http");
+				  else
+					  requestToken(url);
+			  });
 	     });
 }
 
-void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId, bool allowFallback)
+void ChatDock::StartKickCentrifugoWs(const QString &wsUrl, const QString &token, const QStringList &channels)
 {
 	DisconnectKickChat();
-	if (chatroomId.isEmpty() || !connectionsActive)
+	if (wsUrl.isEmpty() || token.isEmpty() || channels.isEmpty() || !connectionsActive)
 		return;
+
 	kickSubscribed = false;
 	kickWsGen++;
 	const int gen = kickWsGen;
@@ -1668,116 +1824,120 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId, bool
 	kickWs = session;
 	QPointer<ChatDock> alive(this);
 	const QByteArray urlBytes = wsUrl.toUtf8();
-	const QString chatroom = chatroomId;
-	const bool fallback = allowFallback;
-	std::thread([alive, session, gen, urlBytes, chatroom, fallback] {
+	const QByteArray tokenBytes = token.toUtf8();
+	const QStringList feeds = channels;
+
+	std::thread([alive, session, gen, urlBytes, tokenBytes, feeds] {
 		CURL *curl = curl_easy_init();
 		if (!curl)
 			return;
 		ApplyCurlSsl(curl);
+		curl_slist *hdrs = nullptr;
+		hdrs = curl_slist_append(hdrs, "Origin: https://kick.com");
+		hdrs = curl_slist_append(hdrs, "Referer: https://kick.com/");
+		hdrs = curl_slist_append(hdrs,
+					 "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+					 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
 		curl_easy_setopt(curl, CURLOPT_URL, urlBytes.constData());
 		curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
 		const CURLcode connectRc = curl_easy_perform(curl);
 		if (connectRc != CURLE_OK) {
-			blog(LOG_WARNING, "[Stream Suite] Kick WS connect failed (%s): %s", urlBytes.constData(),
+			blog(LOG_WARNING, "[Stream Suite] Kick Centrifugo WS connect failed (%s): %s", urlBytes.constData(),
 			     curl_easy_strerror(connectRc));
+			curl_slist_free_all(hdrs);
 			curl_easy_cleanup(curl);
 			if (alive) {
 				QMetaObject::invokeMethod(
 					alive,
-					[alive, chatroom, fallback] {
+					[alive] {
 						if (!alive || !alive->connectionsActive)
 							return;
-						if (fallback) {
-							alive->FetchKickViewerToken([alive, chatroom](const QString &token) {
-								if (!alive || !alive->connectionsActive)
-									return;
-								if (token.isEmpty()) {
-									blog(LOG_WARNING,
-									     "[Stream Suite] Kick viewer token unavailable");
-									if (!alive->kickReconnectTimer->isActive())
-										alive->kickReconnectTimer->start(10000);
-									return;
-								}
-								alive->StartKickWs(
-									QStringLiteral(
-										"wss://websockets.kick.com/viewer/v1/connect?token=") +
-										token,
-									chatroom, false);
-							});
-							return;
-						}
+						alive->kickConnectStarted = false;
+						alive->AppendSystemMessage(Tr("ChatDockKickConnectFailed"), Kick);
 						if (!alive->kickReconnectTimer->isActive())
-							alive->kickReconnectTimer->start(10000);
+							alive->kickReconnectTimer->start(12000);
 					},
 					Qt::QueuedConnection);
 			}
 			return;
 		}
 
-		const QByteArray subscribePayload = QJsonDocument(QJsonObject{
-								       {QStringLiteral("event"), QStringLiteral("pusher:subscribe")},
-								       {QStringLiteral("data"),
-									QJsonObject{{QStringLiteral("auth"), QString()},
-										    {QStringLiteral("channel"),
-										     QStringLiteral("chatrooms.%1.v2").arg(chatroom)}}}})
-							    .toJson(QJsonDocument::Compact);
+		quint64 nextId = 1;
+		QJsonObject connectObj{{QStringLiteral("id"), 1},
+				       {QStringLiteral("connect"),
+					QJsonObject{{QStringLiteral("token"), QString::fromUtf8(tokenBytes)},
+						    {QStringLiteral("name"), QStringLiteral("js")}}}};
+		CurlWsSendText(curl, QJsonDocument(connectObj).toJson(QJsonDocument::Compact));
+		nextId = 2;
 
-		bool established = false;
-		bool subscribed = false;
+		bool connected = false;
+		bool announced = false;
 		QByteArray frameBuf;
 
-		auto handleText = [&](const QByteArray &text) {
-			const QJsonObject root = QJsonDocument::fromJson(text).object();
-			const QString event = root.value(QStringLiteral("event")).toString();
-			if (event.isEmpty())
+		auto handleLine = [&](const QByteArray &line) {
+			if (line == "{}") {
+				CurlWsSendText(curl, QByteArrayLiteral("{}"));
+				return;
+			}
+			const QJsonObject msg = QJsonDocument::fromJson(line).object();
+			if (msg.isEmpty())
 				return;
 
-			if (event == QLatin1String("pusher:connection_established") && !established) {
-				established = true;
-				CurlWsSendText(curl, subscribePayload);
-				return;
-			}
-			if (event == QLatin1String("pusher:ping")) {
-				CurlWsSendText(curl, QByteArrayLiteral("{\"event\":\"pusher:pong\",\"data\":{}}"));
-				return;
-			}
-			if ((event == QLatin1String("pusher_internal:subscription_succeeded") ||
-			     event.endsWith(QLatin1String("subscription_succeeded"))) &&
-			    !subscribed) {
-				subscribed = true;
-				if (alive) {
-					QMetaObject::invokeMethod(
-						alive,
-						[alive, gen] {
-							if (!alive || alive->kickWsGen != gen)
-								return;
-							alive->kickSubscribed = true;
-							if (!alive->kickConnectedAnnounced) {
-								alive->kickConnectedAnnounced = true;
-								alive->AppendSystemMessage(
-									Tr("ChatDockConnected").arg(PlatformLabel(Kick)), Kick);
-							}
-						},
-						Qt::QueuedConnection);
+			if (msg.contains(QStringLiteral("id"))) {
+				if (msg.contains(QStringLiteral("error"))) {
+					blog(LOG_WARNING, "[Stream Suite] Kick Centrifugo reply error: %s", line.constData());
+					return;
+				}
+				if (msg.contains(QStringLiteral("connect")) && !connected) {
+					connected = true;
+					QByteArray batch;
+					for (const QString &channel : feeds) {
+						QJsonObject sub{{QStringLiteral("id"), static_cast<double>(nextId++)},
+								{QStringLiteral("subscribe"),
+								 QJsonObject{{QStringLiteral("channel"), channel}}}};
+						const QByteArray piece = QJsonDocument(sub).toJson(QJsonDocument::Compact);
+						if (!batch.isEmpty())
+							batch += '\n';
+						batch += piece;
+					}
+					if (!batch.isEmpty())
+						CurlWsSendText(curl, batch);
+					return;
+				}
+				if (msg.contains(QStringLiteral("subscribe")) && !announced) {
+					announced = true;
+					if (alive) {
+						QMetaObject::invokeMethod(
+							alive,
+							[alive, gen] {
+								if (!alive || alive->kickWsGen != gen)
+									return;
+								alive->kickSubscribed = true;
+								if (!alive->kickConnectedAnnounced) {
+									alive->kickConnectedAnnounced = true;
+									alive->AppendSystemMessage(
+										Tr("ChatDockConnected").arg(PlatformLabel(Kick)), Kick);
+								}
+							},
+							Qt::QueuedConnection);
+					}
+					return;
 				}
 				return;
 			}
-			if (event == QLatin1String("pusher:error")) {
-				blog(LOG_WARNING, "[Stream Suite] Kick Pusher error: %s", text.constData());
-				return;
+
+			if (msg.contains(QStringLiteral("push")) && alive) {
+				const QByteArray payload = line;
+				QMetaObject::invokeMethod(
+					alive,
+					[alive, gen, payload] {
+						if (!alive || alive->kickWsGen != gen)
+							return;
+						alive->HandleKickCentrifugoFrame(payload);
+					},
+					Qt::QueuedConnection);
 			}
-			if (!alive)
-				return;
-			const QString message = QString::fromUtf8(text);
-			QMetaObject::invokeMethod(
-				alive,
-				[alive, gen, message] {
-					if (!alive || alive->kickWsGen != gen)
-						return;
-					alive->OnKickWsMessage(message);
-				},
-				Qt::QueuedConnection);
 		};
 
 		while (!session->stop.load()) {
@@ -1787,7 +1947,7 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId, bool
 					break;
 				}
 			}
-			char buffer[8192];
+			char buffer[16384];
 			size_t n = 0;
 			const curl_ws_frame *meta = nullptr;
 			const CURLcode rc = curl_ws_recv(curl, buffer, sizeof(buffer), &n, &meta);
@@ -1814,34 +1974,22 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId, bool
 				continue;
 			const QByteArray complete = frameBuf;
 			frameBuf.clear();
-			handleText(complete);
+			for (const QByteArray &line : complete.split('\n')) {
+				const QByteArray trimmed = line.trimmed();
+				if (!trimmed.isEmpty())
+					handleLine(trimmed);
+			}
 		}
-		curl_easy_cleanup(curl);
 
-		const bool needFallback = fallback && !subscribed;
+		curl_slist_free_all(hdrs);
+		curl_easy_cleanup(curl);
 		if (alive) {
 			QMetaObject::invokeMethod(
 				alive,
-				[alive, gen, chatroom, needFallback] {
+				[alive, gen] {
 					if (!alive || alive->kickWsGen != gen || !alive->connectionsActive)
 						return;
 					alive->kickSubscribed = false;
-					if (needFallback) {
-						alive->FetchKickViewerToken([alive, chatroom](const QString &token) {
-							if (!alive || !alive->connectionsActive)
-								return;
-							if (token.isEmpty()) {
-								if (!alive->kickReconnectTimer->isActive())
-									alive->kickReconnectTimer->start(10000);
-								return;
-							}
-							alive->StartKickWs(QStringLiteral(
-													   "wss://websockets.kick.com/viewer/v1/connect?token=") +
-										   token,
-									   chatroom, false);
-						});
-						return;
-					}
 					if (!alive->kickReconnectTimer->isActive())
 						alive->kickReconnectTimer->start(10000);
 				},
@@ -1852,12 +2000,11 @@ void ChatDock::StartKickWs(const QString &wsUrl, const QString &chatroomId, bool
 
 void ChatDock::ConnectKickChat()
 {
-	if (kickChatroomId.isEmpty() || !connectionsActive)
+	if (!connectionsActive)
 		return;
-	/* Public Pusher first (no token). Fall back to Kick's self-hosted viewer WS. */
-	StartKickWs(QStringLiteral(
-			    "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0&flash=false"),
-		    kickChatroomId, true);
+	if (kickChatroomId.isEmpty() && kickChannelId.isEmpty())
+		return;
+	StartKickCentrifugo();
 }
 
 void ChatDock::DisconnectKickChat()
@@ -1870,11 +2017,76 @@ void ChatDock::DisconnectKickChat()
 	kickSubscribed = false;
 }
 
-void ChatDock::SendKickWsText(const QString &text)
+void ChatDock::HandleKickCentrifugoFrame(const QByteArray &text)
 {
-	if (!kickWs)
+	const QJsonObject root = QJsonDocument::fromJson(text).object();
+	const QJsonObject push = root.value(QStringLiteral("push")).toObject();
+	if (push.isEmpty())
 		return;
-	kickWs->enqueue(text.toUtf8());
+	if (push.contains(QStringLiteral("disconnect"))) {
+		blog(LOG_WARNING, "[Stream Suite] Kick Centrifugo disconnect push");
+		return;
+	}
+	const QJsonObject pub = push.value(QStringLiteral("pub")).toObject();
+	QJsonValue dataVal = pub.value(QStringLiteral("data"));
+	QJsonObject data;
+	QString eventName;
+	if (dataVal.isObject()) {
+		data = dataVal.toObject();
+		eventName = data.value(QStringLiteral("type")).toString(data.value(QStringLiteral("event")).toString());
+		if (data.contains(QStringLiteral("data")) && !data.contains(QStringLiteral("content")) &&
+		    !data.contains(QStringLiteral("sender"))) {
+			const QJsonValue inner = data.value(QStringLiteral("data"));
+			if (inner.isObject())
+				data = inner.toObject();
+			else if (inner.isString())
+				data = QJsonDocument::fromJson(inner.toString().toUtf8()).object();
+		}
+	} else if (dataVal.isString()) {
+		data = QJsonDocument::fromJson(dataVal.toString().toUtf8()).object();
+		eventName = data.value(QStringLiteral("type")).toString(data.value(QStringLiteral("event")).toString());
+	}
+	HandleKickChatPayload(data, eventName);
+}
+
+void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eventName)
+{
+	if (data.isEmpty())
+		return;
+	if (eventName.contains(QStringLiteral("StopStreamBroadcast")) ||
+	    data.value(QStringLiteral("type")).toString().contains(QStringLiteral("StopStreamBroadcast"))) {
+		OnKickStreamOffline();
+		return;
+	}
+	const bool looksLikeChat = data.contains(QStringLiteral("content")) || data.contains(QStringLiteral("sender")) ||
+				   eventName.contains(QStringLiteral("ChatMessage"));
+	if (!looksLikeChat)
+		return;
+	if (!eventName.isEmpty() && !eventName.contains(QStringLiteral("ChatMessage")) &&
+	    data.value(QStringLiteral("type")).toString() != QLatin1String("message") &&
+	    data.value(QStringLiteral("type")).toString() != QLatin1String("reply") &&
+	    !data.contains(QStringLiteral("content")))
+		return;
+
+	const QJsonObject sender = data.value(QStringLiteral("sender")).toObject();
+	const QJsonObject identity = sender.value(QStringLiteral("identity")).toObject();
+	ChatMessage msg;
+	msg.platform = Kick;
+	msg.id = JsonId(data.value(QStringLiteral("id")));
+	if (msg.id.isEmpty())
+		msg.id = JsonId(data.value(QStringLiteral("message_id")));
+	msg.user = sender.value(QStringLiteral("username")).toString(sender.value(QStringLiteral("slug")).toString());
+	if (msg.user.isEmpty())
+		msg.user = QStringLiteral("Kick");
+	msg.color = identity.value(QStringLiteral("color")).toString(QStringLiteral("#53FC18"));
+	msg.text = data.value(QStringLiteral("content")).toString(data.value(QStringLiteral("message")).toString());
+	msg.ts = QDateTime::currentMSecsSinceEpoch();
+	msg.badges = KickBadgesFromIdentity(identity);
+	if (msg.text.isEmpty())
+		return;
+	if (msg.id.isEmpty())
+		msg.id = QStringLiteral("kick-%1-%2").arg(msg.ts).arg(msg.user);
+	AppendMessage(msg);
 }
 
 void ChatDock::OnKickStreamOffline()
@@ -1885,48 +2097,21 @@ void ChatDock::OnKickStreamOffline()
 void ChatDock::OnKickWsMessage(const QString &message)
 {
 	const QJsonObject root = QJsonDocument::fromJson(message.toUtf8()).object();
-	const QString event = root.value("event").toString();
-	if (event.isEmpty() || event.startsWith(QLatin1String("pusher:"))) {
-		if (event == QLatin1String("pusher:ping"))
-			SendKickWsText(QStringLiteral("{\"event\":\"pusher:pong\",\"data\":{}}"));
+	if (root.contains(QStringLiteral("push"))) {
+		HandleKickCentrifugoFrame(message.toUtf8());
 		return;
 	}
-	if (event.startsWith(QLatin1String("pusher_internal:")))
-		return;
-
-	if (event.contains(QStringLiteral("StopStreamBroadcast")) || event.contains(QStringLiteral("StreamerIsLive")) ||
-	    event.contains(QStringLiteral("StreamHostEvent"))) {
-		if (event.contains(QStringLiteral("StopStreamBroadcast")))
-			OnKickStreamOffline();
-		/* StreamerIsLive: next viewer poll will refresh the count. */
+	const QString event = root.value(QStringLiteral("event")).toString();
+	if (event.contains(QStringLiteral("StopStreamBroadcast"))) {
+		OnKickStreamOffline();
 		return;
 	}
-
 	if (!event.contains(QStringLiteral("ChatMessage")))
 		return;
-
-	QJsonObject data = root.value("data").toObject();
-	if (data.isEmpty()) {
-		const QString raw = root.value("data").toString();
-		data = QJsonDocument::fromJson(raw.toUtf8()).object();
-	}
-	const QJsonObject sender = data.value("sender").toObject();
-	const QJsonObject identity = sender.value("identity").toObject();
-	ChatMessage msg;
-	msg.platform = Kick;
-	msg.id = JsonId(data.value("id"));
-	msg.user = sender.value("username").toString(sender.value("slug").toString());
-	if (msg.user.isEmpty())
-		msg.user = QStringLiteral("Kick");
-	msg.color = identity.value("color").toString(QStringLiteral("#53FC18"));
-	msg.text = data.value("content").toString(data.value("message").toString());
-	msg.ts = QDateTime::currentMSecsSinceEpoch();
-	msg.badges = KickBadgesFromIdentity(identity);
-	if (msg.text.isEmpty())
-		return;
-	if (msg.id.isEmpty())
-		msg.id = QStringLiteral("kick-%1-%2").arg(msg.ts).arg(msg.user);
-	AppendMessage(msg);
+	QJsonObject data = root.value(QStringLiteral("data")).toObject();
+	if (data.isEmpty())
+		data = QJsonDocument::fromJson(root.value(QStringLiteral("data")).toString().toUtf8()).object();
+	HandleKickChatPayload(data, event);
 }
 
 void ChatDock::SendKickMessage(const QString &text)
@@ -2025,17 +2210,142 @@ QVector<ChatDock::ChatBadge> ChatDock::TwitchBadgesFromTags(const QString &badge
 QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject &identity)
 {
 	QVector<ChatBadge> out;
-	for (const QJsonValue &row : identity.value("badges").toArray()) {
+	QSet<QString> seen;
+
+	/* Kick's current payload uses badges_v2 with image_url. */
+	QVector<QJsonObject> v2;
+	for (const QJsonValue &row : identity.value(QStringLiteral("badges_v2")).toArray()) {
+		const QJsonObject obj = row.toObject();
+		if (obj.value(QStringLiteral("image_url")).toString().isEmpty())
+			continue;
+		v2.append(obj);
+	}
+	std::sort(v2.begin(), v2.end(), [](const QJsonObject &a, const QJsonObject &b) {
+		return a.value(QStringLiteral("sort_order")).toInt() < b.value(QStringLiteral("sort_order")).toInt();
+	});
+	for (const QJsonObject &obj : v2) {
+		ChatBadge badge;
+		badge.key = obj.value(QStringLiteral("name")).toString(obj.value(QStringLiteral("badge_type")).toString());
+		badge.label = badge.key;
+		badge.url = obj.value(QStringLiteral("image_url")).toString();
+		if (badge.url.isEmpty())
+			continue;
+		seen.insert(badge.key.toLower());
+		out.append(badge);
+	}
+
+	/* Legacy identity.badges (mod/sub/etc) — keep as text chips when no image. */
+	for (const QJsonValue &row : identity.value(QStringLiteral("badges")).toArray()) {
 		const QJsonObject obj = row.toObject();
 		ChatBadge badge;
-		badge.key = obj.value("type").toString(obj.value("name").toString());
-		badge.label = obj.value("text").toString(badge.key);
-		badge.url = obj.value("image").toString(obj.value("src").toString());
+		badge.key = obj.value(QStringLiteral("type")).toString(obj.value(QStringLiteral("name")).toString());
+		badge.label = obj.value(QStringLiteral("text")).toString(badge.key);
+		badge.url = obj.value(QStringLiteral("image")).toString(
+			obj.value(QStringLiteral("src")).toString(obj.value(QStringLiteral("image_url")).toString()));
 		if (badge.key.isEmpty() && badge.label.isEmpty())
 			continue;
+		const QString keyLow = badge.key.toLower();
+		if (seen.contains(keyLow))
+			continue;
+		seen.insert(keyLow);
 		out.append(badge);
 	}
 	return out;
+}
+
+QString ChatDock::KickEmoteImageUrl(const QString &emoteId)
+{
+	return QStringLiteral("https://files.kick.com/emotes/%1/fullsize").arg(emoteId);
+}
+
+QString ChatDock::PixmapDataUri(const QPixmap &pix)
+{
+	QByteArray bytes;
+	QBuffer buffer(&bytes);
+	buffer.open(QIODevice::WriteOnly);
+	pix.save(&buffer, "PNG");
+	return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(bytes.toBase64());
+}
+
+QString ChatDock::FormatKickContentHtml(const QString &raw) const
+{
+	static const QRegularExpression re(QStringLiteral(R"(\[emote:(\d+):([^\]]+)\])"));
+	QString out;
+	int last = 0;
+	auto it = re.globalMatch(raw);
+	while (it.hasNext()) {
+		const QRegularExpressionMatch m = it.next();
+		out += Linkify(EscapeHtml(raw.mid(last, m.capturedStart() - last)));
+		const QString id = m.captured(1);
+		const QString name = m.captured(2);
+		const QString cacheKey = QStringLiteral("kick-emote:%1").arg(id);
+		if (badgePixmaps.contains(cacheKey)) {
+			out += QStringLiteral("<img src='%1' height='18' style='vertical-align:middle;' />")
+				       .arg(PixmapDataUri(badgePixmaps.value(cacheKey)));
+		} else {
+			out += QStringLiteral("<span style='color:#9a9a9a;'>:%1:</span>").arg(EscapeHtml(name));
+		}
+		last = m.capturedEnd();
+	}
+	out += Linkify(EscapeHtml(raw.mid(last)));
+	return out;
+}
+
+void ChatDock::RefreshKickMessageLabel(QLabel *label)
+{
+	if (!label)
+		return;
+	const QString raw = label->property("kickRawText").toString();
+	const QString prefix = label->property("kickPrefixHtml").toString();
+	if (raw.isEmpty())
+		return;
+	label->setText(prefix + FormatKickContentHtml(raw));
+	if (auto *row = qobject_cast<QWidget *>(label->parent())) {
+		for (int i = 0; messageList && i < messageList->count(); ++i) {
+			QListWidgetItem *it = messageList->item(i);
+			if (messageList->itemWidget(it) == row) {
+				LayoutMessageRow(row, it, messageList->viewport()->width());
+				break;
+			}
+		}
+	}
+}
+
+void ChatDock::PrefetchKickEmotes(const QString &raw, QLabel *label)
+{
+	static const QRegularExpression re(QStringLiteral(R"(\[emote:(\d+):([^\]]+)\])"));
+	QSet<QString> ids;
+	auto it = re.globalMatch(raw);
+	while (it.hasNext())
+		ids.insert(it.next().captured(1));
+	if (ids.isEmpty())
+		return;
+
+	QPointer<QLabel> alive(label);
+	for (const QString &id : ids) {
+		const QString cacheKey = QStringLiteral("kick-emote:%1").arg(id);
+		if (badgePixmaps.contains(cacheKey) || badgeFetchPending.contains(cacheKey))
+			continue;
+		badgeFetchPending.insert(cacheKey);
+		const QString url = KickEmoteImageUrl(id);
+		Http(url,
+		     {{QByteArrayLiteral("User-Agent"),
+		       QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+					 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")},
+		      {QByteArrayLiteral("Referer"), QByteArrayLiteral("https://kick.com/")}},
+		     {}, "GET", [this, cacheKey, alive](int status, const QByteArray &body, const QString &) {
+			     badgeFetchPending.remove(cacheKey);
+			     if (status < 200 || status >= 300 || body.isEmpty())
+				     return;
+			     QPixmap pix;
+			     if (!pix.loadFromData(body))
+				     return;
+			     badgePixmaps.insert(cacheKey,
+						 pix.scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+			     if (alive)
+				     RefreshKickMessageLabel(alive);
+		     });
+	}
 }
 
 void ChatDock::FetchBadgePixmap(const QString &url, QLabel *target)
@@ -2190,10 +2500,12 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		}
 	}
 
-	const QString html =
-		QStringLiteral("<span style='color:%1;font-weight:700;'>%2%3</span>"
-			       "<span style='color:#e6e6e6;'>: %4</span>")
-			.arg(nameColor, badgesHtml, EscapeHtml(msg.user), Linkify(EscapeHtml(msg.text)));
+	const QString prefixHtml =
+		QStringLiteral("<span style='color:%1;font-weight:700;'>%2%3</span><span style='color:#e6e6e6;'>: </span>")
+			.arg(nameColor, badgesHtml, EscapeHtml(msg.user));
+	const bool kickEmotes = !msg.system && msg.platform == Kick && msg.text.contains(QLatin1String("[emote:"));
+	const QString bodyHtml = kickEmotes ? FormatKickContentHtml(msg.text) : Linkify(EscapeHtml(msg.text));
+	const QString html = prefixHtml + bodyHtml;
 
 	auto *item = new QListWidgetItem(messageList);
 	item->setData(Qt::UserRole, msg.system);
@@ -2240,6 +2552,11 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 	label->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
 	label->setText(html);
+	if (kickEmotes) {
+		label->setProperty("kickRawText", msg.text);
+		label->setProperty("kickPrefixHtml", prefixHtml);
+		PrefetchKickEmotes(msg.text, label);
+	}
 	layout->addWidget(label, 1, Qt::AlignTop);
 
 	messageList->addItem(item);
