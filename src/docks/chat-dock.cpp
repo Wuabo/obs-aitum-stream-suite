@@ -432,8 +432,8 @@ ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 			StartYouTubeChat();
 			return;
 		}
-		/* Chat id known but poll never started (race with viewers) — recover. */
-		if (!youtubeConnectedAnnounced || !youtubeTimer->isActive())
+		/* Keep polling alive if the single-shot timer was lost; never restart while in flight. */
+		if (!youtubePollInFlight && !youtubeTimer->isActive())
 			PollYouTubeChat();
 	});
 
@@ -611,6 +611,8 @@ void ChatDock::SyncAccountsFromConfig()
 		} else if (i == YouTube) {
 			youtubeConnectStarted = false;
 			youtubeConnectedAnnounced = false;
+			youtubeWaitingAnnounced = false;
+			youtubePollInFlight = false;
 			youtubeNotLinkedAnnounced = false;
 			ytLiveChatId.clear();
 			ytVideoId.clear();
@@ -914,6 +916,8 @@ void ChatDock::StopConnections()
 	twitchConnectedAnnounced = false;
 	kickConnectedAnnounced = false;
 	youtubeConnectedAnnounced = false;
+	youtubeWaitingAnnounced = false;
+	youtubePollInFlight = false;
 	twitchConnectStarted = false;
 	youtubeConnectStarted = false;
 	kickConnectStarted = false;
@@ -1038,18 +1042,11 @@ void ChatDock::FetchYouTubeViewers()
 					items.at(0).toObject().value("liveStreamingDetails").toObject();
 				const QString chatId = details.value("activeLiveChatId").toString();
 				if (!chatId.isEmpty()) {
-					const bool needPoll = ytLiveChatId.isEmpty() || !youtubeConnectedAnnounced;
+					const bool wasEmpty = ytLiveChatId.isEmpty();
 					ytLiveChatId = chatId;
-					/* Viewers path can find the chat id first — start polling or we stay on Connecting. */
-					if (needPoll && connectionsActive) {
-						if (!youtubeConnectedAnnounced) {
-							youtubeConnectedAnnounced = true;
-							AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
-									    YouTube);
-						}
-						if (!youtubeTimer->isActive())
-							PollYouTubeChat();
-					}
+					/* Viewers can resolve chat id first — kick poll; Connected only after first OK poll. */
+					if (wasEmpty && connectionsActive && !youtubePollInFlight && !youtubeTimer->isActive())
+						PollYouTubeChat();
 				}
 				const QString viewers = details.value("concurrentViewers").toString();
 				if (viewers.isEmpty())
@@ -1080,18 +1077,11 @@ void ChatDock::FetchYouTubeViewers()
 					     const QString chatId =
 						     item.value("snippet").toObject().value("activeLiveChatId").toString();
 					     if (!chatId.isEmpty()) {
-						     const bool needPoll = ytLiveChatId.isEmpty() || !youtubeConnectedAnnounced;
+						     const bool wasEmpty = ytLiveChatId.isEmpty();
 						     ytLiveChatId = chatId;
-						     if (needPoll && connectionsActive) {
-							     if (!youtubeConnectedAnnounced) {
-								     youtubeConnectedAnnounced = true;
-								     AppendSystemMessage(
-									     Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
-									     YouTube);
-							     }
-							     if (!youtubeTimer->isActive())
-								     PollYouTubeChat();
-						     }
+						     if (wasEmpty && connectionsActive && !youtubePollInFlight &&
+							 !youtubeTimer->isActive())
+							     PollYouTubeChat();
 					     }
 					     applyVideoId(id);
 					     return;
@@ -1555,7 +1545,7 @@ void ChatDock::StartYouTubeChat()
 		}
 		if (!ytLiveChatId.isEmpty()) {
 			/* Already resolved (e.g. by FetchYouTubeViewers) — just poll. */
-			if (!youtubeTimer->isActive())
+			if (!youtubePollInFlight && !youtubeTimer->isActive())
 				PollYouTubeChat();
 			return;
 		}
@@ -1600,16 +1590,15 @@ void ChatDock::StartYouTubeChat()
 				ytLiveChatId = chatId;
 			auto begin = [this] {
 				if (ytLiveChatId.isEmpty()) {
-					if (!youtubeConnectedAnnounced)
+					if (!youtubeWaitingAnnounced && !youtubeConnectedAnnounced) {
+						youtubeWaitingAnnounced = true;
 						AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
+					}
 					return;
 				}
-				ytNextPage.clear();
-				if (!youtubeConnectedAnnounced) {
-					youtubeConnectedAnnounced = true;
-					AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
-				}
-				PollYouTubeChat();
+				youtubeWaitingAnnounced = false;
+				if (!youtubePollInFlight && !youtubeTimer->isActive())
+					PollYouTubeChat();
 			};
 			if (!ytLiveChatId.isEmpty() || ytVideoId.isEmpty()) {
 				begin();
@@ -1650,12 +1639,7 @@ void ChatDock::StartYouTubeChat()
 			     [this, startPollOrResolve](int code, const QByteArray &body, const QString &) {
 				     /* Another path (viewers) may have already resolved the chat. */
 				     if (!ytLiveChatId.isEmpty()) {
-					     if (!youtubeConnectedAnnounced) {
-						     youtubeConnectedAnnounced = true;
-						     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
-									 YouTube);
-					     }
-					     if (!youtubeTimer->isActive())
+					     if (!youtubePollInFlight && !youtubeTimer->isActive())
 						     PollYouTubeChat();
 					     return;
 				     }
@@ -1674,8 +1658,10 @@ void ChatDock::StartYouTubeChat()
 					     blog(LOG_WARNING, "[Stream Suite] YouTube search.list HTTP %d", code);
 				     }
 				     if (videoId.isEmpty()) {
-					     if (!youtubeConnectedAnnounced)
+					     if (!youtubeWaitingAnnounced && !youtubeConnectedAnnounced) {
+						     youtubeWaitingAnnounced = true;
 						     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
+					     }
 					     return;
 				     }
 				     startPollOrResolve(videoId, QString());
@@ -1693,12 +1679,7 @@ void ChatDock::StartYouTubeChat()
 			     [this, pickBroadcast, startPollOrResolve, trySearchLive](int code, const QByteArray &body,
 										      const QString &) {
 				     if (!ytLiveChatId.isEmpty()) {
-					     if (!youtubeConnectedAnnounced) {
-						     youtubeConnectedAnnounced = true;
-						     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
-									 YouTube);
-					     }
-					     if (!youtubeTimer->isActive())
+					     if (!youtubePollInFlight && !youtubeTimer->isActive())
 						     PollYouTubeChat();
 					     return;
 				     }
@@ -1729,12 +1710,7 @@ void ChatDock::StartYouTubeChat()
 			Http(url.toString(), authHdr(), {}, "GET",
 			     [this, pickBroadcast, startPollOrResolve, next](int code, const QByteArray &body, const QString &) {
 				     if (!ytLiveChatId.isEmpty()) {
-					     if (!youtubeConnectedAnnounced) {
-						     youtubeConnectedAnnounced = true;
-						     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
-									 YouTube);
-					     }
-					     if (!youtubeTimer->isActive())
+					     if (!youtubePollInFlight && !youtubeTimer->isActive())
 						     PollYouTubeChat();
 					     return;
 				     }
@@ -1759,10 +1735,12 @@ void ChatDock::StartYouTubeChat()
 
 void ChatDock::PollYouTubeChat()
 {
-	if (ytLiveChatId.isEmpty())
+	if (ytLiveChatId.isEmpty() || youtubePollInFlight)
 		return;
+	youtubePollInFlight = true;
 	EnsureToken(YouTube, [this](bool ok) {
 		if (!ok || ytLiveChatId.isEmpty()) {
+			youtubePollInFlight = false;
 			if (!ok) {
 				blog(LOG_WARNING, "[Stream Suite] YouTube chat poll: token failed");
 				if (connectionsActive && !ytLiveChatId.isEmpty())
@@ -1782,6 +1760,7 @@ void ChatDock::PollYouTubeChat()
 		Http(url.toString(),
 		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
 		     [this](int status, const QByteArray &body, const QString &error) {
+			     youtubePollInFlight = false;
 			     int interval = 5000;
 			     if (status >= 200 && status < 300) {
 				     const QJsonObject root = QJsonDocument::fromJson(body).object();
@@ -1793,13 +1772,18 @@ void ChatDock::PollYouTubeChat()
 					     blog(LOG_INFO, "[Stream Suite] YouTube live chat went offline");
 					     if (connectionsActive && !youtubeDiscoverTimer->isActive())
 						     youtubeDiscoverTimer->start();
-					     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
+					     if (!youtubeWaitingAnnounced) {
+						     youtubeWaitingAnnounced = true;
+						     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
+					     }
 					     return;
 				     }
 				     ytNextPage = root.value("nextPageToken").toString();
 				     interval = qMax(2000, root.value("pollingIntervalMillis").toInt(5000));
+				     /* Only announce Connected once per session after a successful poll. */
 				     if (!youtubeConnectedAnnounced) {
 					     youtubeConnectedAnnounced = true;
+					     youtubeWaitingAnnounced = false;
 					     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
 				     }
 				     const QJsonArray items = root.value("items").toArray();
@@ -1874,16 +1858,21 @@ void ChatDock::PollYouTubeChat()
 					     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
 					     return;
 				     }
-				     if (status == 404 || status == 400) {
-					     /* Stale/invalid liveChatId — rediscover. */
+				     if (status == 400) {
+					     /* Usually a stale pageToken — drop it and retry without re-announcing. */
+					     ytNextPage.clear();
+					     interval = 5000;
+				     } else if (status == 404) {
+					     /* Live chat gone — rediscover silently until a poll succeeds again. */
 					     ytLiveChatId.clear();
 					     ytNextPage.clear();
 					     youtubeConnectedAnnounced = false;
 					     if (connectionsActive)
 						     StartYouTubeChat();
 					     return;
+				     } else {
+					     interval = 8000;
 				     }
-				     interval = 8000;
 			     }
 			     if (connectionsActive && !ytLiveChatId.isEmpty())
 				     youtubeTimer->start(interval);

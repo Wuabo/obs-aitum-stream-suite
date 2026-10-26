@@ -140,6 +140,8 @@ private:
 	bool twitchConnectedAnnounced = false;
 	bool kickConnectedAnnounced = false;
 	bool youtubeConnectedAnnounced = false;
+	bool youtubeWaitingAnnounced = false;
+	bool youtubePollInFlight = false;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
