@@ -53,6 +53,9 @@ public:
 	void ReloadAccounts();
 	void SyncAccountsFromConfig();
 	void RefreshAvailablePlatforms();
+	/* Stream Info found a YouTube broadcast/video — reuse that id for live chat discovery. */
+	void NotifyYouTubeVideo(const QString &videoId);
+	void OnStreamingStarted();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -142,6 +145,9 @@ private:
 	bool youtubeConnectedAnnounced = false;
 	bool youtubeWaitingAnnounced = false;
 	bool youtubePollInFlight = false;
+	int youtubePageTokenFails = 0;
+	qint64 youtubeLastFullDiscoverMs = 0;
+	qint64 youtubeLastViewerFetchMs = 0;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
@@ -195,6 +201,7 @@ private:
 	QWidget *BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent);
 
 	void StartYouTubeChat();
+	void ResolveYouTubeLiveChatId(const QString &videoId, std::function<void(bool)> done = {});
 	void PollYouTubeChat();
 	void SendYouTubeMessage(const QString &text);
 

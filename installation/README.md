@@ -45,6 +45,8 @@ A dock atualiza a transmissão ativa ou a próxima agendada.
 
 Para o erro de testadores: vai a **Google Auth Platform → Público-alvo → Utilizadores de teste**, adiciona a tua conta, guarda, e volta a **Ligar** no OBS.
 
+Se aparecer **exceeded your quota**: o projeto Google tem um limite diário (por defeito ~10 000 unidades na YouTube Data API v3). Cada poll do chat e cada Apply gastam quota. Vê o uso em **APIs e serviços → Quotas**. A quota renova à meia-noite (hora do Pacífico). Evita spam de Apply / reopen do dock enquanto estiveres no limite.
+
 ## Kick
 
 1. Abre as definições de developer da Kick (https://kick.com/settings/developer) e cria uma app.

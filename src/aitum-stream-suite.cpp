@@ -482,6 +482,9 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		}
 		if (stream_info_dock)
 			stream_info_dock->UpdateDisconnectState();
+		/* YouTube liveChatId often appears only after the encoder is live — rediscover. */
+		if (chat_dock)
+			chat_dock->OnStreamingStarted();
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STOPPING || event == OBS_FRONTEND_EVENT_STREAMING_STOPPED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(false);

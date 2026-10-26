@@ -748,6 +748,8 @@ void StreamInfoDock::SavePlatform()
 	obs_data_set_int(one, "expires_at", expiresAt);
 	obs_data_set_string(one, "user_id", userId.toUtf8().constData());
 	obs_data_set_string(one, "user_name", userName.toUtf8().constData());
+	if (platform == YouTube && !ytBroadcastId.isEmpty())
+		obs_data_set_string(one, "youtube_video_id", ytBroadcastId.toUtf8().constData());
 	obs_data_set_string(one, "category_id", categoryId.toUtf8().constData());
 	if (!categoryId.isEmpty()) {
 		if (lastCategoryName.isEmpty()) {
@@ -1211,6 +1213,9 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	descriptionEdit->setPlainText(snippet.value("description").toString());
 	ytScheduledStart = snippet.value("scheduledStartTime").toString();
 	SetResult(QString());
+	/* Hand the broadcast/video id to Unified Chat so it can attach live chat when the stream goes live. */
+	if (!ytBroadcastId.isEmpty() && chat_dock)
+		chat_dock->NotifyYouTubeVideo(ytBroadcastId);
 	const int gen = authGeneration;
 	QUrl videoUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
 	QUrlQuery vq;
@@ -2064,12 +2069,14 @@ void StreamInfoDock::ApplyYouTube()
 		return;
 	}
 	ytCategoryId = categoryId;
+	if (ytCategoryId.isEmpty() && categoryCombo && categoryCombo->currentIndex() >= 0)
+		ytCategoryId = categoryCombo->currentData().toString();
 	if (ytCategoryId.isEmpty())
 		ytCategoryId = QStringLiteral("20");
+	/* liveBroadcasts.snippet has no categoryId — title/description only here. */
 	QJsonObject snippet;
 	snippet.insert("title", titleEdit->text());
 	snippet.insert("description", descriptionEdit->toPlainText());
-	snippet.insert("categoryId", ytCategoryId);
 	if (!ytScheduledStart.isEmpty())
 		snippet.insert("scheduledStartTime", ytScheduledStart);
 	QJsonObject body;
@@ -2088,31 +2095,56 @@ void StreamInfoDock::ApplyYouTube()
 			     SetResult(JsonError(payload));
 			     return;
 		     }
-		     QJsonObject videoSnippet;
-		     videoSnippet.insert("title", titleEdit->text());
-		     videoSnippet.insert("description", descriptionEdit->toPlainText());
-		     videoSnippet.insert("categoryId", ytCategoryId);
-		     QJsonArray tags;
-		     for (const QString &tag : Tags())
-			     tags.append(tag);
-		     videoSnippet.insert("tags", tags);
-		     QJsonObject video;
-		     video.insert("id", ytBroadcastId);
-		     video.insert("snippet", videoSnippet);
-		     QUrl vurl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
-		     QUrlQuery vq;
-		     vq.addQueryItem("part", "snippet");
-		     vurl.setQuery(vq);
-		     QNetworkRequest vreq(vurl);
-		     vreq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-		     vreq.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-		     Http(vreq, QJsonDocument(video).toJson(QJsonDocument::Compact), "PUT",
-			  [this](int vstatus, const QByteArray &vbody, const QString &) {
-				  if (vstatus >= 200 && vstatus < 300)
-					  SetResult(Tr("StreamInfoApplied"));
-				  else
-					  SetResult(JsonError(vbody));
-			  });
+		     /* Category (and tags) live on videos.snippet — merge with current snippet first. */
+		     QUrl getUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
+		     QUrlQuery gq;
+		     gq.addQueryItem("part", "snippet");
+		     gq.addQueryItem("id", ytBroadcastId);
+		     getUrl.setQuery(gq);
+		     QNetworkRequest greq(getUrl);
+		     greq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+		     Http(greq, {}, "GET", [this](int gstatus, const QByteArray &gbody, const QString &) {
+			     QJsonObject videoSnippet;
+			     if (gstatus >= 200 && gstatus < 300) {
+				     const QJsonArray items =
+					     QJsonDocument::fromJson(gbody).object().value("items").toArray();
+				     if (!items.isEmpty())
+					     videoSnippet = items.at(0).toObject().value("snippet").toObject();
+			     }
+			     videoSnippet.insert("title", titleEdit->text());
+			     videoSnippet.insert("description", descriptionEdit->toPlainText());
+			     videoSnippet.insert("categoryId", ytCategoryId);
+			     QJsonArray tags;
+			     for (const QString &tag : Tags())
+				     tags.append(tag);
+			     videoSnippet.insert("tags", tags);
+			     /* videos.update rejects read-only snippet fields if left in. */
+			     videoSnippet.remove(QStringLiteral("publishedAt"));
+			     videoSnippet.remove(QStringLiteral("channelId"));
+			     videoSnippet.remove(QStringLiteral("channelTitle"));
+			     videoSnippet.remove(QStringLiteral("thumbnails"));
+			     videoSnippet.remove(QStringLiteral("localized"));
+			     videoSnippet.remove(QStringLiteral("defaultLanguage"));
+			     videoSnippet.remove(QStringLiteral("defaultAudioLanguage"));
+			     videoSnippet.remove(QStringLiteral("liveBroadcastContent"));
+			     QJsonObject video;
+			     video.insert("id", ytBroadcastId);
+			     video.insert("snippet", videoSnippet);
+			     QUrl vurl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
+			     QUrlQuery vq;
+			     vq.addQueryItem("part", "snippet");
+			     vurl.setQuery(vq);
+			     QNetworkRequest vreq(vurl);
+			     vreq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+			     vreq.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+			     Http(vreq, QJsonDocument(video).toJson(QJsonDocument::Compact), "PUT",
+				  [this](int vstatus, const QByteArray &vbody, const QString &) {
+					  if (vstatus >= 200 && vstatus < 300)
+						  SetResult(Tr("StreamInfoApplied"));
+					  else
+						  SetResult(JsonError(vbody));
+				  });
+		     });
 	     });
 }
 
