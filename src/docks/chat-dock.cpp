@@ -791,12 +791,14 @@ void ChatDock::RefreshViewers()
 
 void ChatDock::SetViewerCount(Platform platform, int count, bool live)
 {
-	if (!viewerLabels[platform])
+	/* Each chip owns its own QLabel — Twitch/YouTube/Kick never share a counter. */
+	QLabel *label = viewerLabels[int(platform)];
+	if (!label)
 		return;
 	if (!live)
-		viewerLabels[platform]->setText(QStringLiteral("—"));
+		label->setText(QStringLiteral("—"));
 	else
-		viewerLabels[platform]->setText(QString::number(qMax(0, count)));
+		label->setText(QString::number(qMax(0, count)));
 }
 
 void ChatDock::FetchTwitchViewers()
@@ -807,8 +809,10 @@ void ChatDock::FetchTwitchViewers()
 			return;
 		}
 		const Account &acc = accounts[Twitch];
-		if (acc.clientId.isEmpty())
+		if (acc.clientId.isEmpty()) {
+			SetViewerCount(Twitch, 0, false);
 			return;
+		}
 		auto requestStreams = [this](const QString &userId) {
 			if (userId.isEmpty()) {
 				SetViewerCount(Twitch, 0, false);
@@ -858,17 +862,61 @@ void ChatDock::FetchTwitchViewers()
 void ChatDock::FetchYouTubeViewers()
 {
 	EnsureToken(YouTube, [this](bool ok) {
-		if (!ok)
-			return;
-		if (ytVideoId.isEmpty()) {
+		if (!ok) {
 			SetViewerCount(YouTube, 0, false);
 			return;
 		}
+		auto applyVideoId = [this](const QString &videoId) {
+			if (videoId.isEmpty()) {
+				SetViewerCount(YouTube, 0, false);
+				return;
+			}
+			if (ytVideoId.isEmpty())
+				ytVideoId = videoId;
+			const Account &acc = accounts[YouTube];
+			const QString url =
+				QStringLiteral("https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=") +
+				videoId;
+			Http(url,
+			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {},
+			     "GET", [this](int status, const QByteArray &body, const QString &) {
+				     if (status < 200 || status >= 300) {
+					     SetViewerCount(YouTube, 0, false);
+					     return;
+				     }
+				     const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				     if (items.isEmpty()) {
+					     SetViewerCount(YouTube, 0, false);
+					     return;
+				     }
+				     const QString viewers = items.at(0)
+								    .toObject()
+								    .value("liveStreamingDetails")
+								    .toObject()
+								    .value("concurrentViewers")
+								    .toString();
+				     if (viewers.isEmpty())
+					     SetViewerCount(YouTube, 0, false);
+				     else
+					     SetViewerCount(YouTube, viewers.toInt(), true);
+			     });
+		};
+		if (!ytVideoId.isEmpty()) {
+			applyVideoId(ytVideoId);
+			return;
+		}
+		/* Discover an active broadcast so the YouTube chip can update without waiting for chat. */
 		const Account &acc = accounts[YouTube];
-		const QString url = QStringLiteral("https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=") +
-				    ytVideoId;
-		Http(url, {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {},
-		     "GET", [this](int status, const QByteArray &body, const QString &) {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery query;
+		query.addQueryItem("part", "id,snippet,status");
+		query.addQueryItem("broadcastStatus", "active");
+		query.addQueryItem("broadcastType", "all");
+		query.addQueryItem("maxResults", "1");
+		url.setQuery(query);
+		Http(url.toString(),
+		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
+		     [this, applyVideoId](int status, const QByteArray &body, const QString &) {
 			     if (status < 200 || status >= 300) {
 				     SetViewerCount(YouTube, 0, false);
 				     return;
@@ -878,12 +926,12 @@ void ChatDock::FetchYouTubeViewers()
 				     SetViewerCount(YouTube, 0, false);
 				     return;
 			     }
-			     const QString viewers =
-				     items.at(0).toObject().value("liveStreamingDetails").toObject().value("concurrentViewers").toString();
-			     if (viewers.isEmpty())
-				     SetViewerCount(YouTube, 0, false);
-			     else
-				     SetViewerCount(YouTube, viewers.toInt(), true);
+			     const QJsonObject item = items.at(0).toObject();
+			     const QString id = item.value("id").toString();
+			     const QString chatId = item.value("snippet").toObject().value("activeLiveChatId").toString();
+			     if (!chatId.isEmpty() && ytLiveChatId.isEmpty())
+				     ytLiveChatId = chatId;
+			     applyVideoId(id);
 		     });
 	});
 }
@@ -895,40 +943,110 @@ void ChatDock::FetchKickViewers()
 			SetViewerCount(Kick, 0, false);
 			return;
 		}
-		const Account &acc = accounts[Kick];
-		auto applyLive = [this](const QJsonObject &live) {
-			if (live.isEmpty()) {
-				SetViewerCount(Kick, 0, false);
-				return;
+		/* Kick only: never write Twitch/YouTube labels from this path. */
+		auto setKickOffline = [this] { SetViewerCount(Kick, 0, false); };
+		auto setKickLive = [this](int count) { SetViewerCount(Kick, qMax(0, count), true); };
+
+		auto jsonIsLive = [](const QJsonValue &value) -> bool {
+			if (value.isBool())
+				return value.toBool();
+			if (value.isDouble())
+				return value.toInt() != 0;
+			if (value.isString()) {
+				const QString s = value.toString().trimmed().toLower();
+				return s == QLatin1String("true") || s == QLatin1String("1");
 			}
-			const QJsonObject stream = live.value("stream").toObject();
-			if (!stream.isEmpty()) {
-				if (!stream.value("is_live").toBool(true)) {
-					SetViewerCount(Kick, 0, false);
-					return;
-				}
-				SetViewerCount(Kick, stream.value("viewer_count").toInt(stream.value("viewers").toInt()), true);
-				return;
-			}
-			const int count = live.value("viewer_count").toInt(live.value("viewers").toInt(-1));
-			if (count < 0)
-				SetViewerCount(Kick, 0, false);
-			else
-				SetViewerCount(Kick, count, true);
+			return false;
 		};
-		auto fromChannels = [this, applyLive] {
+		auto jsonViewerCount = [](const QJsonObject &obj) -> int {
+			const QJsonValue v = obj.value(QStringLiteral("viewer_count"));
+			if (v.isUndefined() || v.isNull()) {
+				const QJsonValue alt = obj.value(QStringLiteral("viewers"));
+				if (alt.isUndefined() || alt.isNull())
+					return -1;
+				if (alt.isString())
+					return alt.toString().toInt();
+				return alt.toInt(-1);
+			}
+			if (v.isString())
+				return v.toString().toInt();
+			return v.toInt(-1);
+		};
+
+		auto fromPublicSlug = [this, setKickOffline, setKickLive, jsonIsLive, jsonViewerCount] {
+			if (kickSlug.isEmpty()) {
+				setKickOffline();
+				return;
+			}
+			const QList<QPair<QByteArray, QByteArray>> browserHeaders = {
+				{QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")},
+				{QByteArrayLiteral("Accept-Language"), QByteArrayLiteral("en-US,en;q=0.9")},
+				{QByteArrayLiteral("Origin"), QByteArrayLiteral("https://kick.com")},
+				{QByteArrayLiteral("Referer"), QByteArrayLiteral("https://kick.com/")},
+				{QByteArrayLiteral("User-Agent"),
+				 QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+						   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")},
+			};
+			Http(QStringLiteral("https://kick.com/api/v2/channels/") +
+				     QString::fromUtf8(QUrl::toPercentEncoding(kickSlug)),
+			     browserHeaders, {}, "GET",
+			     [setKickOffline, setKickLive, jsonIsLive, jsonViewerCount](int status, const QByteArray &body,
+											const QString &) {
+				     if (status < 200 || status >= 300) {
+					     setKickOffline();
+					     return;
+				     }
+				     const QJsonObject root = QJsonDocument::fromJson(body).object();
+				     const QJsonValue liveVal = root.value(QStringLiteral("livestream"));
+				     /* Offline channels return livestream: null. */
+				     if (!liveVal.isObject()) {
+					     setKickOffline();
+					     return;
+				     }
+				     const QJsonObject live = liveVal.toObject();
+				     if (live.contains(QStringLiteral("is_live")) &&
+					 !jsonIsLive(live.value(QStringLiteral("is_live")))) {
+					     setKickOffline();
+					     return;
+				     }
+				     const int count = jsonViewerCount(live);
+				     if (count < 0)
+					     setKickOffline();
+				     else
+					     setKickLive(count);
+			     });
+		};
+
+		auto fromChannels = [this, setKickOffline, setKickLive, jsonIsLive, jsonViewerCount, fromPublicSlug] {
 			const Account &a = accounts[Kick];
 			Http(QStringLiteral("https://api.kick.com/public/v1/channels"),
 			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + a.accessToken.toUtf8()},
 			      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
-			     {}, "GET", [applyLive](int status, const QByteArray &body, const QString &) {
+			     {}, "GET",
+			     [this, setKickOffline, setKickLive, jsonIsLive, jsonViewerCount,
+			      fromPublicSlug](int status, const QByteArray &body, const QString &) {
 				     if (status < 200 || status >= 300) {
-					     applyLive({});
+					     fromPublicSlug();
 					     return;
 				     }
-				     applyLive(FirstDataObject(body));
+				     const QJsonObject channel = FirstDataObject(body);
+				     if (kickSlug.isEmpty())
+					     kickSlug = channel.value(QStringLiteral("slug")).toString();
+				     const QJsonObject stream = channel.value(QStringLiteral("stream")).toObject();
+				     /* Require an explicit live flag — missing is_live must NOT default to true. */
+				     if (stream.isEmpty() || !jsonIsLive(stream.value(QStringLiteral("is_live")))) {
+					     setKickOffline();
+					     return;
+				     }
+				     const int count = jsonViewerCount(stream);
+				     if (count < 0)
+					     setKickOffline();
+				     else
+					     setKickLive(count);
 			     });
 		};
+
+		const Account &acc = accounts[Kick];
 		if (acc.userId.isEmpty()) {
 			fromChannels();
 			return;
@@ -940,16 +1058,24 @@ void ChatDock::FetchKickViewers()
 		Http(url.toString(),
 		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()},
 		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
-		     {}, "GET", [this, applyLive, fromChannels](int status, const QByteArray &body, const QString &) {
+		     {}, "GET",
+		     [setKickOffline, setKickLive, jsonViewerCount, fromChannels](int status, const QByteArray &body,
+										  const QString &) {
 			     if (status < 200 || status >= 300) {
 				     fromChannels();
 				     return;
 			     }
+			     /* 200 + empty data ⇒ offline. Do not fall back to channel stream leftovers. */
 			     const QJsonObject live = FirstDataObject(body);
-			     if (live.isEmpty())
-				     fromChannels();
+			     if (live.isEmpty()) {
+				     setKickOffline();
+				     return;
+			     }
+			     const int count = jsonViewerCount(live);
+			     if (count < 0)
+				     setKickOffline();
 			     else
-				     applyLive(live);
+				     setKickLive(count);
 		     });
 	});
 }
