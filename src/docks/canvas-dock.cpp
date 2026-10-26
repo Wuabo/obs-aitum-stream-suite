@@ -2737,23 +2737,6 @@ void CanvasDock::ChangeSceneIndex(bool relative, int offset, int invalidIdx)
 	obs_frontend_save();
 }
 
-QListWidget *CanvasDock::GetGlobalScenesList()
-{
-	auto p = parentWidget();
-	if (!p) {
-		return nullptr;
-	}
-	p = p->parentWidget();
-	if (!p) {
-		return nullptr;
-	}
-	auto sd = p->findChild<QDockWidget *>(QStringLiteral("scenesDock"));
-	if (!sd) {
-		return nullptr;
-	}
-	return sd->findChild<QListWidget *>(QStringLiteral("scenes"));
-}
-
 QWidget *CanvasDock::BorrowScenesPane()
 {
 	if (!scenesGroup) {
@@ -6870,23 +6853,6 @@ void CanvasDock::UpdateSettings(obs_data_t *s)
 			blog(LOG_ERROR, "[Aitum Stream Suite] Failed to reset video on canvas '%s'", obs_canvas_get_name(canvas));
 		}
 	}
-}
-
-void CanvasDock::reset_live_state()
-{
-	if (panel_split) {
-		panel_split->setParent(this);
-		panel_split->hide();
-	}
-	if (canvas_split) {
-		canvas_split->restorePanelOrder(QStringLiteral("canvasPreview"));
-	}
-}
-
-void CanvasDock::reset_build_state()
-{
-	/* Same as live: editing UI lives in the native Scenes/Sources docks. */
-	reset_live_state();
 }
 
 void CanvasDock::LogScenes()

@@ -8,8 +8,4 @@ void detach_native_canvas_tabs();
 void shutdown_native_canvas_tabs();
 /* Canvas docks are created after OBS restoreState. Re-apply the saved
  * BasicWindow DockState so bottom strip sizes stick. */
-void restore_obs_dock_layout();
 void schedule_restore_obs_dock_layout();
-/* Keep Main Canvas / canvas docks free like Scenes/Sources — never leave
- * them tabbed together with the Controls dock. */
-void ensure_preview_docks_independent();

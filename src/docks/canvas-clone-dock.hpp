@@ -61,8 +61,5 @@ public:
 	uint32_t GetCanvasWidth() { return canvas_width; };
 	uint32_t GetCanvasHeight() { return canvas_height; };
 
-	void reset_live_state();
-	void reset_build_state();
-
 	void SetPanelVisible(const QString &panel_name, bool visible);
 };

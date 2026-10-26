@@ -12,7 +12,6 @@
 #include <QHBoxLayout>
 #include <QDockWidget>
 #include <QKeySequence>
-#include <QListWidget>
 #include <QMainWindow>
 #include <QPointer>
 #include <QSizePolicy>
@@ -24,6 +23,8 @@
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
+
+static void ensure_preview_docks_independent();
 
 namespace {
 
@@ -416,26 +417,6 @@ QTabBar *EnsureBar(QWidget *frame, QVBoxLayout *layout, QTabBar *&bar, QWidget *
 	return bar;
 }
 
-void HideSuiteDocks()
-{
-	auto main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!main) {
-		return;
-	}
-	for (const char *id : {"AitumStreamSuiteSources", "AitumStreamSuiteTransitions"}) {
-		auto dock = main->findChild<QDockWidget *>(QString::fromUtf8(id));
-		if (!dock) {
-			continue;
-		}
-		/* Same menu labels as the OBS docks ("Scenes" / "Sources").
-		 * Keep them out of the Docks menu so OBS can remember the real ones. */
-		dock->hide();
-		if (auto *action = dock->toggleViewAction()) {
-			action->setVisible(false);
-		}
-	}
-}
-
 void ClearPages()
 {
 	for (auto &page : pages) {
@@ -598,7 +579,6 @@ void refresh_native_canvas_tabs()
 	}
 	ClearPages();
 	BindNative();
-	HideSuiteDocks();
 	if (!scenesTabs || !sourcesTabs || !scenesLayout || !sourcesLayout) {
 		blog(LOG_WARNING,
 		     "[Stream Suite] Native canvas tabs not installed (tabs=%d/%d layouts=%d/%d canvases=%d)",
@@ -714,27 +694,6 @@ static QByteArray ReadObsDockState()
 	return QByteArray::fromBase64(QByteArray(dockStateStr));
 }
 
-static const char *kSuiteDockIds[] = {"AitumStreamSuiteSources", "AitumStreamSuiteTransitions"};
-
-/* Rename suite docks so restoreState skips them. Never call setFloating here —
- * doing that while the main window is still settling can crash OBS. */
-static void ParkSuiteDocks(QMainWindow *main, bool park)
-{
-	const QString suffix = QString::fromUtf8("__aitum_parked");
-	for (const char *id : kSuiteDockIds) {
-		const QString name = QString::fromUtf8(id);
-		QDockWidget *dock = main->findChild<QDockWidget *>(park ? name : name + suffix);
-		if (!dock) {
-			continue;
-		}
-		dock->hide();
-		if (auto *action = dock->toggleViewAction()) {
-			action->setVisible(false);
-		}
-		dock->setObjectName(park ? name + suffix : name);
-	}
-}
-
 static void UntabifyFromControls(QMainWindow *main, QDockWidget *dock, QDockWidget *controls)
 {
 	if (!main || !dock || !controls || dock == controls) {
@@ -762,7 +721,7 @@ static void UntabifyFromControls(QMainWindow *main, QDockWidget *dock, QDockWidg
 	blog(LOG_INFO, "[Stream Suite] Untabified '%s' from Controls", dock->objectName().toUtf8().constData());
 }
 
-void ensure_preview_docks_independent()
+static void ensure_preview_docks_independent()
 {
 	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	if (!main || nativeTabsStopped) {
@@ -791,7 +750,7 @@ void ensure_preview_docks_independent()
 	}
 }
 
-void restore_obs_dock_layout()
+static void restore_obs_dock_layout()
 {
 	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	if (!main || nativeTabsStopped || !main->isVisible()) {
@@ -807,10 +766,7 @@ void restore_obs_dock_layout()
 		return;
 	}
 	restoring = true;
-	ParkSuiteDocks(main, true);
 	const bool ok = main->restoreState(dockState);
-	ParkSuiteDocks(main, false);
-	HideSuiteDocks();
 	ensure_preview_docks_independent();
 	restoring = false;
 	if (!ok) {

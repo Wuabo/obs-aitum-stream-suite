@@ -2,7 +2,8 @@
 #include "../utils/widgets/source-tree.hpp"
 #include <obs.h>
 #include <QFrame>
-#include <QListWidget>
+#include <mutex>
+#include <vector>
 
 class QAction;
 class QToolBar;
@@ -20,7 +21,6 @@ private:
 	QAction *moveUpAction = nullptr;
 	QAction *moveDownAction = nullptr;
 	std::vector<obs_sceneitem_t *> hoveredPreviewItems;
-	std::vector<obs_sceneitem_t *> selectedItems;
 	std::mutex selectMutex;
 
 	obs_sceneitem_t *GetCurrentSceneItem();

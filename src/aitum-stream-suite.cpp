@@ -1,5 +1,4 @@
 #include "dialogs/config-dialog.hpp"
-#include "dialogs/name-dialog.hpp"
 #include "dialogs/source-select-dialog.hpp"
 #include "docks/canvas-clone-dock.hpp"
 #include "docks/native-dock-tabs.hpp"
@@ -8,11 +7,8 @@
 #include "docks/filters-dock.hpp"
 #include "docks/output-dock.hpp"
 #include "docks/properties-dock.hpp"
-#include "docks/sources-dock.hpp"
 #include "docks/stats-dock.hpp"
 #include "docks/transform-dock.hpp"
-#include "docks/transitions-dock.hpp"
-#include "utils/icon.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
 #include <obs-frontend-api.h>
@@ -21,7 +17,6 @@
 #include <QDockWidget>
 #include <QLabel>
 #include <QMainWindow>
-#include <QMap>
 #include <QPointer>
 #include <QTimer>
 #include <util/dstr.h>
@@ -38,8 +33,6 @@ QPointer<PropertiesDock> properties_dock;
 QPointer<FiltersDock> filters_dock;
 QPointer<TransformDock> transform_dock;
 StatsDock *stats_dock = nullptr;
-SourcesDock *sources_dock = nullptr;
-TransitionsDock *transitions_dock = nullptr;
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -502,20 +495,13 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * destroyed docks during scene teardown. */
 		shutdown_native_canvas_tabs();
 		shutdown_main_canvas_context_bar_fix();
-		if (sources_dock) {
-			sources_dock->Shutdown();
-		}
 
 		/* Tear down while the UI is still alive. Registered docks are
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		obs_frontend_remove_dock("AitumStreamSuiteStats");
-		obs_frontend_remove_dock("AitumStreamSuiteSources");
-		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
 		output_dock = nullptr;
 		stats_dock = nullptr;
-		sources_dock = nullptr;
-		transitions_dock = nullptr;
 
 		/* Hidden helpers are children of the main window; delete them
 		 * here so obs_module_unload does not touch dangling pointers. */
@@ -585,18 +571,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			if (dock) {
 				obs_frontend_remove_dock(dock->objectName().toUtf8().constData());
 			}
-		}
-	} else if (event == OBS_FRONTEND_EVENT_TRANSITION_DURATION_CHANGED) {
-		if (transitions_dock) {
-			QMetaObject::invokeMethod(transitions_dock, "TransitionDurationChanged", Qt::QueuedConnection);
-		}
-	} else if (event == OBS_FRONTEND_EVENT_TRANSITION_CHANGED) {
-		if (transitions_dock) {
-			QMetaObject::invokeMethod(transitions_dock, "TransitionChanged", Qt::QueuedConnection);
-		}
-	} else if (event == OBS_FRONTEND_EVENT_TRANSITION_LIST_CHANGED) {
-		if (transitions_dock) {
-			QMetaObject::invokeMethod(transitions_dock, "TransitionListChanged", Qt::QueuedConnection);
 		}
 	}
 }
@@ -751,12 +725,7 @@ bool obs_module_load(void)
 	transform_dock->hide();
 	stats_dock = new StatsDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteStats", obs_module_text("AitumStreamSuiteStats"), stats_dock);
-	/* Scenes live in the native Scenes dock (canvas tabs). No suite Scenes dock. */
-	sources_dock = new SourcesDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteSources", obs_module_text("AitumStreamSuiteSources"), sources_dock);
-	transitions_dock = new TransitionsDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteTransitions", obs_module_text("AitumStreamSuiteTransitions"),
-				    transitions_dock);
+	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs). */
 
 	return true;
 }
@@ -793,15 +762,11 @@ void obs_module_unload()
 	/* Prefer teardown on EXIT. If unload runs without EXIT (e.g. module
 	 * reload), remove registered docks but never delete their widgets —
 	 * obs_frontend_remove_dock already destroys them. */
-	if (output_dock || stats_dock || sources_dock || transitions_dock) {
+	if (output_dock || stats_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		obs_frontend_remove_dock("AitumStreamSuiteStats");
-		obs_frontend_remove_dock("AitumStreamSuiteSources");
-		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
 		output_dock = nullptr;
 		stats_dock = nullptr;
-		sources_dock = nullptr;
-		transitions_dock = nullptr;
 	}
 
 	if (properties_dock) {

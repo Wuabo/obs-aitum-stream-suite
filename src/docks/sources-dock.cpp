@@ -13,8 +13,6 @@
 #include <QVBoxLayout>
 #include <QWidgetAction>
 
-extern SourcesDock *sources_dock;
-
 static void StyleDockToolbar(QToolBar *toolbar)
 {
 	if (!toolbar)
@@ -201,9 +199,6 @@ SourcesDock::~SourcesDock()
 	}
 	obs_weak_source_release(scene);
 	scene = nullptr;
-	if (sources_dock == this) {
-		sources_dock = nullptr;
-	}
 }
 
 obs_sceneitem_t *SourcesDock::GetCurrentSceneItem()

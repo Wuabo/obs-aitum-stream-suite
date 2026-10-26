@@ -57,9 +57,7 @@ class CanvasDock : public QFrame {
 private:
 	friend class CanvasCloneDock;
 	friend class OBSProjector;
-	friend class ScenesDock;
 	friend class SourcesDock;
-	friend class TransitionsDock;
 	std::string canvas_name;
 	SwitchingSplitter *canvas_split = nullptr;
 	SwitchingSplitter *panel_split = nullptr;
@@ -73,7 +71,6 @@ private:
 	gs_vertbuffer_t *circleFill = nullptr;
 
 	obs_scene_t *scene = nullptr;
-	//obs_view_t *view = nullptr;
 	obs_canvas_t *canvas = nullptr;
 
 	bool locked = false;
@@ -123,7 +120,6 @@ private:
 	QWidget *scenesGroup = nullptr;
 	QWidget *transitionsGroup = nullptr;
 	QComboBox *sceneCombo = nullptr;
-	bool hideScenes = true;
 	QString currentSceneName;
 	OBSWeakSource source;
 	std::vector<OBSSource> transitions;
@@ -221,7 +217,6 @@ private:
 	obs_sceneitem_t *GetCurrentSceneItem();
 	int GetTopSelectedSourceItem();
 	void ChangeSceneIndex(bool relative, int offset, int invalidIdx);
-	QListWidget *GetGlobalScenesList();
 	void LoadScenes();
 	void LoadTransitions();
 	void RefreshTransition(obs_source_t *transition);
@@ -363,9 +358,6 @@ public:
 
 	uint32_t GetCanvasWidth() { return canvas_width; };
 	uint32_t GetCanvasHeight() { return canvas_height; };
-
-	void reset_live_state();
-	void reset_build_state();
 
 	void SetPanelVisible(const QString &panel_name, bool visible);
 	QList<obs_source_t *> GetTransitions() const
