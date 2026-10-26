@@ -55,11 +55,14 @@ class CategoryComboBox : public QComboBox {
 public:
 	using QComboBox::QComboBox;
 
+	std::function<void()> onAboutToPopup;
 	bool popupOpen() const { return view() && view()->isVisible(); }
 
 protected:
 	void showPopup() override
 	{
+		if (onAboutToPopup)
+			onAboutToPopup();
 		if (!view() || !screen()) {
 			QComboBox::showPopup();
 			return;
@@ -243,7 +246,7 @@ StreamInfoDock::StreamInfoDock(QWidget *parent) : QFrame(parent)
 	searchTimer->setInterval(350);
 	connect(searchTimer, &QTimer::timeout, this, &StreamInfoDock::SearchCategories);
 	liveLockTimer = new QTimer(this);
-	liveLockTimer->setInterval(1000);
+	liveLockTimer->setInterval(2000);
 	connect(liveLockTimer, &QTimer::timeout, this, &StreamInfoDock::UpdateDisconnectState);
 	BuildUi();
 }
@@ -323,11 +326,13 @@ void StreamInfoDock::BuildUi()
 
 	categorySearch = new QLineEdit(content);
 	categorySearch->setPlaceholderText(Tr("StreamInfoCategorySearch"));
-	categoryCombo = new CategoryComboBox(content);
-	categoryCombo->setIconSize(kCategoryIconSize);
-	categoryCombo->setMaxVisibleItems(8);
-	categoryCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-	categoryCombo->setMinimumContentsLength(18);
+	auto *categories = new CategoryComboBox(content);
+	categoryCombo = categories;
+	categories->setIconSize(kCategoryIconSize);
+	categories->setMaxVisibleItems(8);
+	categories->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	categories->setMinimumContentsLength(18);
+	categories->onAboutToPopup = [this] { PrefetchVisibleCategoryIcons(); };
 	auto *categoryFields = new QWidget(content);
 	auto *categoryLayout = new QVBoxLayout(categoryFields);
 	categoryLayout->setContentsMargins(0, 0, 0, 0);
@@ -424,6 +429,8 @@ void StreamInfoDock::RefreshAvailablePlatforms()
 		categoryCombo->clear();
 		categoryCatalog.clear();
 		categoryIcons.clear();
+		categoryIconRequested.clear();
+		categoryIconQueue.clear();
 		descriptionEdit->clear();
 		tagsEdit->clear();
 		categoryId.clear();
@@ -440,7 +447,16 @@ void StreamInfoDock::RefreshAvailablePlatforms()
 			SetConnected(false);
 	} else {
 		UpdateFieldVisibility();
-		SetConnected(!accessToken.isEmpty());
+		if (!accessToken.isEmpty()) {
+			EnsureToken([this](bool ok) {
+				if (ok || !accessToken.isEmpty())
+					RefreshChannel();
+				else
+					SetConnected(false);
+			});
+		} else {
+			SetConnected(false);
+		}
 	}
 }
 
@@ -622,15 +638,16 @@ void StreamInfoDock::ReloadAccounts()
 		return;
 	LoadPlatform();
 	UpdateFieldVisibility();
-	if (TokenFresh())
-		RefreshChannel();
-	else if (!accessToken.isEmpty())
-		EnsureToken([this](bool ok) {
-			if (ok)
-				RefreshChannel();
-		});
-	else
+	if (accessToken.isEmpty()) {
 		SetConnected(false);
+		return;
+	}
+	EnsureToken([this](bool ok) {
+		if (ok || !accessToken.isEmpty())
+			RefreshChannel();
+		else
+			SetConnected(false);
+	});
 }
 
 void StreamInfoDock::SwitchPlatform(int index)
@@ -644,20 +661,26 @@ void StreamInfoDock::SwitchPlatform(int index)
 	categoryCombo->clear();
 	categoryCatalog.clear();
 	categoryIcons.clear();
+	categoryIconRequested.clear();
+	categoryIconQueue.clear();
 	descriptionEdit->clear();
 	tagsEdit->clear();
 	categoryId.clear();
 	ytBroadcastId.clear();
+	ytScheduledStart.clear();
 	SetResult(QString());
 	LoadPlatform();
 	UpdateFieldVisibility();
-	if (!accessToken.isEmpty())
-		EnsureToken([this](bool ok) {
-			if (ok)
-				RefreshChannel();
-		});
-	else
+	if (accessToken.isEmpty()) {
 		SetConnected(false);
+		return;
+	}
+	EnsureToken([this](bool ok) {
+		if (ok || !accessToken.isEmpty())
+			RefreshChannel();
+		else
+			SetConnected(false);
+	});
 }
 
 void StreamInfoDock::LoadPlatform()
@@ -670,6 +693,8 @@ void StreamInfoDock::LoadPlatform()
 	userId.clear();
 	userName.clear();
 	categoryId.clear();
+	lastTitle.clear();
+	lastTags.clear();
 	if (!current_profile_config)
 		return;
 	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
@@ -683,6 +708,8 @@ void StreamInfoDock::LoadPlatform()
 		userId = QString::fromUtf8(obs_data_get_string(one, "user_id"));
 		userName = QString::fromUtf8(obs_data_get_string(one, "user_name"));
 		categoryId = QString::fromUtf8(obs_data_get_string(one, "category_id"));
+		lastTitle = QString::fromUtf8(obs_data_get_string(one, "last_title"));
+		lastTags = QString::fromUtf8(obs_data_get_string(one, "last_tags"));
 	}
 	obs_data_release(one);
 	obs_data_release(root);
@@ -707,6 +734,10 @@ void StreamInfoDock::SavePlatform()
 	obs_data_set_string(one, "user_id", userId.toUtf8().constData());
 	obs_data_set_string(one, "user_name", userName.toUtf8().constData());
 	obs_data_set_string(one, "category_id", categoryId.toUtf8().constData());
+	if (titleEdit)
+		obs_data_set_string(one, "last_title", titleEdit->text().trimmed().toUtf8().constData());
+	if (tagsEdit)
+		obs_data_set_string(one, "last_tags", tagsEdit->text().trimmed().toUtf8().constData());
 	obs_data_set_obj(root, PlatformKey(platform), one);
 	obs_data_set_obj(current_profile_config, "stream_accounts", root);
 	obs_data_release(one);
@@ -763,9 +794,15 @@ bool StreamInfoDock::IsCurrentPlatformLive() const
 
 void StreamInfoDock::UpdateDisconnectState()
 {
-	connectButton->setEnabled(!accountConnected);
-	applyButton->setEnabled(accountConnected);
-	disconnectButton->setEnabled(accountConnected && !IsCurrentPlatformLive());
+	const bool canConnect = !accountConnected;
+	const bool canApply = accountConnected;
+	const bool canDisconnect = accountConnected && !IsCurrentPlatformLive();
+	if (connectButton->isEnabled() != canConnect)
+		connectButton->setEnabled(canConnect);
+	if (applyButton->isEnabled() != canApply)
+		applyButton->setEnabled(canApply);
+	if (disconnectButton->isEnabled() != canDisconnect)
+		disconnectButton->setEnabled(canDisconnect);
 }
 
 void StreamInfoDock::SetConnected(bool connected)
@@ -1136,6 +1173,7 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	titleEdit->setText(snippet.value("title").toString());
 	descriptionEdit->setPlainText(snippet.value("description").toString());
 	ytScheduledStart = snippet.value("scheduledStartTime").toString();
+	SetResult(QString());
 	const int gen = authGeneration;
 	QUrl videoUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
 	QUrlQuery vq;
@@ -1162,21 +1200,81 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	});
 }
 
+static QJsonObject FirstDataObject(const QByteArray &body)
+{
+	const QJsonDocument doc = QJsonDocument::fromJson(body);
+	if (doc.isArray() && !doc.array().isEmpty())
+		return doc.array().at(0).toObject();
+	const QJsonObject root = doc.object();
+	const QJsonValue data = root.value("data");
+	if (data.isArray() && !data.toArray().isEmpty())
+		return data.toArray().at(0).toObject();
+	if (data.isObject())
+		return data.toObject();
+	return root;
+}
+
+static QString JsonId(const QJsonValue &value)
+{
+	if (value.isDouble())
+		return QString::number(value.toInteger());
+	return value.toString();
+}
+
+static QJsonObject PickYouTubeBroadcast(const QJsonArray &items)
+{
+	auto score = [](const QString &life) {
+		if (life == QLatin1String("live") || life == QLatin1String("liveStarting"))
+			return 5;
+		if (life == QLatin1String("ready") || life == QLatin1String("testing") ||
+		    life == QLatin1String("testStarting"))
+			return 4;
+		if (life == QLatin1String("created"))
+			return 3;
+		return 1;
+	};
+	QJsonObject best;
+	int bestScore = -1;
+	for (const QJsonValue &row : items) {
+		const QJsonObject item = row.toObject();
+		const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
+		const int s = score(life);
+		if (s > bestScore) {
+			bestScore = s;
+			best = item;
+		}
+	}
+	return best;
+}
+
 void StreamInfoDock::LoadYouTubeBroadcast()
 {
 	const int gen = authGeneration;
-	/* broadcastStatus and mine are mutually exclusive in liveBroadcasts.list. */
-	auto requestStatus = [this](const QString &status) {
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
-		QUrlQuery query;
-		query.addQueryItem("part", "snippet,status");
-		query.addQueryItem("broadcastStatus", status);
-		query.addQueryItem("broadcastType", "all");
-		query.addQueryItem("maxResults", "25");
-		url.setQuery(query);
+	auto ytGet = [this](const QUrl &url) {
 		QNetworkRequest req(url);
 		req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
 		return req;
+	};
+	auto loadChannelName = [this, gen, ytGet](std::function<void()> next) {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/channels"));
+		QUrlQuery query;
+		query.addQueryItem("part", "snippet");
+		query.addQueryItem("mine", "true");
+		url.setQuery(query);
+		Http(ytGet(url), {}, "GET", [this, gen, next](int code, const QByteArray &body, const QString &) {
+			if (gen != authGeneration)
+				return;
+			if (code >= 200 && code < 300) {
+				const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				if (!items.isEmpty()) {
+					userName = items.at(0).toObject().value("snippet").toObject().value("title").toString();
+					userId = items.at(0).toObject().value("id").toString();
+					SavePlatform();
+					SetConnected(true);
+				}
+			}
+			next();
+		});
 	};
 	auto finishWithoutBroadcast = [this] {
 		ytBroadcastId.clear();
@@ -1184,99 +1282,258 @@ void StreamInfoDock::LoadYouTubeBroadcast()
 		categorySearch->clear();
 		LoadCategoryCatalog();
 	};
-	Http(requestStatus("active"), {}, "GET", [this, gen, requestStatus, finishWithoutBroadcast](int code, const QByteArray &body,
-													 const QString &) {
-		if (gen != authGeneration)
-			return;
-		if (code >= 200 && code < 300) {
-			const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-			if (!items.isEmpty()) {
-				ApplyYouTubeBroadcast(items.at(0).toObject());
+	auto trySearchLive = [this, gen, ytGet, finishWithoutBroadcast] {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
+		QUrlQuery query;
+		query.addQueryItem("part", "snippet");
+		query.addQueryItem("forMine", "true");
+		query.addQueryItem("type", "video");
+		query.addQueryItem("eventType", "live");
+		query.addQueryItem("maxResults", "5");
+		url.setQuery(query);
+		Http(ytGet(url), {}, "GET", [this, gen, ytGet, finishWithoutBroadcast](int code, const QByteArray &body,
+											const QString &) {
+			if (gen != authGeneration)
+				return;
+			QString videoId;
+			if (code >= 200 && code < 300) {
+				const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				if (!items.isEmpty())
+					videoId = items.at(0).toObject().value("id").toObject().value("videoId").toString();
+			}
+			if (videoId.isEmpty()) {
+				QUrl upcoming(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
+				QUrlQuery uq;
+				uq.addQueryItem("part", "snippet");
+				uq.addQueryItem("forMine", "true");
+				uq.addQueryItem("type", "video");
+				uq.addQueryItem("eventType", "upcoming");
+				uq.addQueryItem("maxResults", "5");
+				upcoming.setQuery(uq);
+				Http(ytGet(upcoming), {}, "GET",
+				     [this, gen, finishWithoutBroadcast](int code2, const QByteArray &body2, const QString &) {
+					     if (gen != authGeneration)
+						     return;
+					     if (code2 >= 200 && code2 < 300) {
+						     const QJsonArray items =
+							     QJsonDocument::fromJson(body2).object().value("items").toArray();
+						     if (!items.isEmpty()) {
+							     QJsonObject fake;
+							     fake.insert("id", items.at(0)
+										       .toObject()
+										       .value("id")
+										       .toObject()
+										       .value("videoId")
+										       .toString());
+							     fake.insert("snippet", items.at(0).toObject().value("snippet"));
+							     ApplyYouTubeBroadcast(fake);
+							     return;
+						     }
+					     }
+					     finishWithoutBroadcast();
+				     });
 				return;
 			}
-		}
-		Http(requestStatus("upcoming"), {}, "GET",
-		     [this, gen, finishWithoutBroadcast](int code2, const QByteArray &body2, const QString &) {
-			     if (gen != authGeneration)
-				     return;
-			     if (code2 < 200 || code2 >= 300) {
-				     SetResult(JsonError(body2));
-				     categorySearch->clear();
-				     LoadCategoryCatalog();
-				     return;
-			     }
-			     const QJsonArray upcoming = QJsonDocument::fromJson(body2).object().value("items").toArray();
-			     if (!upcoming.isEmpty()) {
-				     ApplyYouTubeBroadcast(upcoming.at(0).toObject());
-				     return;
-			     }
-			     finishWithoutBroadcast();
-		     });
+			QJsonObject fake;
+			fake.insert("id", videoId);
+			const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+			fake.insert("snippet", items.at(0).toObject().value("snippet"));
+			ApplyYouTubeBroadcast(fake);
+		});
+	};
+	auto tryMine = [this, gen, ytGet, trySearchLive] {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery query;
+		query.addQueryItem("part", "snippet,status");
+		query.addQueryItem("mine", "true");
+		query.addQueryItem("broadcastType", "all");
+		query.addQueryItem("maxResults", "50");
+		url.setQuery(query);
+		Http(ytGet(url), {}, "GET", [this, gen, trySearchLive](int code, const QByteArray &body, const QString &) {
+			if (gen != authGeneration)
+				return;
+			if (code >= 200 && code < 300) {
+				const QJsonObject best =
+					PickYouTubeBroadcast(QJsonDocument::fromJson(body).object().value("items").toArray());
+				if (!best.isEmpty()) {
+					ApplyYouTubeBroadcast(best);
+					return;
+				}
+			}
+			trySearchLive();
+		});
+	};
+	auto requestStatus = [this, ytGet](const QString &status) {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery query;
+		query.addQueryItem("part", "snippet,status");
+		query.addQueryItem("broadcastStatus", status);
+		query.addQueryItem("broadcastType", "all");
+		query.addQueryItem("maxResults", "25");
+		url.setQuery(query);
+		return ytGet(url);
+	};
+
+	loadChannelName([this, gen, requestStatus, tryMine] {
+		Http(requestStatus("active"), {}, "GET", [this, gen, requestStatus, tryMine](int code, const QByteArray &body,
+											     const QString &) {
+			if (gen != authGeneration)
+				return;
+			if (code >= 200 && code < 300) {
+				const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				if (!items.isEmpty()) {
+					ApplyYouTubeBroadcast(items.at(0).toObject());
+					return;
+				}
+			}
+			Http(requestStatus("upcoming"), {}, "GET", [this, gen, tryMine](int code2, const QByteArray &body2,
+											const QString &) {
+				if (gen != authGeneration)
+					return;
+				if (code2 >= 200 && code2 < 300) {
+					const QJsonArray upcoming =
+						QJsonDocument::fromJson(body2).object().value("items").toArray();
+					if (!upcoming.isEmpty()) {
+						ApplyYouTubeBroadcast(upcoming.at(0).toObject());
+						return;
+					}
+				}
+				tryMine();
+			});
+		});
 	});
+}
+
+static QNetworkRequest KickApiRequest(const QUrl &url, const QString &token)
+{
+	QNetworkRequest req(url);
+	req.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+	req.setRawHeader("Accept", "application/json");
+	return req;
 }
 
 void StreamInfoDock::LoadKickChannel()
 {
 	const int gen = authGeneration;
-	QNetworkRequest userReq(QUrl(QStringLiteral("https://api.kick.com/public/v1/users")));
-	userReq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-	Http(userReq, {}, "GET", [this, gen](int status, const QByteArray &body, const QString &) {
-		if (gen != authGeneration)
-			return;
-		if (status < 200 || status >= 300) {
-			SetResult(JsonError(body));
-			return;
-		}
-		QJsonObject root = QJsonDocument::fromJson(body).object();
-		QJsonObject user = root.value("data").isArray() ? root.value("data").toArray().at(0).toObject()
-								 : root.value("data").toObject();
-		if (user.isEmpty())
-			user = root;
-		userId = QString::number(user.value("user_id").toInt(user.value("id").toInt()));
-		if (userId == "0")
-			userId = user.value("user_id").toString(user.value("id").toString());
-		userName = user.value("name").toString(user.value("username").toString());
-		SavePlatform();
-		SetConnected(true);
+	/* Kick often returns empty title/category while offline. Restore last applied values first. */
+	if (!lastTitle.isEmpty() && titleEdit->text().isEmpty())
+		titleEdit->setText(lastTitle);
+	if (!lastTags.isEmpty() && tagsEdit->text().isEmpty())
+		tagsEdit->setText(lastTags);
 
-		QNetworkRequest channelReq(QUrl(QStringLiteral("https://api.kick.com/public/v1/channels")));
-		channelReq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-		Http(channelReq, {}, "GET", [this, gen](int code, const QByteArray &payload, const QString &) {
-			if (gen != authGeneration)
-				return;
-			if (code < 200 || code >= 300) {
-				LoadCategoryCatalog();
-				return;
-			}
-			QJsonObject channelRoot = QJsonDocument::fromJson(payload).object();
-			QJsonObject channel = channelRoot.value("data").isArray()
-						      ? channelRoot.value("data").toArray().at(0).toObject()
-						      : channelRoot.value("data").toObject();
-			if (channel.isEmpty())
-				channel = channelRoot;
-			const QString title = channel.value("stream_title").toString();
-			if (!title.isEmpty())
-				titleEdit->setText(title);
-			const QJsonObject category = channel.value("category").toObject();
-			categoryId = category.value("id").isDouble() ? QString::number(category.value("id").toInteger())
-								     : category.value("id").toString();
-			categorySearch->clear();
-			if (!categoryId.isEmpty()) {
-				EnsureCategoryInCatalog(categoryId, category.value("name").toString(),
-							category.value("thumbnail").toString());
-			}
-			QStringList tags;
-			for (const QJsonValue &tag : channel.value("stream").toObject().value("custom_tags").toArray())
-				tags.append(tag.toString());
-			if (tags.isEmpty()) {
-				for (const QJsonValue &tag : channel.value("custom_tags").toArray())
-					tags.append(tag.toString());
-			}
-			if (!tags.isEmpty())
-				tagsEdit->setText(tags.join(", "));
-			LoadCategoryCatalog();
-		});
-	});
+	Http(KickApiRequest(QUrl(QStringLiteral("https://api.kick.com/public/v1/users")), accessToken), {}, "GET",
+	     [this, gen](int status, const QByteArray &body, const QString &) {
+		     if (gen != authGeneration)
+			     return;
+		     if (status < 200 || status >= 300) {
+			     SetResult(JsonError(body));
+			     categorySearch->clear();
+			     LoadCategoryCatalog();
+			     return;
+		     }
+		     const QJsonObject user = FirstDataObject(body);
+		     userId = JsonId(user.value("user_id").isUndefined() ? user.value("id") : user.value("user_id"));
+		     userName = user.value("name").toString(user.value("username").toString());
+		     SavePlatform();
+		     SetConnected(true);
+
+		     auto fillFromChannel = [this](const QJsonObject &channel) {
+			     const QString title =
+				     channel.value("stream_title").toString(channel.value("title").toString()).trimmed();
+			     if (!title.isEmpty()) {
+				     titleEdit->setText(title);
+				     lastTitle = title;
+			     }
+			     const QJsonObject category = channel.value("category").toObject();
+			     const QString id = JsonId(category.value("id"));
+			     const QString name = category.value("name").toString().trimmed();
+			     if (!id.isEmpty() && id != QLatin1String("0") && !name.isEmpty()) {
+				     categoryId = id;
+				     EnsureCategoryInCatalog(id, name, category.value("thumbnail").toString());
+			     }
+			     QStringList tags;
+			     for (const QJsonValue &tag : channel.value("stream").toObject().value("custom_tags").toArray())
+				     tags.append(tag.toString());
+			     if (tags.isEmpty()) {
+				     for (const QJsonValue &tag : channel.value("custom_tags").toArray())
+					     tags.append(tag.toString());
+			     }
+			     if (tags.isEmpty()) {
+				     for (const QJsonValue &tag : channel.value("tags").toArray())
+					     tags.append(tag.toString());
+			     }
+			     if (!tags.isEmpty()) {
+				     tagsEdit->setText(tags.join(", "));
+				     lastTags = tagsEdit->text();
+			     }
+		     };
+
+		     auto finishLoad = [this] {
+			     categorySearch->clear();
+			     LoadCategoryCatalog();
+		     };
+
+		     auto loadLivestream = [this, gen, fillFromChannel, finishLoad] {
+			     if (userId.isEmpty()) {
+				     finishLoad();
+				     return;
+			     }
+			     QUrl liveUrl(QStringLiteral("https://api.kick.com/public/v1/users/livestreams"));
+			     QUrlQuery lq;
+			     lq.addQueryItem("user_id", userId);
+			     liveUrl.setQuery(lq);
+			     Http(KickApiRequest(liveUrl, accessToken), {}, "GET",
+				  [this, gen, fillFromChannel, finishLoad](int liveCode, const QByteArray &liveBody,
+									   const QString &) {
+					  if (gen != authGeneration)
+						  return;
+					  if (liveCode >= 200 && liveCode < 300) {
+						  const QJsonObject live = FirstDataObject(liveBody);
+						  if (!live.isEmpty())
+							  fillFromChannel(live);
+					  }
+					  finishLoad();
+				  });
+		     };
+
+		     auto requestChannel = [this, gen, fillFromChannel, loadLivestream](const QUrl &url, bool thenLivestream) {
+			     Http(KickApiRequest(url, accessToken), {}, "GET",
+				  [this, gen, fillFromChannel, loadLivestream, thenLivestream](int code, const QByteArray &payload,
+											      const QString &) {
+					  if (gen != authGeneration)
+						  return;
+					  if (code >= 200 && code < 300)
+						  fillFromChannel(FirstDataObject(payload));
+					  else if (!thenLivestream)
+						  SetResult(JsonError(payload));
+					  if (thenLivestream)
+						  loadLivestream();
+				  });
+		     };
+
+		     /* Prefer authenticated channel (no params), then explicit broadcaster id. */
+		     Http(KickApiRequest(QUrl(QStringLiteral("https://api.kick.com/public/v1/channels")), accessToken), {}, "GET",
+			  [this, gen, fillFromChannel, loadLivestream, requestChannel](int code, const QByteArray &payload,
+										       const QString &) {
+				  if (gen != authGeneration)
+					  return;
+				  if (code >= 200 && code < 300) {
+					  fillFromChannel(FirstDataObject(payload));
+					  loadLivestream();
+					  return;
+				  }
+				  if (!userId.isEmpty()) {
+					  QUrl channelUrl(QStringLiteral("https://api.kick.com/public/v1/channels"));
+					  QUrlQuery cq;
+					  cq.addQueryItem("broadcaster_user_id", userId);
+					  channelUrl.setQuery(cq);
+					  requestChannel(channelUrl, true);
+					  return;
+				  }
+				  SetResult(JsonError(payload));
+				  loadLivestream();
+			  });
+	     });
 }
 
 static QString NormalizeBoxArt(QString url)
@@ -1302,26 +1559,74 @@ void StreamInfoDock::EnsureCategoryInCatalog(const QString &id, const QString &n
 	categoryCatalog.prepend({id, name, boxArt});
 }
 
+void StreamInfoDock::PumpCategoryIconQueue()
+{
+	static const int kMaxInFlight = 2;
+	while (categoryIconInFlight < kMaxInFlight && !categoryIconQueue.isEmpty()) {
+		const QString id = categoryIconQueue.takeFirst();
+		QString boxArt;
+		for (const CategoryEntry &entry : categoryCatalog) {
+			if (entry.id == id) {
+				boxArt = entry.boxArt;
+				break;
+			}
+		}
+		if (id.isEmpty() || boxArt.isEmpty() || categoryIcons.contains(id))
+			continue;
+		const QUrl url(NormalizeBoxArt(boxArt));
+		if (!url.isValid())
+			continue;
+		categoryIconInFlight++;
+		Http(QNetworkRequest(url), {}, "GET", [this, id](int status, const QByteArray &body, const QString &) {
+			categoryIconInFlight = qMax(0, categoryIconInFlight - 1);
+			if (status >= 200 && status < 300 && !body.isEmpty()) {
+				QPixmap pixmap;
+				if (pixmap.loadFromData(body)) {
+					const QIcon icon(
+						pixmap.scaled(kCategoryIconSize, Qt::KeepAspectRatio, Qt::FastTransformation));
+					categoryIcons.insert(id, icon);
+					for (int i = 0; i < categoryCombo->count(); ++i) {
+						if (categoryCombo->itemData(i).toString() == id) {
+							categoryCombo->setItemIcon(i, icon);
+							break;
+						}
+					}
+				}
+			}
+			PumpCategoryIconQueue();
+		});
+	}
+}
+
 void StreamInfoDock::FetchCategoryIcon(const QString &id, const QString &boxArt)
 {
-	if (id.isEmpty() || boxArt.isEmpty() || categoryIcons.contains(id))
+	if (id.isEmpty() || boxArt.isEmpty() || categoryIcons.contains(id) || categoryIconRequested.contains(id))
 		return;
-	const QUrl url(NormalizeBoxArt(boxArt));
-	if (!url.isValid())
-		return;
-	Http(QNetworkRequest(url), {}, "GET", [this, id](int status, const QByteArray &body, const QString &) {
-		if (status < 200 || status >= 300 || body.isEmpty())
-			return;
-		QPixmap pixmap;
-		if (!pixmap.loadFromData(body))
-			return;
-		const QIcon icon(pixmap.scaled(kCategoryIconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-		categoryIcons.insert(id, icon);
-		for (int i = 0; i < categoryCombo->count(); ++i) {
-			if (categoryCombo->itemData(i).toString() == id)
-				categoryCombo->setItemIcon(i, icon);
+	categoryIconRequested.insert(id);
+	categoryIconQueue.append(id);
+	PumpCategoryIconQueue();
+}
+
+void StreamInfoDock::PrefetchVisibleCategoryIcons()
+{
+	const int limit = qMin(categoryCombo->count(), qMax(8, categoryCombo->maxVisibleItems() + 4));
+	int queued = 0;
+	for (int i = 0; i < categoryCombo->count() && queued < limit; ++i) {
+		const QString id = categoryCombo->itemData(i).toString();
+		if (id.isEmpty() || categoryIcons.contains(id) || categoryIconRequested.contains(id))
+			continue;
+		QString boxArt;
+		for (const CategoryEntry &entry : categoryCatalog) {
+			if (entry.id == id) {
+				boxArt = entry.boxArt;
+				break;
+			}
 		}
-	});
+		if (boxArt.isEmpty())
+			continue;
+		FetchCategoryIcon(id, boxArt);
+		queued++;
+	}
 }
 
 void StreamInfoDock::PopulateCategoryCombo()
@@ -1330,41 +1635,61 @@ void StreamInfoDock::PopulateCategoryCombo()
 	if (combo && combo->popupOpen())
 		return;
 
+	static const int kMaxComboItems = 80;
 	const QString filter = categorySearch->text().trimmed();
 	const QString selected = categoryId;
+	categoryCombo->setUpdatesEnabled(false);
 	categoryCombo->blockSignals(true);
 	categoryCombo->clear();
 	int selectIndex = -1;
 	for (const CategoryEntry &entry : categoryCatalog) {
+		if (categoryCombo->count() >= kMaxComboItems)
+			break;
 		if (!filter.isEmpty() && !entry.name.contains(filter, Qt::CaseInsensitive))
 			continue;
 		const int index = categoryCombo->count();
 		categoryCombo->addItem(categoryIcons.value(entry.id), entry.name, entry.id);
 		if (entry.id == selected)
 			selectIndex = index;
-		FetchCategoryIcon(entry.id, entry.boxArt);
 	}
 	if (selectIndex >= 0)
 		categoryCombo->setCurrentIndex(selectIndex);
-	else if (!selected.isEmpty() && filter.isEmpty()) {
+	else if (!selected.isEmpty()) {
 		for (const CategoryEntry &entry : categoryCatalog) {
 			if (entry.id != selected)
 				continue;
-			categoryCombo->insertItem(0, categoryIcons.value(entry.id), entry.name, entry.id);
-			categoryCombo->setCurrentIndex(0);
-			FetchCategoryIcon(entry.id, entry.boxArt);
+			if (selectIndex < 0) {
+				categoryCombo->insertItem(0, categoryIcons.value(entry.id), entry.name, entry.id);
+				categoryCombo->setCurrentIndex(0);
+			}
 			break;
 		}
 	}
 	categoryCombo->blockSignals(false);
+	categoryCombo->setUpdatesEnabled(true);
 	if (categoryCombo->currentIndex() >= 0)
 		categoryId = categoryCombo->currentData().toString();
+	/* Only fetch the selected cover now; the rest load when the popup opens. */
+	for (const CategoryEntry &entry : categoryCatalog) {
+		if (entry.id == categoryId) {
+			FetchCategoryIcon(entry.id, entry.boxArt);
+			break;
+		}
+	}
 }
 
 void StreamInfoDock::AppendCategoriesFromJson(const QJsonArray &rows, const char *idKey, const char *nameKey,
 					      const char *artKey)
 {
+	static const int kMaxCatalog = 200;
+	QSet<QString> known;
+	known.reserve(categoryCatalog.size() + rows.size());
+	for (const CategoryEntry &entry : categoryCatalog)
+		known.insert(entry.id);
+
 	for (const QJsonValue &row : rows) {
+		if (categoryCatalog.size() >= kMaxCatalog)
+			break;
 		const QJsonObject obj = row.toObject();
 		const QJsonValue idValue = obj.value(QLatin1String(idKey));
 		const QString id = idValue.isDouble() ? QString::number(idValue.toInteger()) : idValue.toString();
@@ -1381,9 +1706,10 @@ void StreamInfoDock::AppendCategoriesFromJson(const QJsonArray &rows, const char
 			if (assignable.isBool() && !assignable.toBool())
 				continue;
 		}
-		if (id.isEmpty() || name.isEmpty())
+		if (id.isEmpty() || name.isEmpty() || known.contains(id))
 			continue;
-		EnsureCategoryInCatalog(id, name, art);
+		known.insert(id);
+		categoryCatalog.append({id, name, art});
 	}
 }
 
@@ -1407,10 +1733,11 @@ void StreamInfoDock::LoadCategoryCatalog()
 		auto finish = [this, keepId, keepName, keepArt] {
 			if (!keepId.isEmpty())
 				EnsureCategoryInCatalog(keepId, keepName, keepArt);
-			PopulateCategoryCombo();
+			/* Defer so title/tags paint before the combo rebuild. */
+			QTimer::singleShot(0, this, [this] { PopulateCategoryCombo(); });
 		};
 		if (platform == Twitch) {
-			auto req = StreamInfoDock_Helix("https://api.twitch.tv/helix/games/top?first=100", clientId, accessToken);
+			auto req = StreamInfoDock_Helix("https://api.twitch.tv/helix/games/top?first=50", clientId, accessToken);
 			Http(req, {}, "GET", [this, keepId, keepName, keepArt, finish](int status, const QByteArray &body,
 										       const QString &) {
 				if (status < 200 || status >= 300)
@@ -1497,42 +1824,28 @@ void StreamInfoDock::LoadCategoryCatalog()
 			});
 			return;
 		}
-		QUrl url(QStringLiteral("https://api.kick.com/public/v2/categories"));
+		/* Small seed only — full Kick catalogs freeze the dock; search loads more on demand. */
+		categoryCatalog.clear();
+		if (!keepId.isEmpty())
+			EnsureCategoryInCatalog(keepId, keepName, keepArt);
+		QUrl url(QStringLiteral("https://api.kick.com/public/v1/categories"));
 		QUrlQuery query;
-		query.addQueryItem("limit", "1000");
+		query.addQueryItem("q", QStringLiteral("a"));
+		query.addQueryItem("page", QStringLiteral("1"));
 		url.setQuery(query);
-		QNetworkRequest req(url);
-		req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-		Http(req, {}, "GET", [this, keepId, keepName, keepArt, finish](int status, const QByteArray &body, const QString &) {
-			if (status < 200 || status >= 300) {
-				/* Fallback to v1 search seed if v2 listing is unavailable. */
-				QUrl fallback(QStringLiteral("https://api.kick.com/public/v1/categories"));
-				QUrlQuery fq;
-				fq.addQueryItem("q", QStringLiteral("a"));
-				fq.addQueryItem("page", QStringLiteral("1"));
-				fallback.setQuery(fq);
-				QNetworkRequest freq(fallback);
-				freq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-				Http(freq, {}, "GET", [this, finish](int code, const QByteArray &payload, const QString &) {
-					if (code < 200 || code >= 300)
-						return;
-					categoryCatalog.clear();
-					const QJsonDocument doc = QJsonDocument::fromJson(payload);
-					const QJsonArray rows = doc.object().value("data").isArray()
-									? doc.object().value("data").toArray()
-									: doc.array();
-					AppendCategoriesFromJson(rows, "id", "name", "thumbnail");
-					finish();
-				});
-				return;
-			}
-			categoryCatalog.clear();
-			if (!keepId.isEmpty())
-				EnsureCategoryInCatalog(keepId, keepName, keepArt);
-			AppendCategoriesFromJson(QJsonDocument::fromJson(body).object().value("data").toArray(), "id", "name",
-						 "thumbnail");
-			finish();
-		});
+		Http(KickApiRequest(url, accessToken), {}, "GET",
+		     [this, finish](int status, const QByteArray &body, const QString &) {
+			     if (status >= 200 && status < 300) {
+				     const QJsonDocument doc = QJsonDocument::fromJson(body);
+				     const QJsonArray rows = doc.object().value("data").isArray()
+								     ? doc.object().value("data").toArray()
+								     : doc.array();
+				     AppendCategoriesFromJson(rows, "id", "name", "thumbnail");
+			     }
+			     if (categoryCatalog.isEmpty())
+				     SetResult(Tr("StreamInfoKickCategoriesFailed"));
+			     finish();
+		     });
 	});
 }
 
@@ -1702,46 +2015,59 @@ void StreamInfoDock::ApplyYouTube()
 
 void StreamInfoDock::ApplyKick()
 {
-	QJsonObject body;
-	body.insert("stream_title", titleEdit->text());
-	if (!categoryId.isEmpty())
-		body.insert("category_id", categoryId.toInt());
+	const QString title = titleEdit->text().trimmed();
+	const qint64 category = categoryId.toLongLong();
 	const QStringList tags = Tags();
-	if (!tags.isEmpty()) {
-		QJsonArray arr;
-		for (const QString &tag : tags)
-			arr.append(tag);
-		body.insert("custom_tags", arr);
+	auto buildBody = [&](bool includeTags) {
+		QJsonObject body;
+		/* Kick rejects empty stream_title (minLength 1). Omit when blank. */
+		if (!title.isEmpty())
+			body.insert("stream_title", title);
+		if (category > 0)
+			body.insert("category_id", category);
+		if (includeTags && !tags.isEmpty()) {
+			QJsonArray arr;
+			for (const QString &tag : tags)
+				arr.append(tag);
+			body.insert("custom_tags", arr);
+		}
+		return body;
+	};
+	QJsonObject body = buildBody(true);
+	if (body.isEmpty()) {
+		SetResult(Tr("StreamInfoKickEmpty"));
+		return;
 	}
-	QNetworkRequest req(QUrl(QStringLiteral("https://api.kick.com/public/v1/channels")));
-	req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-	Http(req, QJsonDocument(body).toJson(QJsonDocument::Compact), "PATCH",
-	     [this](int status, const QByteArray &payload, const QString &) {
-		     if (status >= 200 && status < 300) {
-			     SetResult(Tr("StreamInfoApplied"));
-			     return;
-		     }
-		     /* Kick's public API has rejected custom_tags. Retry title + category. */
-		     if (!Tags().isEmpty()) {
-			     QJsonObject retry;
-			     retry.insert("stream_title", titleEdit->text());
-			     if (!categoryId.isEmpty())
-				     retry.insert("category_id", categoryId.toInt());
-			     QNetworkRequest req2(QUrl(QStringLiteral("https://api.kick.com/public/v1/channels")));
-			     req2.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-			     req2.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-			     Http(req2, QJsonDocument(retry).toJson(QJsonDocument::Compact), "PATCH",
-				  [this](int status2, const QByteArray &body2, const QString &) {
-					  if (status2 >= 200 && status2 < 300)
-						  SetResult(Tr("StreamInfoAppliedNoTags"));
-					  else
-						  SetResult(JsonError(body2));
-				  });
-			     return;
-		     }
-		     SetResult(JsonError(payload));
-	     });
+	auto sendPatch = [this](const QJsonObject &payloadBody,
+				std::function<void(int, const QByteArray &)> done) {
+		QNetworkRequest req(QUrl(QStringLiteral("https://api.kick.com/public/v1/channels")));
+		req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+		req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+		Http(req, QJsonDocument(payloadBody).toJson(QJsonDocument::Compact), "PATCH",
+		     [done](int status, const QByteArray &payload, const QString &) { done(status, payload); });
+	};
+	sendPatch(body, [this, buildBody, sendPatch, tags](int status, const QByteArray &payload) {
+		if (status >= 200 && status < 300) {
+			SetResult(Tr("StreamInfoApplied"));
+			RefreshChannel();
+			return;
+		}
+		if (!tags.isEmpty()) {
+			const QJsonObject retry = buildBody(false);
+			if (!retry.isEmpty()) {
+				sendPatch(retry, [this](int status2, const QByteArray &body2) {
+					if (status2 >= 200 && status2 < 300) {
+						SetResult(Tr("StreamInfoAppliedNoTags"));
+						RefreshChannel();
+					} else {
+						SetResult(JsonError(body2));
+					}
+				});
+				return;
+			}
+		}
+		SetResult(JsonError(payload));
+	});
 }
 
 void StreamInfoDock::DisconnectAccount()
@@ -1755,6 +2081,8 @@ void StreamInfoDock::DisconnectAccount()
 	userName.clear();
 	categoryCatalog.clear();
 	categoryIcons.clear();
+	categoryIconRequested.clear();
+	categoryIconQueue.clear();
 	categoryCombo->clear();
 	categorySearch->clear();
 	SavePlatform();

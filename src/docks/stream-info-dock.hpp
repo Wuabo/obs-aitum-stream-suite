@@ -4,6 +4,8 @@
 #include <QFrame>
 #include <QHash>
 #include <QIcon>
+#include <QSet>
+#include <QStringList>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkRequest>
@@ -56,6 +58,8 @@ private:
 	QString userId;
 	QString userName;
 	QString categoryId;
+	QString lastTitle;
+	QString lastTags;
 	QString ytBroadcastId;
 	QString ytScheduledStart;
 	QString ytCategoryId;
@@ -83,6 +87,9 @@ private:
 	};
 	QVector<CategoryEntry> categoryCatalog;
 	QHash<QString, QIcon> categoryIcons;
+	QSet<QString> categoryIconRequested;
+	QStringList categoryIconQueue;
+	int categoryIconInFlight = 0;
 
 	static const char *PlatformKey(Platform platform);
 	void BuildUi();
@@ -113,7 +120,9 @@ private:
 	void AppendCategoriesFromJson(const QJsonArray &rows, const char *idKey, const char *nameKey, const char *artKey);
 	void EnsureCategoryInCatalog(const QString &id, const QString &name, const QString &boxArt = QString());
 	void PopulateCategoryCombo();
+	void PrefetchVisibleCategoryIcons();
 	void FetchCategoryIcon(const QString &id, const QString &boxArt);
+	void PumpCategoryIconQueue();
 	void SearchCategories();
 	void Apply();
 	void ApplyTwitch();
