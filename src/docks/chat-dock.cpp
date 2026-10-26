@@ -29,6 +29,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QHideEvent>
+#include <QResizeEvent>
 #include <QSet>
 #include <QShowEvent>
 #include <QSizePolicy>
@@ -40,6 +41,115 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+
+namespace {
+
+/* Simple left-to-right wrapping row for username + text + animated emote labels. */
+class ChatFlowBody final : public QWidget {
+public:
+	explicit ChatFlowBody(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		setObjectName(QStringLiteral("chatMsgBody"));
+		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+	}
+
+	QLabel *addHtml(const QString &html)
+	{
+		auto *lab = new QLabel(this);
+		lab->setTextFormat(Qt::RichText);
+		lab->setTextInteractionFlags(Qt::TextBrowserInteraction);
+		lab->setOpenExternalLinks(true);
+		lab->setWordWrap(false);
+		lab->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
+		lab->setText(html);
+		lab->adjustSize();
+		segs.append({lab, lab->sizeHint().width(), lab->sizeHint().height()});
+		return lab;
+	}
+
+	QLabel *addEmoteSlot(int size = 18)
+	{
+		auto *lab = new QLabel(this);
+		lab->setFixedSize(size, size);
+		lab->setScaledContents(true);
+		lab->setAlignment(Qt::AlignCenter);
+		lab->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
+		segs.append({lab, size, size});
+		return lab;
+	}
+
+	bool hasHeightForWidth() const override { return true; }
+
+	int heightForWidth(int w) const override
+	{
+		return layoutHeight(qMax(40, w));
+	}
+
+	QSize sizeHint() const override
+	{
+		const int w = width() > 0 ? width() : 200;
+		return QSize(w, layoutHeight(w));
+	}
+
+	QSize minimumSizeHint() const override { return QSize(40, 16); }
+
+protected:
+	void resizeEvent(QResizeEvent *e) override
+	{
+		QWidget::resizeEvent(e);
+		applyLayout(width());
+	}
+
+private:
+	struct Seg {
+		QWidget *w = nullptr;
+		int wHint = 0;
+		int hHint = 0;
+	};
+	QVector<Seg> segs;
+
+	int layoutHeight(int w) const
+	{
+		int x = 0;
+		int y = 0;
+		int rowH = 0;
+		for (const Seg &s : segs) {
+			const int sw = s.wHint;
+			const int sh = s.hHint;
+			if (x > 0 && x + sw > w) {
+				x = 0;
+				y += rowH + 2;
+				rowH = 0;
+			}
+			x += sw + 2;
+			rowH = qMax(rowH, sh);
+		}
+		return qMax(16, y + rowH);
+	}
+
+	void applyLayout(int w)
+	{
+		int x = 0;
+		int y = 0;
+		int rowH = 0;
+		for (const Seg &s : segs) {
+			if (!s.w)
+				continue;
+			const int sw = s.wHint;
+			const int sh = s.hHint;
+			if (x > 0 && x + sw > w) {
+				x = 0;
+				y += rowH + 2;
+				rowH = 0;
+			}
+			s.w->setGeometry(x, y, sw, sh);
+			x += sw + 2;
+			rowH = qMax(rowH, sh);
+		}
+	}
+};
+
+} // namespace
 #include <util/base.h>
 
 #include <curl/curl.h>
@@ -1136,6 +1246,8 @@ void ChatDock::ConnectTwitchIrc()
 			     accounts[Twitch].userId = user.value("id").toString();
 			     accounts[Twitch].login = twitchLogin;
 			     accounts[Twitch].userName = user.value("display_name").toString(twitchLogin);
+			     /* Prefetch badge CDN URLs before chat traffic so we never fall back to letter pills. */
+			     FetchTwitchBadgeSets();
 
 			     const QByteArray token = accounts[Twitch].accessToken.toUtf8();
 			     const QByteArray nick = twitchLogin.toUtf8();
@@ -1305,6 +1417,7 @@ void ChatDock::HandleTwitchLine(const QString &line)
 	msg.user = excl > 0 ? rest.left(excl).section(QLatin1Char(':'), -1) : QStringLiteral("twitch");
 	msg.color = QStringLiteral("#BF94FF");
 	QString badgesTag;
+	QString emotesTag;
 	for (const QString &part : tags.split(QLatin1Char(';'))) {
 		const QString key = part.section(QLatin1Char('='), 0, 0);
 		const QString val = part.section(QLatin1Char('='), 1);
@@ -1316,8 +1429,11 @@ void ChatDock::HandleTwitchLine(const QString &line)
 			msg.id = val;
 		else if (key == QLatin1String("badges"))
 			badgesTag = val;
+		else if (key == QLatin1String("emotes"))
+			emotesTag = val;
 	}
 	msg.badges = TwitchBadgesFromTags(badgesTag);
+	msg.emotes = TwitchEmotesFromTag(emotesTag);
 	if (msg.id.isEmpty())
 		msg.id = QStringLiteral("tw-%1-%2").arg(msg.ts).arg(msg.user);
 	AppendMessage(msg);
@@ -2177,14 +2293,19 @@ void ChatDock::IngestTwitchBadgeSets(const QJsonArray &sets)
 {
 	for (const QJsonValue &row : sets) {
 		const QJsonObject set = row.toObject();
-		const QString setId = set.value("set_id").toString();
-		for (const QJsonValue &ver : set.value("versions").toArray()) {
+		const QString setId = set.value(QStringLiteral("set_id")).toString();
+		for (const QJsonValue &ver : set.value(QStringLiteral("versions")).toArray()) {
 			const QJsonObject v = ver.toObject();
-			const QString version = v.value("id").toString();
-			const QString url = v.value("image_url_1x").toString(v.value("image_url_2x").toString());
+			const QString version = v.value(QStringLiteral("id")).toString();
+			/* Prefer 2x — sharper when scaled into the 14px badge slot. */
+			const QString url = v.value(QStringLiteral("image_url_2x"))
+						   .toString(v.value(QStringLiteral("image_url_1x")).toString());
 			if (setId.isEmpty() || version.isEmpty() || url.isEmpty())
 				continue;
-			twitchBadgeUrls.insert(setId + QLatin1Char('/') + version, url);
+			const QString key = setId + QLatin1Char('/') + version;
+			twitchBadgeUrls.insert(key, url);
+			const QString title = v.value(QStringLiteral("title")).toString(setId);
+			twitchBadgeTitles.insert(key, title);
 		}
 	}
 }
@@ -2201,15 +2322,173 @@ QVector<ChatDock::ChatBadge> ChatDock::TwitchBadgesFromTags(const QString &badge
 		const QString version = part.section(QLatin1Char('/'), 1, 1);
 		ChatBadge badge;
 		badge.key = setId + QLatin1Char('/') + version;
-		badge.label = setId;
+		badge.label = twitchBadgeTitles.value(badge.key, setId);
 		badge.url = twitchBadgeUrls.value(badge.key);
 		if (badge.url.isEmpty())
 			badge.url = twitchBadgeUrls.value(setId + QStringLiteral("/1"));
 		if (badge.url.isEmpty())
 			badge.url = twitchBadgeUrls.value(setId + QStringLiteral("/0"));
+		if (badge.label == setId) {
+			const QString altKey = badge.url.isEmpty() ? QString() : badge.key;
+			Q_UNUSED(altKey);
+			if (twitchBadgeTitles.contains(setId + QStringLiteral("/1")))
+				badge.label = twitchBadgeTitles.value(setId + QStringLiteral("/1"));
+			else if (twitchBadgeTitles.contains(setId + QStringLiteral("/0")))
+				badge.label = twitchBadgeTitles.value(setId + QStringLiteral("/0"));
+		}
+		/* Skip badges with no CDN URL yet — never invent letter pills (that was the Kick "B"). */
+		if (badge.url.isEmpty())
+			continue;
 		out.append(badge);
 	}
 	return out;
+}
+
+QVector<ChatDock::ChatEmoteSpan> ChatDock::TwitchEmotesFromTag(const QString &emotesTag)
+{
+	QVector<ChatEmoteSpan> out;
+	if (emotesTag.isEmpty())
+		return out;
+	/* Format: id:start-end,start-end/id2:start-end */
+	for (const QString &group : emotesTag.split(QLatin1Char('/'))) {
+		if (group.isEmpty())
+			continue;
+		const int colon = group.indexOf(QLatin1Char(':'));
+		if (colon <= 0)
+			continue;
+		const QString id = group.left(colon);
+		const QString ranges = group.mid(colon + 1);
+		for (const QString &range : ranges.split(QLatin1Char(','))) {
+			const int dash = range.indexOf(QLatin1Char('-'));
+			if (dash < 0)
+				continue;
+			bool okS = false;
+			bool okE = false;
+			const int start = range.left(dash).toInt(&okS);
+			const int end = range.mid(dash + 1).toInt(&okE);
+			if (!okS || !okE || start < 0 || end < start)
+				continue;
+			ChatEmoteSpan span;
+			span.id = id;
+			span.start = start;
+			span.end = end;
+			out.append(span);
+		}
+	}
+	std::sort(out.begin(), out.end(),
+		  [](const ChatEmoteSpan &a, const ChatEmoteSpan &b) { return a.start < b.start; });
+	return out;
+}
+
+QString ChatDock::TwitchEmoteImageUrl(const QString &emoteId)
+{
+	/* "default" returns animated GIF when available, otherwise static PNG. */
+	return QStringLiteral("https://static-cdn.jtvnw.net/emoticons/v2/%1/default/dark/1.0").arg(emoteId);
+}
+
+QString ChatDock::FormatTwitchContentHtml(const QString &raw, const QVector<ChatEmoteSpan> &emotes) const
+{
+	if (emotes.isEmpty())
+		return Linkify(EscapeHtml(raw));
+	QString out;
+	int last = 0;
+	for (const ChatEmoteSpan &span : emotes) {
+		if (span.start < last || span.end >= raw.size() || span.start > span.end)
+			continue;
+		if (span.start > last)
+			out += Linkify(EscapeHtml(raw.mid(last, span.start - last)));
+		const QString cacheKey = QStringLiteral("twitch-emote:%1").arg(span.id);
+		const QString name = raw.mid(span.start, span.end - span.start + 1);
+		if (badgePixmaps.contains(cacheKey)) {
+			out += QStringLiteral("<img src='%1' height='18' style='vertical-align:middle;' />")
+				       .arg(PixmapDataUri(badgePixmaps.value(cacheKey)));
+		} else {
+			out += QStringLiteral("<span style='color:#9a9a9a;'>:%1:</span>").arg(EscapeHtml(name));
+		}
+		last = span.end + 1;
+	}
+	if (last < raw.size())
+		out += Linkify(EscapeHtml(raw.mid(last)));
+	return out;
+}
+
+void ChatDock::RefreshTwitchMessageLabel(QLabel *label)
+{
+	if (!label)
+		return;
+	const QString raw = label->property("twitchRawText").toString();
+	const QString prefix = label->property("twitchPrefixHtml").toString();
+	if (raw.isEmpty())
+		return;
+	const QVector<ChatEmoteSpan> spans = TwitchEmotesFromTag(label->property("twitchEmotesTag").toString());
+	label->setText(prefix + FormatTwitchContentHtml(raw, spans));
+	if (auto *row = qobject_cast<QWidget *>(label->parent())) {
+		for (int i = 0; messageList && i < messageList->count(); ++i) {
+			QListWidgetItem *it = messageList->item(i);
+			if (messageList->itemWidget(it) == row) {
+				LayoutMessageRow(row, it, messageList->viewport()->width());
+				break;
+			}
+		}
+	}
+}
+
+void ChatDock::PrefetchTwitchEmotes(const QVector<ChatEmoteSpan> &emotes, QLabel *label)
+{
+	QSet<QString> ids;
+	for (const ChatEmoteSpan &span : emotes)
+		ids.insert(span.id);
+	if (ids.isEmpty())
+		return;
+
+	QPointer<QLabel> alive(label);
+	for (const QString &id : ids) {
+		const QString cacheKey = QStringLiteral("twitch-emote:%1").arg(id);
+		if (badgePixmaps.contains(cacheKey) || badgeFetchPending.contains(cacheKey))
+			continue;
+		badgeFetchPending.insert(cacheKey);
+		const QString url = TwitchEmoteImageUrl(id);
+		Http(url,
+		     {{QByteArrayLiteral("User-Agent"),
+		       QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+					 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")}},
+		     {}, "GET", [this, cacheKey, alive](int status, const QByteArray &body, const QString &) {
+			     badgeFetchPending.remove(cacheKey);
+			     if (status < 200 || status >= 300 || body.isEmpty())
+				     return;
+			     badgeRawBytes.insert(cacheKey, body);
+			     QPixmap pix;
+			     if (!pix.loadFromData(body))
+				     return;
+			     badgePixmaps.insert(cacheKey,
+						 pix.scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+			     if (alive)
+				     RefreshTwitchMessageLabel(alive);
+		     });
+	}
+}
+
+QWidget *ChatDock::BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent)
+{
+	auto *flow = new ChatFlowBody(parent);
+	flow->addHtml(prefixHtml);
+
+	int last = 0;
+	const QString &raw = msg.text;
+	for (const ChatEmoteSpan &span : msg.emotes) {
+		if (span.start < last || span.end >= raw.size() || span.start > span.end)
+			continue;
+		if (span.start > last)
+			flow->addHtml(Linkify(EscapeHtml(raw.mid(last, span.start - last))));
+		QLabel *slot = flow->addEmoteSlot(18);
+		slot->setToolTip(raw.mid(span.start, span.end - span.start + 1));
+		const QString cacheKey = QStringLiteral("twitch-emote:%1").arg(span.id);
+		FetchImageToLabel(TwitchEmoteImageUrl(span.id), slot, 18, cacheKey);
+		last = span.end + 1;
+	}
+	if (last < raw.size())
+		flow->addHtml(Linkify(EscapeHtml(raw.mid(last))));
+	return flow;
 }
 
 QString ChatDock::KickRoleBadgeKey(const QString &type, int count)
@@ -2571,82 +2850,105 @@ void ChatDock::ApplyBadgeToLabel(const ChatBadge &badge, QLabel *target)
 	FetchBadgePixmap(badge.url, target);
 }
 
-void ChatDock::FetchBadgePixmap(const QString &url, QLabel *target)
+void ChatDock::ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int size)
 {
-	if (!target || url.isEmpty())
+	if (!label || body.isEmpty() || size <= 0)
 		return;
-
-	auto applyBytes = [](QLabel *label, const QByteArray &body) {
-		if (!label || body.isEmpty())
-			return;
-		const bool animated = body.startsWith("GIF8") || body.startsWith("GIF87") || body.startsWith("GIF89");
-		if (animated) {
-			auto *buf = new QBuffer(label);
-			buf->setData(body);
-			if (!buf->open(QIODevice::ReadOnly)) {
-				delete buf;
-				return;
-			}
-			auto *movie = new QMovie(buf, QByteArrayLiteral("GIF"), label);
-			movie->setCacheMode(QMovie::CacheAll);
-			movie->setScaledSize(QSize(14, 14));
-			if (!movie->isValid()) {
-				delete movie;
-				QPixmap pix;
-				if (pix.loadFromData(body))
-					label->setPixmap(
-						pix.scaled(14, 14, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-				return;
-			}
-			label->setPixmap(QPixmap());
-			label->setMovie(movie);
-			movie->start();
+	const bool animated = body.startsWith("GIF8") || body.startsWith("GIF87") || body.startsWith("GIF89");
+	if (animated) {
+		auto *buf = new QBuffer(label);
+		buf->setData(body);
+		if (!buf->open(QIODevice::ReadOnly)) {
+			delete buf;
 			return;
 		}
-		QPixmap pix;
-		if (!pix.loadFromData(body))
+		auto *movie = new QMovie(buf, QByteArrayLiteral("GIF"), label);
+		movie->setCacheMode(QMovie::CacheAll);
+		movie->setScaledSize(QSize(size, size));
+		if (!movie->isValid()) {
+			delete movie;
+			QPixmap pix;
+			if (pix.loadFromData(body))
+				label->setPixmap(pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 			return;
-		label->setMovie(nullptr);
-		label->setPixmap(pix.scaled(14, 14, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-	};
+		}
+		label->setPixmap(QPixmap());
+		label->setMovie(movie);
+		movie->start();
+		return;
+	}
+	QPixmap pix;
+	if (!pix.loadFromData(body))
+		return;
+	label->setMovie(nullptr);
+	label->setPixmap(pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
 
+void ChatDock::FetchImageToLabel(const QString &url, QLabel *target, int size, const QString &cacheKey)
+{
+	if (!target || url.isEmpty() || size <= 0)
+		return;
+	const QString key = cacheKey.isEmpty() ? url : cacheKey;
+
+	if (badgeRawBytes.contains(key)) {
+		ApplyImageDataToLabel(target, badgeRawBytes.value(key), size);
+		return;
+	}
 	if (badgeRawBytes.contains(url)) {
-		applyBytes(target, badgeRawBytes.value(url));
+		ApplyImageDataToLabel(target, badgeRawBytes.value(url), size);
+		return;
+	}
+	if (badgePixmaps.contains(key)) {
+		target->setMovie(nullptr);
+		target->setPixmap(badgePixmaps.value(key));
 		return;
 	}
 	if (badgePixmaps.contains(url)) {
 		target->setMovie(nullptr);
-		target->setPixmap(badgePixmaps.value(url));
+		target->setPixmap(badgePixmaps.value(url).scaled(size, size, Qt::KeepAspectRatio,
+								 Qt::SmoothTransformation));
 		return;
 	}
 
-	badgeWaiters[url].append(QPointer<QLabel>(target));
-	if (badgeFetchPending.contains(url))
+	badgeWaiters[key].append(QPointer<QLabel>(target));
+	if (badgeFetchPending.contains(key))
 		return;
-	badgeFetchPending.insert(url);
+	badgeFetchPending.insert(key);
 
+	const QByteArray referer = url.contains(QLatin1String("kick.com"), Qt::CaseInsensitive)
+					   ? QByteArrayLiteral("https://kick.com/")
+					   : QByteArrayLiteral("https://www.twitch.tv/");
 	const QList<QPair<QByteArray, QByteArray>> headers = {
 		{QByteArrayLiteral("User-Agent"),
 		 QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 				   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")},
-		{QByteArrayLiteral("Referer"), QByteArrayLiteral("https://kick.com/")},
+		{QByteArrayLiteral("Referer"), referer},
 	};
-	Http(url, headers, {}, "GET", [this, url, applyBytes](int status, const QByteArray &body, const QString &) {
-		badgeFetchPending.remove(url);
-		QList<QPointer<QLabel>> waiters = badgeWaiters.take(url);
+	Http(url, headers, {}, "GET", [this, url, key, size](int status, const QByteArray &body, const QString &) {
+		badgeFetchPending.remove(key);
+		QList<QPointer<QLabel>> waiters = badgeWaiters.take(key);
 		if (status < 200 || status >= 300 || body.isEmpty())
 			return;
-		badgeRawBytes.insert(url, body);
+		badgeRawBytes.insert(key, body);
+		if (key != url)
+			badgeRawBytes.insert(url, body);
 		QPixmap pix;
 		if (pix.loadFromData(body)) {
-			badgePixmaps.insert(url,
-					    pix.scaled(14, 14, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+			const QPixmap scaled = pix.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+			badgePixmaps.insert(key, scaled);
+			if (key != url)
+				badgePixmaps.insert(url, scaled);
 		}
 		for (const QPointer<QLabel> &alive : waiters) {
 			if (alive)
-				applyBytes(alive, body);
+				ApplyImageDataToLabel(alive, body, size);
 		}
 	});
+}
+
+void ChatDock::FetchBadgePixmap(const QString &url, QLabel *target)
+{
+	FetchImageToLabel(url, target, 14);
 }
 
 int ChatDock::MessageTextHeight(const QString &html, int width, const QFont &font)
@@ -2694,8 +2996,8 @@ int ChatDock::LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewport
 	if (!row || !item)
 		return 0;
 
-	auto *label = row->findChild<QLabel *>(QStringLiteral("chatMsgText"));
-	if (!label)
+	auto *body = row->findChild<QWidget *>(QStringLiteral("chatMsgBody"));
+	if (!body)
 		return 0;
 
 	/* Leave a small gutter so the rounded card never clips against the scrollbar. */
@@ -2715,7 +3017,7 @@ int ChatDock::LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewport
 	if (lay) {
 		for (int i = 0; i < lay->count(); ++i) {
 			QWidget *w = lay->itemAt(i) ? lay->itemAt(i)->widget() : nullptr;
-			if (!w || w == label)
+			if (!w || w == body)
 				continue;
 			side += w->objectName() == QLatin1String("chatMsgIcon") ? 18 : 14;
 			++sideCount;
@@ -2724,12 +3026,19 @@ int ChatDock::LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewport
 	const int chrome = marginL + marginR + side + sideCount * spacing;
 	const int textW = qMax(60, rowW - chrome);
 
-	label->setMinimumWidth(0);
-	label->setMaximumWidth(textW);
-	label->setFixedWidth(textW);
+	body->setMinimumWidth(0);
+	body->setMaximumWidth(textW);
+	body->setFixedWidth(textW);
 
-	const int textH = MessageTextHeight(label->text(), textW, label->font());
-	label->setFixedHeight(textH);
+	int textH = 16;
+	if (auto *label = qobject_cast<QLabel *>(body)) {
+		textH = MessageTextHeight(label->text(), textW, label->font());
+	} else if (body->hasHeightForWidth()) {
+		textH = body->heightForWidth(textW);
+	} else {
+		textH = body->sizeHint().height();
+	}
+	body->setFixedHeight(textH);
 
 	const int contentH = qMax(18, textH);
 	const int rowH = contentH + marginT + marginB;
@@ -2765,10 +3074,10 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	const QString nameColor = msg.system ? QStringLiteral("#9a9a9a")
 					     : (msg.color.isEmpty() ? PlatformAccent(msg.platform).name() : msg.color);
 
-	/* Letter pills only for Twitch/YouTube badges without an image — never for Kick
-	 * (that was the stray "B" from Broadcaster before the username). */
+	/* Never paint letter-pill badges — image badges live in their own QLabels (Twitch/Kick).
+	 * YouTube owner/mod without CDN URLs still get a short text chip in the name span. */
 	QString badgesHtml;
-	if (msg.platform != Kick) {
+	if (msg.platform == YouTube) {
 		for (const ChatBadge &badge : msg.badges) {
 			if (!badge.label.isEmpty() && badge.url.isEmpty()) {
 				badgesHtml += QStringLiteral(
@@ -2783,8 +3092,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		QStringLiteral("<span style='color:%1;font-weight:700;'>%2%3</span><span style='color:#e6e6e6;'>: </span>")
 			.arg(nameColor, badgesHtml, EscapeHtml(msg.user));
 	const bool kickEmotes = !msg.system && msg.platform == Kick && msg.text.contains(QLatin1String("[emote:"));
-	const QString bodyHtml = kickEmotes ? FormatKickContentHtml(msg.text) : Linkify(EscapeHtml(msg.text));
-	const QString html = prefixHtml + bodyHtml;
+	const bool twitchEmotes = !msg.system && msg.platform == Twitch && !msg.emotes.isEmpty();
 
 	auto *item = new QListWidgetItem(messageList);
 	item->setData(Qt::UserRole, msg.system);
@@ -2821,22 +3129,32 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		layout->addWidget(badgeLabel, 0, Qt::AlignTop);
 	}
 
-	auto *label = new QLabel(row);
-	label->setObjectName(QStringLiteral("chatMsgText"));
-	label->setTextFormat(Qt::RichText);
-	label->setWordWrap(true);
-	label->setOpenExternalLinks(true);
-	label->setTextInteractionFlags(Qt::TextBrowserInteraction);
-	label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-	label->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
-	label->setText(html);
-	if (kickEmotes) {
-		label->setProperty("kickRawText", msg.text);
-		label->setProperty("kickPrefixHtml", prefixHtml);
-		PrefetchKickEmotes(msg.text, label);
+	QWidget *body = nullptr;
+	if (twitchEmotes) {
+		/* Flow of text + QLabel/QMovie slots so animated Twitch emotes actually play. */
+		body = BuildTwitchEmoteBody(msg, prefixHtml, row);
+	} else {
+		auto *label = new QLabel(row);
+		label->setObjectName(QStringLiteral("chatMsgBody"));
+		label->setTextFormat(Qt::RichText);
+		label->setWordWrap(true);
+		label->setOpenExternalLinks(true);
+		label->setTextInteractionFlags(Qt::TextBrowserInteraction);
+		label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+		label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		label->setStyleSheet(
+			QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
+		const QString bodyHtml =
+			kickEmotes ? FormatKickContentHtml(msg.text) : Linkify(EscapeHtml(msg.text));
+		label->setText(prefixHtml + bodyHtml);
+		if (kickEmotes) {
+			label->setProperty("kickRawText", msg.text);
+			label->setProperty("kickPrefixHtml", prefixHtml);
+			PrefetchKickEmotes(msg.text, label);
+		}
+		body = label;
 	}
-	layout->addWidget(label, 1, Qt::AlignTop);
+	layout->addWidget(body, 1, Qt::AlignTop);
 
 	messageList->addItem(item);
 	messageList->setItemWidget(item, row);

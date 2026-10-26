@@ -79,6 +79,12 @@ private:
 		QString label;
 	};
 
+	struct ChatEmoteSpan {
+		QString id;
+		int start = 0;
+		int end = 0; /* inclusive char index in message text */
+	};
+
 	struct ChatMessage {
 		Platform platform = Twitch;
 		QString id;
@@ -89,6 +95,7 @@ private:
 		bool system = false;
 		bool showPlatformIcon = true;
 		QVector<ChatBadge> badges;
+		QVector<ChatEmoteSpan> emotes;
 	};
 
 	QSet<int> availablePlatforms;
@@ -139,6 +146,7 @@ private:
 	QSet<QString> seenMessageIds;
 	int maxMessages = 400;
 	QHash<QString, QString> twitchBadgeUrls;
+	QHash<QString, QString> twitchBadgeTitles;
 	QHash<QString, QPixmap> badgePixmaps;
 	QHash<QString, QByteArray> badgeRawBytes;
 	QHash<QString, QList<QPointer<QLabel>>> badgeWaiters;
@@ -171,6 +179,12 @@ private:
 	void FetchTwitchBadgeSets();
 	void IngestTwitchBadgeSets(const QJsonArray &sets);
 	QVector<ChatBadge> TwitchBadgesFromTags(const QString &badgesTag) const;
+	static QVector<ChatEmoteSpan> TwitchEmotesFromTag(const QString &emotesTag);
+	static QString TwitchEmoteImageUrl(const QString &emoteId);
+	QString FormatTwitchContentHtml(const QString &raw, const QVector<ChatEmoteSpan> &emotes) const;
+	void PrefetchTwitchEmotes(const QVector<ChatEmoteSpan> &emotes, QLabel *label);
+	void RefreshTwitchMessageLabel(QLabel *label);
+	QWidget *BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent);
 
 	void StartYouTubeChat();
 	void PollYouTubeChat();
@@ -201,6 +215,8 @@ private:
 	void RelayoutMessageItems();
 	int LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewportWidth) const;
 	void FetchBadgePixmap(const QString &url, QLabel *target);
+	void ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int size);
+	void FetchImageToLabel(const QString &url, QLabel *target, int size, const QString &cacheKey = QString());
 	static QString PixmapDataUri(const QPixmap &pix);
 	static int MessageTextHeight(const QString &html, int width, const QFont &font);
 	bool DockIsOpen() const;
