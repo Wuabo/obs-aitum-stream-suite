@@ -12,7 +12,6 @@ class QLineEdit;
 class QPlainTextEdit;
 class QLabel;
 class QPushButton;
-class QNetworkAccessManager;
 class QTcpServer;
 class QTimer;
 
@@ -31,7 +30,6 @@ public:
 private:
 	enum Platform { Twitch, YouTube, Kick };
 
-	QNetworkAccessManager *net = nullptr;
 	QTcpServer *authServer = nullptr;
 	QTimer *pollTimer = nullptr;
 	int authGeneration = 0;

@@ -13,12 +13,14 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHostAddress>
+#include <QPointer>
+#include <curl/curl.h>
+#include <thread>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPlainTextEdit>
@@ -38,6 +40,100 @@ extern obs_data_t *current_profile_config;
 void save_current_profile_config(bool save_docks);
 
 static const int kRedirectPort = 17654;
+static const char *kTwitchScopes = "channel:manage:broadcast";
+
+struct HttpResult {
+	int status = 0;
+	QByteArray body;
+	QString error;
+};
+
+static size_t CurlWrite(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+	auto *out = static_cast<QByteArray *>(userdata);
+	const size_t total = size * nmemb;
+	out->append(ptr, static_cast<qsizetype>(total));
+	return total;
+}
+
+static HttpResult CurlPerform(CURL *curl)
+{
+	HttpResult result;
+	char error[CURL_ERROR_SIZE] = {};
+	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, "aitum-stream-suite");
+	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+#ifdef _WIN32
+#ifdef CURLSSLOPT_REVOKE_BEST_EFFORT
+	curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_REVOKE_BEST_EFFORT);
+#elif defined(CURLSSLOPT_NO_REVOKE)
+	curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NO_REVOKE);
+#endif
+#endif
+	const CURLcode code = curl_easy_perform(curl);
+	long status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	result.status = static_cast<int>(status);
+	if (code != CURLE_OK)
+		result.error = QString::fromUtf8(error[0] ? error : curl_easy_strerror(code));
+	return result;
+}
+
+static void RunAsync(QObject *context, std::function<HttpResult()> work,
+		     std::function<void(int, const QByteArray &, const QString &)> done)
+{
+	QPointer<QObject> alive(context);
+	std::thread([alive, work = std::move(work), done = std::move(done)] {
+		const HttpResult result = work();
+		if (!alive)
+			return;
+		QMetaObject::invokeMethod(
+			alive.data(),
+			[alive, done, result] {
+				if (alive)
+					done(result.status, result.body, result.error);
+			},
+			Qt::QueuedConnection);
+	}).detach();
+}
+
+static void PostForm(const QUrl &url, const QList<QPair<QString, QString>> &fields, QObject *context,
+		     const std::function<void(int, const QByteArray &, const QString &)> &done)
+{
+	const QByteArray urlBytes = url.toString(QUrl::FullyEncoded).toUtf8();
+	QList<QPair<QByteArray, QByteArray>> encoded;
+	for (const auto &field : fields)
+		encoded.append({field.first.toUtf8(), field.second.toUtf8()});
+	RunAsync(
+		context,
+		[urlBytes, encoded] {
+			HttpResult result;
+			CURL *curl = curl_easy_init();
+			if (!curl) {
+				result.error = QStringLiteral("curl_easy_init failed");
+				return result;
+			}
+			curl_mime *mime = curl_mime_init(curl);
+			for (const auto &field : encoded) {
+				curl_mimepart *part = curl_mime_addpart(mime);
+				curl_mime_name(part, field.first.constData());
+				curl_mime_data(part, field.second.constData(), static_cast<curl_off_t>(field.second.size()));
+			}
+			curl_easy_setopt(curl, CURLOPT_URL, urlBytes.constData());
+			curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+			result = CurlPerform(curl);
+			curl_mime_free(mime);
+			curl_easy_cleanup(curl);
+			return result;
+		},
+		done);
+}
 
 static QString Tr(const char *key)
 {
@@ -101,7 +197,7 @@ const char *StreamInfoDock::PlatformKey(Platform platform)
 StreamInfoDock::StreamInfoDock(QWidget *parent) : QFrame(parent)
 {
 	setObjectName(QStringLiteral("AitumStreamSuiteStreamInfo"));
-	net = new QNetworkAccessManager(this);
+	curl_global_init(CURL_GLOBAL_DEFAULT);
 	pollTimer = new QTimer(this);
 	pollTimer->setSingleShot(true);
 	connect(pollTimer, &QTimer::timeout, this, &StreamInfoDock::PollTwitchDevice);
@@ -500,22 +596,42 @@ bool StreamInfoDock::TokenFresh() const
 void StreamInfoDock::Http(const QNetworkRequest &request, const QByteArray &body, const char *verb,
 			  std::function<void(int, const QByteArray &, const QString &)> done)
 {
-	QNetworkReply *reply = nullptr;
-	if (qstrcmp(verb, "GET") == 0)
-		reply = net->get(request);
-	else if (qstrcmp(verb, "POST") == 0)
-		reply = net->post(request, body);
-	else if (qstrcmp(verb, "PUT") == 0)
-		reply = net->put(request, body);
-	else
-		reply = net->sendCustomRequest(request, verb, body);
-	connect(reply, &QNetworkReply::finished, this, [reply, done] {
-		const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-		const QByteArray payload = reply->readAll();
-		const QString err = reply->error() == QNetworkReply::NoError ? QString() : reply->errorString();
-		reply->deleteLater();
-		done(status, payload, err);
-	});
+	const QByteArray urlBytes = request.url().toString(QUrl::FullyEncoded).toUtf8();
+	const QByteArray verbBytes(verb);
+	const QByteArray payload = body;
+	QList<QPair<QByteArray, QByteArray>> headers;
+	const QVariant type = request.header(QNetworkRequest::ContentTypeHeader);
+	if (type.isValid())
+		headers.append({QByteArrayLiteral("Content-Type"), type.toString().toUtf8()});
+	for (const QByteArray &name : request.rawHeaderList())
+		headers.append({name, request.rawHeader(name)});
+	RunAsync(
+		this,
+		[urlBytes, verbBytes, payload, headers] {
+			HttpResult result;
+			CURL *curl = curl_easy_init();
+			if (!curl) {
+				result.error = QStringLiteral("curl_easy_init failed");
+				return result;
+			}
+			curl_slist *list = nullptr;
+			for (const auto &header : headers) {
+				const QByteArray line = header.first + ": " + header.second;
+				list = curl_slist_append(list, line.constData());
+			}
+			curl_easy_setopt(curl, CURLOPT_URL, urlBytes.constData());
+			curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+			if (verbBytes != "GET") {
+				curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verbBytes.constData());
+				curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.constData());
+				curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(payload.size()));
+			}
+			result = CurlPerform(curl);
+			curl_slist_free_all(list);
+			curl_easy_cleanup(curl);
+			return result;
+		},
+		std::move(done));
 }
 
 void StreamInfoDock::EnsureToken(std::function<void(bool)> done)
@@ -564,17 +680,18 @@ void StreamInfoDock::BeginConnect()
 {
 	SavePlatform();
 	if (!current_profile_config) {
-		SetResult(Tr("StreamInfoNoProfile"));
+		SetStatus(Tr("StreamInfoNoProfile"));
 		return;
 	}
 	if (clientId.isEmpty() || (platform != Twitch && clientSecret.isEmpty())) {
-		SetResult(Tr("StreamInfoUnavailable"));
+		SetStatus(Tr("StreamInfoUnavailable"));
 		return;
 	}
 	authGeneration++;
 	pollTimer->stop();
 	connectButton->setEnabled(false);
 	SetResult(QString());
+	SetStatus(Tr("StreamInfoConnecting"));
 	if (platform == Twitch)
 		BeginTwitchDevice();
 	else
@@ -584,54 +701,55 @@ void StreamInfoDock::BeginConnect()
 void StreamInfoDock::BeginTwitchDevice()
 {
 	const int gen = authGeneration;
-	QUrlQuery query;
-	query.addQueryItem("client_id", clientId);
-	query.addQueryItem("scopes", "user:read channel:manage:broadcast");
-	QNetworkRequest req(QUrl(QStringLiteral("https://id.twitch.tv/oauth2/device")));
-	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
-	Http(req, query.query(QUrl::FullyEncoded).toUtf8(), "POST",
-	     [this, gen](int status, const QByteArray &body, const QString &) {
-		     connectButton->setEnabled(true);
-		     if (gen != authGeneration)
-			     return;
-		     const QJsonObject json = QJsonDocument::fromJson(body).object();
-		     if (status < 200 || status >= 300 || !json.contains("device_code")) {
-			     SetResult(JsonError(body));
-			     return;
-		     }
-		     deviceCode = json.value("device_code").toString();
-		     pollIntervalMs = qMax(5, json.value("interval").toInt(5)) * 1000;
-		     const QString userCode = json.value("user_code").toString();
-		     const QString verify = json.value("verification_uri").toString(QStringLiteral("https://www.twitch.tv/activate"));
-		     SetStatus(Tr("StreamInfoTwitchCode").arg(userCode));
-		     QDesktopServices::openUrl(QUrl(verify));
-		     pollTimer->start(pollIntervalMs);
-	     });
+	PostForm(QUrl(QStringLiteral("https://id.twitch.tv/oauth2/device")),
+		 {{QStringLiteral("client_id"), clientId}, {QStringLiteral("scopes"), QString::fromUtf8(kTwitchScopes)}}, this,
+		 [this, gen](int status, const QByteArray &body, const QString &err) {
+			 connectButton->setEnabled(true);
+			 if (gen != authGeneration)
+				 return;
+			 const QJsonObject json = QJsonDocument::fromJson(body).object();
+			 if (status < 200 || status >= 300 || !json.contains("device_code")) {
+				 const QString message = JsonError(body);
+				 SetStatus(message.isEmpty() ? err : message);
+				 blog(LOG_WARNING, "[Stream Suite] Twitch device login failed (%d)", status);
+				 return;
+			 }
+			 deviceCode = json.value("device_code").toString();
+			 pollIntervalMs = qMax(5, json.value("interval").toInt(5)) * 1000;
+			 const QString userCode = json.value("user_code").toString();
+			 QString verify = json.value("verification_uri").toString();
+			 if (verify.isEmpty())
+				 verify = QStringLiteral("https://www.twitch.tv/activate?public=true&device-code=") + userCode;
+			 SetStatus(Tr("StreamInfoTwitchCode").arg(userCode));
+			 QDesktopServices::openUrl(QUrl(verify));
+			 pollTimer->start(pollIntervalMs);
+		 });
 }
 
 void StreamInfoDock::PollTwitchDevice()
 {
 	const int gen = authGeneration;
-	QUrlQuery query;
-	query.addQueryItem("client_id", clientId);
-	query.addQueryItem("device_code", deviceCode);
-	query.addQueryItem("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
-	QNetworkRequest req(QUrl(QStringLiteral("https://id.twitch.tv/oauth2/token")));
-	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
-	Http(req, query.query(QUrl::FullyEncoded).toUtf8(), "POST",
-	     [this, gen](int status, const QByteArray &body, const QString &) {
+	PostForm(QUrl(QStringLiteral("https://id.twitch.tv/oauth2/token")),
+		 {{QStringLiteral("client_id"), clientId},
+		  {QStringLiteral("scopes"), QString::fromUtf8(kTwitchScopes)},
+		  {QStringLiteral("device_code"), deviceCode},
+		  {QStringLiteral("grant_type"), QStringLiteral("urn:ietf:params:oauth:grant-type:device_code")}},
+		 this, [this, gen](int status, const QByteArray &body, const QString &err) {
 		     if (gen != authGeneration)
 			     return;
 		     const QJsonObject json = QJsonDocument::fromJson(body).object();
 		     const QString error = json.value("error").toString();
-		     if (error == "authorization_pending" || error == "slow_down") {
-			     if (error == "slow_down")
+		     const QString message = json.value("message").toString();
+		     if (error == "authorization_pending" || message == "authorization_pending" || error == "slow_down" ||
+			 message == "slow_down") {
+			     if (error == "slow_down" || message == "slow_down")
 				     pollIntervalMs += 2000;
 			     pollTimer->start(pollIntervalMs);
 			     return;
 		     }
 		     if (status < 200 || status >= 300 || !json.contains("access_token")) {
-			     SetResult(JsonError(body));
+			     const QString message = JsonError(body);
+			     SetStatus(message.isEmpty() ? err : message);
 			     SetConnected(false);
 			     return;
 		     }
