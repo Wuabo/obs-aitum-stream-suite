@@ -457,9 +457,12 @@ static void RestoreControlsArea(QMainWindow *main, QDockWidget *controls, Qt::Do
 
 static bool untabifyingPreviews = false;
 
-/* Break preview↔preview tabs. No visibilityChanged hooks — those fought tab
- * clicks (show+hide at once). Call only from install / dock-state restore. */
-void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidget *> &previews, bool showAllPeers)
+/* Break preview↔preview tabs.
+ * keepVisible: docks that must stay open after the split (e.g. already-open
+ * peer + the one the user just activated). Empty → only the active tab
+ * (non-empty visibleRegion), so DockState tab restores don't open every preview. */
+static void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidget *> &previews,
+					     const QSet<QDockWidget *> &keepVisible)
 {
 	if (!main || untabifyingPreviews) {
 		return;
@@ -503,8 +506,7 @@ void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidge
 		}
 
 		/* Tabified peers all report isVisible()==true; only the active tab
-		 * has a non-empty visibleRegion. Prefer that one so we don't open
-		 * every preview on launch when DockState restored them as tabs. */
+		 * has a non-empty visibleRegion (unless listed in keepVisible). */
 		QDockWidget *active = nullptr;
 		bool anyRegion = false;
 		for (QDockWidget *member : group) {
@@ -512,6 +514,14 @@ void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidge
 				active = member;
 				anyRegion = true;
 				break;
+			}
+		}
+		if (!active) {
+			for (QDockWidget *member : group) {
+				if (member && keepVisible.contains(member)) {
+					active = member;
+					break;
+				}
 			}
 		}
 		if (!active) {
@@ -529,16 +539,9 @@ void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidge
 		QDockWidget *anchor = nullptr;
 		for (QDockWidget *member : group) {
 			processed.insert(member);
-			bool wantVisible = false;
-			if (showAllPeers) {
-				wantVisible = true;
-			} else if (anyRegion) {
-				wantVisible = (member == active);
-			} else {
-				/* Window not mapped yet — don't invent visibility. */
-				wantVisible = member->isVisible() && member == active;
-			}
-			/* Pull out of the tab group without forcing a flash show. */
+			const bool wantVisible = keepVisible.contains(member) ||
+						 (anyRegion ? member == active
+							    : (member->isVisible() && member == active));
 			member->setFloating(true);
 			if (wantVisible) {
 				member->show();
@@ -557,6 +560,17 @@ void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidge
 	RestoreControlsArea(main, controls, controlsArea, controlsVis);
 	untabifyingPreviews = false;
 	blog(LOG_INFO, "[Stream Suite] Untabified preview docks from each other");
+}
+
+static QSet<QDockWidget *> PreviewDocksWithVisibleRegion(const QList<QDockWidget *> &previews)
+{
+	QSet<QDockWidget *> keep;
+	for (QDockWidget *dock : previews) {
+		if (dock && dock->isVisible() && !dock->visibleRegion().isEmpty()) {
+			keep.insert(dock);
+		}
+	}
+	return keep;
 }
 
 static bool swappingSoloPreview = false;
@@ -597,13 +611,17 @@ static void PlacePreviewBesidePeer(QMainWindow *mainWin, QDockWidget *dock, Qt::
 	}
 
 	if (PreviewTabbedWithPeer(mainWin, dock, previews)) {
-		UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), false);
+		QSet<QDockWidget *> keep = PreviewDocksWithVisibleRegion(previews);
+		keep.insert(dock);
+		if (peer) {
+			keep.insert(peer);
+		}
+		UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), keep);
 	}
 }
 
-/* Solo swap uses removeDockWidget — View→Docks show() will not re-insert the
- * dock into the main window. Put it back beside any already-visible preview.
- * Never touch floating docks during a user drag (floating is normal then). */
+/* Re-insert only if stuck out of the layout (legacy removeDockWidget). Normal
+ * hide/show is owned by OBS DockState — do not fight floating drags. */
 static void RestorePreviewDockIfNeeded(QMainWindow *mainWin, QDockWidget *dock)
 {
 	if (!mainWin || !dock || swappingSoloPreview || untabifyingPreviews) {
@@ -613,9 +631,6 @@ static void RestorePreviewDockIfNeeded(QMainWindow *mainWin, QDockWidget *dock)
 	const bool shelved = dock->property("aitumShelvedArea").isValid();
 	const bool outOfLayout = mainWin->dockWidgetArea(dock) == Qt::NoDockWidgetArea;
 
-	/* User drag/float: Qt makes the dock floating with NoDockWidgetArea.
-	 * Only re-insert when we ourselves shelved it, or it's stuck hidden
-	 * outside the layout (not floating). */
 	if (dock->isFloating() && !shelved) {
 		return;
 	}
@@ -633,12 +648,16 @@ static void ScheduleBreakPreviewTabs(QMainWindow *mainWin)
 	if (!mainWin || swappingSoloPreview || untabifyingPreviews || nativeTabsStopped) {
 		return;
 	}
+	/* Capture open previews now — deferred untabify must not drop a peer
+	 * that was already showing when Qt auto-tabified on activate. */
+	const QList<QDockWidget *> previews = CollectPreviewDocks(mainWin);
+	QSet<QDockWidget *> keep = PreviewDocksWithVisibleRegion(previews);
 	QPointer<QMainWindow> mainPtr = mainWin;
-	QTimer::singleShot(0, mainWin, [mainPtr]() {
+	QTimer::singleShot(0, mainWin, [mainPtr, keep]() {
 		if (!mainPtr || swappingSoloPreview || untabifyingPreviews || nativeTabsStopped) {
 			return;
 		}
-		UntabifyPreviewDocksFromEachOther(mainPtr, CollectPreviewDocks(mainPtr), false);
+		UntabifyPreviewDocksFromEachOther(mainPtr, CollectPreviewDocks(mainPtr), keep);
 	});
 }
 
@@ -647,19 +666,22 @@ static void HandlePreviewVisibilityChanged(QMainWindow *mainWin, QDockWidget *ch
 	if (!visible || swappingSoloPreview || untabifyingPreviews || nativeTabsStopped || !mainWin || !changed) {
 		return;
 	}
-	if (!CollectPreviewDocks(mainWin).contains(changed)) {
+	const QList<QDockWidget *> previews = CollectPreviewDocks(mainWin);
+	if (!previews.contains(changed)) {
 		return;
 	}
+	/* Snapshot before Qt finishes tabifying: already-open peers + this dock. */
+	QSet<QDockWidget *> keep = PreviewDocksWithVisibleRegion(previews);
+	keep.insert(changed);
 	QPointer<QMainWindow> mainPtr = mainWin;
 	QPointer<QDockWidget> dockPtr = changed;
-	QTimer::singleShot(0, mainWin, [mainPtr, dockPtr]() {
+	QTimer::singleShot(0, mainWin, [mainPtr, dockPtr, keep]() {
 		if (!mainPtr || !dockPtr || swappingSoloPreview || untabifyingPreviews || nativeTabsStopped) {
 			return;
 		}
 		RestorePreviewDockIfNeeded(mainPtr, dockPtr);
-		/* Activating / raising a preview must never leave preview↔preview tabs. */
 		if (PreviewTabbedWithPeer(mainPtr, dockPtr, CollectPreviewDocks(mainPtr))) {
-			UntabifyPreviewDocksFromEachOther(mainPtr, CollectPreviewDocks(mainPtr), false);
+			UntabifyPreviewDocksFromEachOther(mainPtr, CollectPreviewDocks(mainPtr), keep);
 		}
 	});
 }
@@ -705,7 +727,8 @@ void EnsurePreviewDocksNotTabbed()
 		return;
 	}
 	BindPreviewDockVisibilityWatchers(mainWin);
-	UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), false);
+	/* Startup/restore: no keep set → only the active tab stays visible. */
+	UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), {});
 }
 
 /* With exactly one preview visible, Scenes tab switches which canvas preview
