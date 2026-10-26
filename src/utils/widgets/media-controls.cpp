@@ -181,15 +181,6 @@ MediaControls::MediaControls(QWidget *parent) : QWidget(parent)
 	addAction(playPause);
 }
 
-bool MediaControls::MediaPaused()
-{
-	OBSSource source = OBSGetStrongRef(weakSource);
-	if (!source) {
-		return false;
-	}
-	return obs_source_media_get_state(source) == OBS_MEDIA_STATE_PAUSED;
-}
-
 int64_t MediaControls::GetSliderTime(int val)
 {
 	OBSSource source = OBSGetStrongRef(weakSource);

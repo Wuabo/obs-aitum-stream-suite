@@ -243,11 +243,6 @@ void OBSHotkeyWidget::SetKeyCombinations(const std::vector<obs_key_combination_t
 		AddEdit(combo);
 }
 
-bool OBSHotkeyWidget::Changed() const
-{
-	return changed || std::any_of(begin(edits), end(edits), [](OBSHotkeyEdit *edit) { return edit->changed; });
-}
-
 void OBSHotkeyWidget::Apply()
 {
 	for (auto &edit : edits) {

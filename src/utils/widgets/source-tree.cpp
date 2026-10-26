@@ -1067,25 +1067,8 @@ SourceTree::SourceTree(std::mutex *select_mutex, std::vector<obs_sceneitem_t *> 
 			      "*[bgColor=\"8\"]{background-color:rgba(255,255,255,33%);}"));
 
 	UpdateNoSourcesMessage();
-	//const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	//connect(App(), &OBSApp::StyleChanged, this, &SourceTree::UpdateNoSourcesMessage);
-	//connect(App(), &OBSApp::StyleChanged, this, &SourceTree::UpdateIcons);
 
 	setItemDelegate(new SourceTreeDelegate(this));
-}
-
-void SourceTree::UpdateIcons()
-{
-	SourceTreeModel *stm = GetStm();
-	stm->SceneChanged();
-}
-
-void SourceTree::SetIconsVisible(bool visible)
-{
-	SourceTreeModel *stm = GetStm();
-
-	iconsVisible = visible;
-	stm->SceneChanged();
 }
 
 void SourceTree::ResetWidgets()

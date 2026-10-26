@@ -36,8 +36,6 @@ private slots:
 	void AddSceneItem(OBSSceneItem item, bool no_select = false);
 	void RefreshSources(OBSScene scene);
 	void ReorderSources(OBSScene scene);
-	void AddSourceFromAction(QString id);
-	void AddSourceToScene(OBSSource s);
 	void OpenSourceProjector();
 	void ColorChange();
 public:

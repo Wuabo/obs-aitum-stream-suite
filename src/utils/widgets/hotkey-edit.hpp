@@ -131,7 +131,6 @@ public:
 	std::string name;
 
 	bool changed = false;
-	bool Changed() const;
 
 	QPointer<OBSHotkeyLabel> label;
 	std::vector<QPointer<OBSHotkeyEdit>> edits;
@@ -144,7 +143,6 @@ public:
 			edit->setToolTip(toolTip_);
 	}
 
-	void Apply();
 	void GetCombinations(std::vector<obs_key_combination_t> &) const;
 	void Save();
 	void Save(std::vector<obs_key_combination_t> &combinations);
@@ -157,6 +155,7 @@ public:
 	void leaveEvent(QEvent *event) override;
 
 private:
+	void Apply();
 	void AddEdit(obs_key_combination combo, int idx = -1);
 	void RemoveEdit(size_t idx, bool signal = true);
 

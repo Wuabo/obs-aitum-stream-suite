@@ -235,9 +235,6 @@ private:
 	static void AddGroupMenuItems(SourceTree *sl, QMenu *popup);
 	static QMenu *CreateVisibilityTransitionMenu(bool visible, obs_sceneitem_t *sceneItem);
 
-	static QMenu *CreateAddSourcePopupMenu(QWidget *parent);
-	static void LoadSourceTypeMenu(QMenu *menu, const char *type);
-	static void AddSourceTypeToMenu(QMenu *popup, const char *source_type, const char *name);
 	void ShowScenesContextMenu(QListWidgetItem *widget_item);
 	void EditSceneName();
 	void OpenSelectedSceneFilters();
@@ -291,7 +288,6 @@ private:
 	static void SceneReordered(void *data, calldata_t *params);
 	static void SceneRefreshed(void *data, calldata_t *params);
 	static void transition_override_stop(void *data, calldata_t *);
-	static bool add_sources_of_type_to_menu(void *param, obs_source_t *source);
 	static bool selected_items(obs_scene_t *scene, obs_sceneitem_t *item, void *param);
 	/* Match OBSBasic::on_actionRemoveSource_triggered (multi-select + groups). */
 	static void RemoveSelectedSources(obs_scene_t *scene, QWidget *parent);
@@ -321,14 +317,11 @@ private:
 
 	static bool LogSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *v_val);
 	static void LogFilter(obs_source_t *, obs_source_t *filter, void *v_val);
-	static void check_descendant(obs_source_t *parent, obs_source_t *child, void *param);
 	static bool nudge_callback(obs_scene_t *, obs_sceneitem_t *item, void *param);
 	static bool save_undo_source_enum(obs_scene_t *, obs_sceneitem_t *item, void *p);
 	static void undo_redo_scene(const char *json);
 	static std::string backup_scene(obs_scene_t *scene);
 private slots:
-	void AddSourceFromAction(QString id);
-	void AddSourceToScene(OBSSource source);
 	void SceneAdded(const QString name);
 	void SceneRemoved(const QString name);
 	void AddSceneItem(OBSSceneItem item, bool no_select = false);
@@ -345,7 +338,6 @@ private slots:
 
 public:
 	CanvasDock(obs_data_t *settings, QWidget *parent = nullptr);
-	CanvasDock(const char *canvas_name, QWidget *parent = nullptr);
 	~CanvasDock();
 
 	obs_canvas_t *GetCanvas() const { return canvas; }
@@ -424,8 +416,3 @@ struct HandleFindData {
 	}
 };
 
-struct descendant_info {
-	bool exists;
-	obs_weak_source_t *target;
-	obs_source_t *target2;
-};

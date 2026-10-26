@@ -31,7 +31,6 @@ public:
 
 	OBSSource GetSource();
 	void SetSource(OBSSource newSource);
-	bool MediaPaused();
 
 public slots:
 	void PlayMedia();

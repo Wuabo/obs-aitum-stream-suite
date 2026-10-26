@@ -20,7 +20,6 @@ class QSpacerItem;
 class QHBoxLayout;
 class LockedCheckBox;
 class VisibilityCheckBox;
-class VisibilityItemWidget;
 class CanvasDock;
 
 class SourceTreeSubItemCheckBox : public QCheckBox {
@@ -203,9 +202,6 @@ public:
 	bool MultipleBaseSelected() const;
 	bool GroupsSelected() const;
 	bool GroupedItemsSelected() const;
-
-	void UpdateIcons();
-	void SetIconsVisible(bool visible);
 
 public slots:
 	inline void ReorderItems() { GetStm()->ReorderItems(); }

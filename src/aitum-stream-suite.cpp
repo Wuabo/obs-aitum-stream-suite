@@ -4,10 +4,7 @@
 #include "docks/native-dock-tabs.hpp"
 #include "docks/main-canvas-context-fix.hpp"
 #include "docks/canvas-dock.hpp"
-#include "docks/filters-dock.hpp"
 #include "docks/output-dock.hpp"
-#include "docks/properties-dock.hpp"
-#include "docks/transform-dock.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
 #include <obs-frontend-api.h>
@@ -16,7 +13,6 @@
 #include <QDockWidget>
 #include <QLabel>
 #include <QMainWindow>
-#include <QPointer>
 #include <QTimer>
 #include <util/dstr.h>
 
@@ -28,9 +24,6 @@ obs_data_t *current_profile_config = nullptr;
 
 OBSBasicSettings *configDialog = nullptr;
 OutputDock *output_dock = nullptr;
-QPointer<PropertiesDock> properties_dock;
-QPointer<FiltersDock> filters_dock;
-QPointer<TransformDock> transform_dock;
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -442,14 +435,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 
 		load_current_profile_config();
 		install_main_canvas_context_bar_fix();
-		auto scene = obs_frontend_get_current_scene();
-		if (scene) {
-			if (properties_dock) {
-				QMetaObject::invokeMethod(properties_dock, "SceneChanged", Qt::QueuedConnection,
-							  Q_ARG(OBSSource, OBSSource(scene)));
-			}
-			obs_source_release(scene);
-		}
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
@@ -463,9 +448,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (output_dock) {
 			output_dock->Exiting();
 		}
-		if (properties_dock) {
-			properties_dock->Exiting();
-		}
 		/* Disconnect libobs signal handlers before ClearSceneData
 		 * (SCRIPTING_SHUTDOWN runs first) so callbacks never hit
 		 * destroyed docks during scene teardown. */
@@ -476,15 +458,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		output_dock = nullptr;
-
-		/* Hidden helpers are children of the main window; delete them
-		 * here so obs_module_unload does not touch dangling pointers. */
-		delete properties_dock;
-		properties_dock = nullptr;
-		delete filters_dock;
-		filters_dock = nullptr;
-		delete transform_dock;
-		transform_dock = nullptr;
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
@@ -516,15 +489,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			}
 			obs_frontend_source_list_free(&transitions);
 			load_current_profile_config();
-
-			auto scene = obs_frontend_get_current_scene();
-			if (scene) {
-				if (properties_dock) {
-					QMetaObject::invokeMethod(properties_dock, "SceneChanged", Qt::QueuedConnection,
-								  Q_ARG(OBSSource, OBSSource(scene)));
-				}
-				obs_source_release(scene);
-			}
 		}
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING) {
 		scene_collection_changing = true;
@@ -690,14 +654,8 @@ bool obs_module_load(void)
 
 	output_dock = new OutputDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteOutput", obs_module_text("AitumStreamSuiteOutput"), output_dock);
-	/* Keep Properties/Filters/Transform as hidden helpers — use OBS native dialogs in the UI. */
-	properties_dock = new PropertiesDock(main_window);
-	properties_dock->hide();
-	filters_dock = new FiltersDock(main_window);
-	filters_dock->hide();
-	transform_dock = new TransformDock(main_window);
-	transform_dock->hide();
-	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs). */
+	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
+	 * Properties/Filters/Transform use OBS native dialogs. */
 
 	return true;
 }
@@ -738,23 +696,6 @@ void obs_module_unload()
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		output_dock = nullptr;
 	}
-
-	if (properties_dock) {
-		properties_dock->setParent(nullptr);
-		delete properties_dock;
-		properties_dock = nullptr;
-	}
-	if (filters_dock) {
-		filters_dock->setParent(nullptr);
-		delete filters_dock;
-		filters_dock = nullptr;
-	}
-	if (transform_dock) {
-		transform_dock->setParent(nullptr);
-		delete transform_dock;
-		transform_dock = nullptr;
-	}
-
 }
 
 MODULE_EXPORT const char *obs_module_description(void)

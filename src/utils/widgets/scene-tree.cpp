@@ -2,7 +2,6 @@
 
 #include <QDragMoveEvent>
 #include <QScrollBar>
-#include <QTimer>
 
 #include <cmath>
 
@@ -133,7 +132,6 @@ void SceneTree::dropEvent(QDropEvent *event)
 	QListWidget::dropEvent(event);
 	QResizeEvent resEvent(size(), size());
 	resizeEvent(&resEvent);
-	QTimer::singleShot(100, this, [this] { emit scenesReordered(); });
 }
 
 void SceneTree::RepositionGrid(QDragMoveEvent *event)

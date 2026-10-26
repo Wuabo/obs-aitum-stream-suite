@@ -70,16 +70,10 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/main-canvas-context-fix.hpp
   src/docks/controls-other-options.cpp
   src/docks/controls-other-options.hpp
-  src/docks/filters-dock.cpp
-  src/docks/filters-dock.hpp
   src/docks/output-dock.cpp
   src/docks/output-dock.hpp
-  src/docks/properties-dock.cpp
-  src/docks/properties-dock.hpp
   src/docks/sources-dock.cpp
-  src/docks/sources-dock.hpp
-  src/docks/transform-dock.cpp
-  src/docks/transform-dock.hpp)
+  src/docks/sources-dock.hpp)
 
 target_sources(${PROJECT_NAME} PRIVATE
   src/dialogs/config-dialog.cpp
@@ -102,8 +96,6 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/event-filter.cpp
   src/utils/icon.cpp
   src/utils/obs-websocket.cpp
-  src/utils/widgets/alignment-selector.cpp
-  src/utils/widgets/double-slider.cpp
   src/utils/widgets/focus-scroll-spinbox.cpp
   src/utils/widgets/hotkey-edit.cpp
   src/utils/widgets/locked-checkbox.cpp
@@ -120,12 +112,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/widgets/projector.cpp
   src/utils/widgets/qt-display.cpp
   src/utils/widgets/visibility-checkbox.cpp
-  src/utils/widgets/visibility-item-widget.cpp
   src/utils/color.hpp
   src/utils/event-filter.hpp
   src/utils/icon.hpp
-  src/utils/widgets/alignment-selector.hpp
-  src/utils/widgets/double-slider.hpp
   src/utils/widgets/focus-scroll-spinbox.hpp
   src/utils/widgets/hotkey-edit.hpp
   src/utils/widgets/locked-checkbox.hpp
@@ -139,8 +128,7 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/widgets/switching-splitter.hpp
   src/utils/widgets/projector.hpp
   src/utils/widgets/qt-display.hpp
-  src/utils/widgets/visibility-checkbox.hpp
-  src/utils/widgets/visibility-item-widget.hpp)
+  src/utils/widgets/visibility-checkbox.hpp)
 
 if(BUILD_OUT_OF_TREE)
 	set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

@@ -22,9 +22,6 @@ public:
 	int GetGridItemWidth() const;
 	int GetGridItemHeight() const;
 
-signals:
-	void scenesReordered();
-
 protected:
 	void resizeEvent(QResizeEvent *event) override;
 	void dropEvent(QDropEvent *event) override;

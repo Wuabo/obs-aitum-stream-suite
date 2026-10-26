@@ -36,7 +36,6 @@
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
-#include "name-dialog.hpp"
 #include <src/utils/icon.hpp>
 
 extern bool isTwitchServer(QString outputServer);
