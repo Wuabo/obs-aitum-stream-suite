@@ -710,7 +710,7 @@ void EnsurePreviewDocksNotTabbed()
 
 /* With exactly one preview visible, Scenes tab switches which canvas preview
  * occupies that exact slot. Temporary tabify steals the splitter cell, then
- * removeDockWidget shelves the old dock so no preview↔preview tab bar remains. */
+ * hide() the old dock (OBS DockState owns open/closed — never removeDockWidget). */
 void SyncSoloPreviewToScenesTab(int index)
 {
 	if (nativeTabsStopped || swappingSoloPreview || untabifyingPreviews) {
@@ -786,8 +786,9 @@ void SyncSoloPreviewToScenesTab(int index)
 		target->show();
 		target->raise();
 
-		visibleOne->setProperty("aitumShelvedArea", static_cast<int>(area));
-		mainWin->removeDockWidget(visibleOne);
+		/* hide() — not removeDockWidget — so OBS DockState can persist
+		 * closed vs open. Tab bar drops when the peer is hidden. */
+		visibleOne->hide();
 
 		if (target->isFloating() || mainWin->dockWidgetArea(target) == Qt::NoDockWidgetArea) {
 			mainWin->addDockWidget(area, target);

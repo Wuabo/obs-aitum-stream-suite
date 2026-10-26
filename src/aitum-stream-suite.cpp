@@ -89,9 +89,8 @@ void load_outputs()
 		Qt::QueuedConnection);
 }
 
-void load_canvas(bool check_new_canvas)
+void load_canvas(bool reveal_new_docks)
 {
-	UNUSED_PARAMETER(check_new_canvas);
 	detach_native_canvas_tabs();
 	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	if (!main_window) {
@@ -147,7 +146,6 @@ void load_canvas(bool check_new_canvas)
 			for (const auto &it : canvas_docks) {
 				if (strcmp(obs_canvas_get_uuid(it->GetCanvas()), uuid) == 0) {
 					obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
-					check_new_canvas = false;
 					break;
 				}
 			}
@@ -159,7 +157,6 @@ void load_canvas(bool check_new_canvas)
 					    strcmp(it->parentWidget()->objectName().toUtf8().constData(), name) != 0) {
 						// canvas name changed, remove old dock and create a new one
 						obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
-						check_new_canvas = false;
 					} else {
 						ccd = it;
 					}
@@ -167,7 +164,6 @@ void load_canvas(bool check_new_canvas)
 				} else if (strcmp(it->parentWidget()->objectName().toUtf8().constData(), name) == 0) {
 					if (obs_canvas_removed(it->GetCanvas())) {
 						obs_frontend_remove_dock(name);
-						check_new_canvas = false;
 						break;
 					}
 					obs_data_set_string(t, "uuid", cuuid);
@@ -182,9 +178,11 @@ void load_canvas(bool check_new_canvas)
 				std::string title = name;
 				if (obs_frontend_add_dock_by_id(name, title.c_str(), ccd)) {
 					canvas_clone_docks.push_back(ccd);
-					if (!obs_data_get_bool(t, "has_loaded")) {
-						ccd->parentWidget()->show();
-						obs_data_set_bool(t, "has_loaded", true);
+					/* Visibility is OBS DockState's job. Only show brand-new
+					 * docks from Settings (not yet in DockState). */
+					if (reveal_new_docks) {
+						if (auto *dw = qobject_cast<QDockWidget *>(ccd->parentWidget()))
+							dw->show();
 					}
 				} else {
 					delete ccd;
@@ -197,7 +195,6 @@ void load_canvas(bool check_new_canvas)
 			for (const auto &it : canvas_clone_docks) {
 				if (strcmp(obs_canvas_get_uuid(it->GetCanvas()), uuid) == 0) {
 					obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
-					check_new_canvas = false;
 					break;
 				}
 			}
@@ -209,7 +206,6 @@ void load_canvas(bool check_new_canvas)
 					    strcmp(it->parentWidget()->objectName().toUtf8().constData(), name) != 0) {
 						// canvas name changed, remove old dock and create a new one
 						obs_frontend_remove_dock(it->parentWidget()->objectName().toUtf8().constData());
-						check_new_canvas = false;
 					} else {
 						cd = it;
 					}
@@ -217,7 +213,6 @@ void load_canvas(bool check_new_canvas)
 				} else if (strcmp(it->parentWidget()->objectName().toUtf8().constData(), name) == 0) {
 					if (obs_canvas_removed(it->GetCanvas())) {
 						obs_frontend_remove_dock(name);
-						check_new_canvas = false;
 						break;
 					}
 					obs_data_set_string(t, "uuid", cuuid);
@@ -233,9 +228,11 @@ void load_canvas(bool check_new_canvas)
 				std::string title = name;
 				if (obs_frontend_add_dock_by_id(name, title.c_str(), cd)) {
 					canvas_docks.push_back(cd);
-					if (!obs_data_get_bool(t, "has_loaded")) {
-						cd->parentWidget()->show();
-						obs_data_set_bool(t, "has_loaded", true);
+					/* Visibility is OBS DockState's job. Only show brand-new
+					 * docks from Settings (not yet in DockState). */
+					if (reveal_new_docks) {
+						if (auto *dw = qobject_cast<QDockWidget *>(cd->parentWidget()))
+							dw->show();
 					}
 				} else {
 					delete cd;
@@ -563,7 +560,6 @@ void open_config_dialog(int tab, const char *create_type)
 	if (configDialog->exec() == QDialog::Accepted) {
 		bool canvas_changed = false;
 		bool outputs_changed = false;
-		bool check_new_canvas = false;
 		if (current_profile_config) {
 			auto show = obs_data_get_bool(settings, "main_stream_output_show");
 			if (show != obs_data_get_bool(current_profile_config, "main_stream_output_show")) {
@@ -593,7 +589,6 @@ void open_config_dialog(int tab, const char *create_type)
 			b = obs_data_get_array(settings, "outputs");
 			if (!obs_data_array_equal(a, b)) {
 				outputs_changed = true;
-				check_new_canvas = true;
 				obs_data_set_array(current_profile_config, "outputs", b);
 			}
 			obs_data_array_release(a);
@@ -609,7 +604,7 @@ void open_config_dialog(int tab, const char *create_type)
 
 		save_current_profile_config(true);
 		if (canvas_changed) {
-			load_canvas(check_new_canvas);
+			load_canvas(true);
 			if (vendor) {
 				obs_websocket_vendor_emit_event(vendor, "canvas_changed", nullptr);
 			}
