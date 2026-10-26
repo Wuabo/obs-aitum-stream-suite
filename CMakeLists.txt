@@ -78,8 +78,6 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/properties-dock.hpp
   src/docks/sources-dock.cpp
   src/docks/sources-dock.hpp
-  src/docks/stats-dock.cpp
-  src/docks/stats-dock.hpp
   src/docks/transform-dock.cpp
   src/docks/transform-dock.hpp)
 

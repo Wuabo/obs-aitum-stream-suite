@@ -7,7 +7,6 @@
 #include "docks/filters-dock.hpp"
 #include "docks/output-dock.hpp"
 #include "docks/properties-dock.hpp"
-#include "docks/stats-dock.hpp"
 #include "docks/transform-dock.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
@@ -32,7 +31,6 @@ OutputDock *output_dock = nullptr;
 QPointer<PropertiesDock> properties_dock;
 QPointer<FiltersDock> filters_dock;
 QPointer<TransformDock> transform_dock;
-StatsDock *stats_dock = nullptr;
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -50,7 +48,7 @@ void transition_start(void *, calldata_t *)
 	}
 }
 
-/* Persist per-dock widget settings only (canvas panels, stats columns).
+/* Persist per-dock widget settings only (canvas panels).
  * OBS owns main-window dock placement — never saveState/restoreState here. */
 void save_dock_state(QString mode)
 {
@@ -65,9 +63,6 @@ void save_dock_state(QString mode)
 	}
 	for (const auto &it : canvas_clone_docks) {
 		QMetaObject::invokeMethod(it, "SaveSettings", Q_ARG(bool, false), Q_ARG(QString, mode));
-	}
-	if (stats_dock) {
-		QMetaObject::invokeMethod(stats_dock, "SaveSettings", Q_ARG(bool, false), Q_ARG(QString, mode));
 	}
 }
 
@@ -86,9 +81,6 @@ void load_dock_state(QString mode)
 	}
 	for (const auto &it : canvas_clone_docks) {
 		QMetaObject::invokeMethod(it, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
-	}
-	if (stats_dock) {
-		QMetaObject::invokeMethod(stats_dock, "LoadMode", Qt::QueuedConnection, Q_ARG(QString, mode));
 	}
 }
 
@@ -499,9 +491,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		/* Tear down while the UI is still alive. Registered docks are
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
-		obs_frontend_remove_dock("AitumStreamSuiteStats");
 		output_dock = nullptr;
-		stats_dock = nullptr;
 
 		/* Hidden helpers are children of the main window; delete them
 		 * here so obs_module_unload does not touch dangling pointers. */
@@ -723,8 +713,6 @@ bool obs_module_load(void)
 	filters_dock->hide();
 	transform_dock = new TransformDock(main_window);
 	transform_dock->hide();
-	stats_dock = new StatsDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteStats", obs_module_text("AitumStreamSuiteStats"), stats_dock);
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs). */
 
 	return true;
@@ -762,11 +750,9 @@ void obs_module_unload()
 	/* Prefer teardown on EXIT. If unload runs without EXIT (e.g. module
 	 * reload), remove registered docks but never delete their widgets —
 	 * obs_frontend_remove_dock already destroys them. */
-	if (output_dock || stats_dock) {
+	if (output_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
-		obs_frontend_remove_dock("AitumStreamSuiteStats");
 		output_dock = nullptr;
-		stats_dock = nullptr;
 	}
 
 	if (properties_dock) {
