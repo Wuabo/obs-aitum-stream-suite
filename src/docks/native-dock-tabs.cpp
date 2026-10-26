@@ -399,8 +399,6 @@ void ShowMain(bool main)
 	QTimer::singleShot(0, &SyncVisibleToolbarIcons);
 }
 
-bool syncingSoloPreviewSwap = false;
-
 QList<QDockWidget *> CollectPreviewDocks(QMainWindow *mainWin)
 {
 	QList<QDockWidget *> previewDocks;
@@ -457,12 +455,28 @@ static void RestoreControlsArea(QMainWindow *main, QDockWidget *controls, Qt::Do
 	controls->setVisible(visible);
 }
 
-/* Break preview↔preview tabs without removeDockWidget (that shoved Controls). */
+static bool untabifyingPreviews = false;
+
+/* Break preview↔preview tabs. No visibilityChanged hooks — those fought tab
+ * clicks (show+hide at once). Call only from install / dock-state restore. */
 void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidget *> &previews, bool showAllPeers)
 {
-	if (!main) {
+	if (!main || untabifyingPreviews) {
 		return;
 	}
+
+	bool anyTabbed = false;
+	for (QDockWidget *dock : previews) {
+		if (PreviewTabbedWithPeer(main, dock, previews)) {
+			anyTabbed = true;
+			break;
+		}
+	}
+	if (!anyTabbed) {
+		return;
+	}
+
+	untabifyingPreviews = true;
 	auto *controls = main->findChild<QDockWidget *>(QString::fromUtf8("controlsDock"));
 	const Qt::DockWidgetArea controlsArea = controls ? main->dockWidgetArea(controls) : Qt::NoDockWidgetArea;
 	const bool controlsVis = controls && controls->isVisible();
@@ -472,92 +486,46 @@ void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidge
 		if (!dock || processed.contains(dock)) {
 			continue;
 		}
-		QList<QDockWidget *> peers;
+		QList<QDockWidget *> group;
+		group.append(dock);
 		for (QDockWidget *peer : main->tabifiedDockWidgets(dock)) {
-			if (previews.contains(peer)) {
-				peers.append(peer);
+			if (previews.contains(peer) && !group.contains(peer)) {
+				group.append(peer);
 			}
 		}
-		if (peers.isEmpty()) {
+		if (group.size() < 2) {
 			continue;
 		}
 
-		processed.insert(dock);
 		Qt::DockWidgetArea area = main->dockWidgetArea(dock);
 		if (area == Qt::NoDockWidgetArea) {
 			area = Qt::RightDockWidgetArea;
 		}
 
-		for (QDockWidget *peer : peers) {
-			processed.insert(peer);
-			const bool peerVis = showAllPeers ? true : peer->isVisible();
-			const bool anchorVis = showAllPeers ? true : dock->isVisible();
-			peer->setFloating(true);
-			peer->show();
-			main->addDockWidget(area, peer);
-			peer->setFloating(false);
-			main->splitDockWidget(dock, peer, Qt::Horizontal);
-			dock->setVisible(anchorVis);
-			peer->setVisible(peerVis);
-			dock->setProperty("aitumSoloActive", false);
-			peer->setProperty("aitumSoloActive", false);
+		QDockWidget *anchor = nullptr;
+		for (QDockWidget *member : group) {
+			processed.insert(member);
+			const bool wantVisible = showAllPeers ? true : member->isVisible();
+			/* Pull out of the tab group without forcing a flash show. */
+			member->setFloating(true);
+			main->addDockWidget(area, member);
+			member->setFloating(false);
+			if (!anchor) {
+				anchor = member;
+			} else {
+				main->splitDockWidget(anchor, member, Qt::Horizontal);
+			}
+			member->setVisible(wantVisible);
 		}
 	}
 
 	RestoreControlsArea(main, controls, controlsArea, controlsVis);
+	untabifyingPreviews = false;
+	blog(LOG_INFO, "[Stream Suite] Untabified preview docks from each other");
 }
 
-void HandlePreviewVisibilityChanged(QMainWindow *mainWin, QDockWidget *changed, bool visible)
-{
-	if (syncingSoloPreviewSwap || nativeTabsStopped || !mainWin || !changed) {
-		return;
-	}
-	const QList<QDockWidget *> previews = CollectPreviewDocks(mainWin);
-	if (!previews.contains(changed)) {
-		return;
-	}
-
-	int visibleCount = 0;
-	for (QDockWidget *dock : previews) {
-		if (dock && dock->isVisible()) {
-			visibleCount++;
-		}
-	}
-
-	const bool tabbed = PreviewTabbedWithPeer(mainWin, changed, previews);
-
-	/* Two+ raised previews must never stay tabbed. */
-	if (visibleCount >= 2 && tabbed) {
-		UntabifyPreviewDocksFromEachOther(mainWin, previews, false);
-		return;
-	}
-
-	/* Docks menu raised a hidden peer from a solo tab group → show both
-	 * side-by-side. Skip if this dock is the intentional solo active one. */
-	if (visible && tabbed && visibleCount == 1 && !changed->property("aitumSoloActive").toBool()) {
-		UntabifyPreviewDocksFromEachOther(mainWin, previews, true);
-	}
-}
-
-void BindPreviewDockVisibilityWatchers(QMainWindow *mainWin)
-{
-	if (!mainWin) {
-		return;
-	}
-	for (QDockWidget *dock : CollectPreviewDocks(mainWin)) {
-		if (!dock || dock->property("aitumPreviewWatch").toBool()) {
-			continue;
-		}
-		dock->setProperty("aitumPreviewWatch", true);
-		QObject::connect(dock, &QDockWidget::visibilityChanged, dock, [mainWin, dock](bool visible) {
-			HandlePreviewVisibilityChanged(mainWin, dock, visible);
-		});
-	}
-}
-
-/* When exactly one preview dock is visible, align it with the Scenes tab.
- * 0 or ≥2 visible → leave layout alone (and untabify if multi so docks stay free). */
-void SyncSoloPreviewDockToTab(int index)
+/* One-shot after install / dock restore — never from tab clicks. */
+void EnsurePreviewDocksNotTabbed()
 {
 	if (nativeTabsStopped) {
 		return;
@@ -566,69 +534,7 @@ void SyncSoloPreviewDockToTab(int index)
 	if (!mainWin) {
 		return;
 	}
-
-	BindPreviewDockVisibilityWatchers(mainWin);
-
-	auto *mainCanvasDock =
-		mainWin->findChild<QDockWidget *>(QString::fromUtf8("AitumStreamSuiteMainCanvas"));
-	const QList<QDockWidget *> previewDocks = CollectPreviewDocks(mainWin);
-
-	QDockWidget *visibleOne = nullptr;
-	int visibleCount = 0;
-	for (QDockWidget *dock : previewDocks) {
-		if (dock && dock->isVisible()) {
-			visibleCount++;
-			visibleOne = dock;
-		}
-	}
-	if (visibleCount != 1 || !visibleOne) {
-		if (visibleCount >= 2) {
-			UntabifyPreviewDocksFromEachOther(mainWin, previewDocks, false);
-		}
-		return;
-	}
-
-	QDockWidget *target = nullptr;
-	if (index <= 0) {
-		target = mainCanvasDock;
-	} else if (index >= 1 && index <= (int)pages.size()) {
-		CanvasDock *canvasDock = pages[size_t(index - 1)].dock;
-		if (canvasDock) {
-			target = qobject_cast<QDockWidget *>(canvasDock->parentWidget());
-		}
-	}
-	if (!target || target == visibleOne) {
-		visibleOne->setProperty("aitumSoloActive", true);
-		return;
-	}
-
-	/* Replace in-place so Controls / other docks keep their side and size. */
-	syncingSoloPreviewSwap = true;
-	for (QDockWidget *dock : previewDocks) {
-		if (dock) {
-			dock->setProperty("aitumSoloActive", false);
-		}
-	}
-	if (visibleOne->isFloating()) {
-		const QRect geo = visibleOne->geometry();
-		visibleOne->hide();
-		target->setProperty("aitumSoloActive", true);
-		target->setFloating(true);
-		target->show();
-		target->setGeometry(geo);
-		syncingSoloPreviewSwap = false;
-		return;
-	}
-
-	const QList<QDockWidget *> withVisible = mainWin->tabifiedDockWidgets(visibleOne);
-	if (!withVisible.contains(target)) {
-		mainWin->tabifyDockWidget(visibleOne, target);
-	}
-	visibleOne->hide();
-	target->setProperty("aitumSoloActive", true);
-	target->show();
-	target->raise();
-	syncingSoloPreviewSwap = false;
+	UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), false);
 }
 
 void ApplyIndex(int index)
@@ -636,8 +542,8 @@ void ApplyIndex(int index)
 	if (index < 0) {
 		index = 0;
 	}
+	/* Only swap Scenes/Sources/Transitions panes — never touch preview docks. */
 	ShowMain(index == 0);
-	SyncSoloPreviewDockToTab(index);
 }
 
 void OnScenesTab(int index)
@@ -996,6 +902,7 @@ void refresh_native_canvas_tabs()
 	/* Do not force-show docks here: OBS DockState owns visibility and size. */
 	ApplyIndex(restore);
 	ensure_preview_docks_independent();
+	EnsurePreviewDocksNotTabbed();
 	blog(LOG_INFO, "[Stream Suite] Native canvas tabs: %d extra canvas(es), host %dx%d dock %s", (int)pages.size(),
 	     scenesTabHost ? scenesTabHost->width() : -1, scenesTabHost ? scenesTabHost->height() : -1,
 	     scenesDock && scenesDock->isVisible() ? "shown" : "hidden");
@@ -1093,11 +1000,14 @@ static void restore_obs_dock_layout()
 	const QByteArray dockState = ReadObsDockState();
 	if (dockState.isEmpty()) {
 		ensure_preview_docks_independent();
+		EnsurePreviewDocksNotTabbed();
 		return;
 	}
 	restoring = true;
 	const bool ok = main->restoreState(dockState);
 	ensure_preview_docks_independent();
+	/* DockState may re-tabify Main Canvas ↔ Youtube — break that again. */
+	EnsurePreviewDocksNotTabbed();
 	restoring = false;
 	if (!ok) {
 		blog(LOG_WARNING, "[Stream Suite] restoreState(DockState) failed");
@@ -1117,6 +1027,13 @@ void schedule_restore_obs_dock_layout()
 			return;
 		}
 		restore_obs_dock_layout();
+		/* Layout can settle after restoreState — break preview tabs once more. */
+		QTimer::singleShot(0, qApp, [gen] {
+			if (nativeTabsStopped || gen != generation) {
+				return;
+			}
+			EnsurePreviewDocksNotTabbed();
+		});
 	});
 }
 
