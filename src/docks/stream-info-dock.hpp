@@ -36,6 +36,8 @@ public:
 	void OpenSettings();
 	/* Reload YouTube broadcast (if YouTube account linked) and push liveChatId to chat. */
 	void RefreshYouTubeForChat();
+	/* OBS went live — reload title/category and rediscover chat (YouTube is slow to flip ready→live). */
+	void OnStreamingStarted();
 
 protected:
 	void showEvent(QShowEvent *event) override;

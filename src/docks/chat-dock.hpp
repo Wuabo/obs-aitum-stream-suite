@@ -57,6 +57,8 @@ public:
 	void NotifyYouTubeVideo(const QString &videoId, const QString &liveChatId = QString());
 	void OnStreamingStarted();
 	void PersistYouTubeIds();
+	/* Temporary diagnostics into Unified Chat (and OBS log). Unique per call so nothing is deduped. */
+	void DebugYouTube(const QString &text);
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -132,6 +134,7 @@ private:
 	QTimer *viewerTimer = nullptr;
 	QTimer *youtubeTimer = nullptr;
 	QTimer *youtubeDiscoverTimer = nullptr;
+	QTimer *youtubeWaitLiveTimer = nullptr; /* polls known video until activeLiveChatId appears */
 	QTimer *kickReconnectTimer = nullptr;
 	QTimer *twitchReconnectTimer = nullptr;
 
@@ -148,6 +151,7 @@ private:
 	bool youtubeQuotaAnnounced = false;
 	bool youtubePollInFlight = false;
 	int youtubePageTokenFails = 0;
+	int youtubeDebugSeq = 0;
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
 	bool twitchConnectStarted = false;
@@ -204,6 +208,8 @@ private:
 
 	void StartYouTubeChat();
 	void ResolveYouTubeLiveChatId(const QString &videoId, std::function<void(bool)> done = {});
+	void EnsureYouTubeWaitLiveTimer();
+	void TickYouTubeWaitLive();
 	void PollYouTubeChat();
 	void SendYouTubeMessage(const QString &text);
 	void ReportYouTubeHttpError(int status, const QByteArray &body);

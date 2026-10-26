@@ -40,6 +40,8 @@
 #include <QToolBar>
 #include <QUrlQuery>
 #include <QVBoxLayout>
+#include <functional>
+#include <memory>
 #include <src/utils/icon.hpp>
 #include "output-dock.hpp"
 #include "chat-dock.hpp"
@@ -60,6 +62,47 @@ static QString YouTubeBroadcastChatId(const QJsonObject &snippet)
 	if (id.isEmpty())
 		id = snippet.value(QStringLiteral("activeLiveChatId")).toString();
 	return id;
+}
+
+/* YouTube often returns categoryId as a JSON number — QJsonValue::toString() is empty then. */
+static QString JsonCategoryId(const QJsonValue &value)
+{
+	if (value.isDouble())
+		return QString::number(value.toInteger());
+	if (value.isString())
+		return value.toString();
+	return QString();
+}
+
+static QJsonObject PickYouTubeBroadcast(const QJsonArray &items)
+{
+	auto score = [](const QString &life) {
+		if (life == QLatin1String("complete") || life == QLatin1String("revoked") ||
+		    life == QLatin1String("abandoned"))
+			return -1;
+		if (life == QLatin1String("live") || life == QLatin1String("liveStarting"))
+			return 5;
+		if (life == QLatin1String("ready") || life == QLatin1String("testing") ||
+		    life == QLatin1String("testStarting"))
+			return 4;
+		if (life == QLatin1String("created"))
+			return 3;
+		return 1;
+	};
+	QJsonObject best;
+	int bestScore = -1;
+	for (const QJsonValue &row : items) {
+		const QJsonObject item = row.toObject();
+		const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
+		const int s = score(life);
+		if (s < 0)
+			continue;
+		if (s > bestScore) {
+			bestScore = s;
+			best = item;
+		}
+	}
+	return best;
 }
 
 class CategoryComboBox : public QComboBox {
@@ -1167,15 +1210,31 @@ void StreamInfoDock::RefreshChannel()
 		LoadKickChannel();
 }
 
+void StreamInfoDock::OnStreamingStarted()
+{
+	RefreshYouTubeForChat();
+	/* Title/category only refresh when the Stream Info UI is on YouTube (uses that token). */
+	if (platform == YouTube && !accessToken.isEmpty()) {
+		LoadYouTubeBroadcast();
+		QTimer::singleShot(3000, this, [this] {
+			if (platform == YouTube && !accessToken.isEmpty())
+				LoadYouTubeBroadcast();
+		});
+		QTimer::singleShot(10000, this, [this] {
+			if (platform == YouTube && !accessToken.isEmpty())
+				LoadYouTubeBroadcast();
+		});
+	}
+}
+
 void StreamInfoDock::RefreshYouTubeForChat()
 {
 	/* Use saved YouTube tokens even if the dock UI is on Twitch/Kick. */
-	if (!current_profile_config || !chat_dock)
+	if (!current_profile_config)
 		return;
 	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
 	obs_data_t *one = root ? obs_data_get_obj(root, "youtube") : nullptr;
 	const QString token = one ? QString::fromUtf8(obs_data_get_string(one, "access_token")) : QString();
-	QString videoId = one ? QString::fromUtf8(obs_data_get_string(one, "youtube_video_id")) : QString();
 	obs_data_release(one);
 	obs_data_release(root);
 	if (token.isEmpty())
@@ -1187,56 +1246,86 @@ void StreamInfoDock::RefreshYouTubeForChat()
 		return req;
 	};
 
-	QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
-	QUrlQuery query;
-	query.addQueryItem("part", "snippet,status");
-	query.addQueryItem("broadcastStatus", "active");
-	query.addQueryItem("broadcastType", "all");
-	query.addQueryItem("maxResults", "5");
-	url.setQuery(query);
-	Http(ytReq(url), {}, "GET", [this, ytReq, videoId](int code, const QByteArray &body, const QString &) {
-		QString id = videoId;
-		QString chatId;
-		if (code >= 200 && code < 300) {
-			const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-			if (!items.isEmpty()) {
-				const QJsonObject item = items.at(0).toObject();
-				id = item.value("id").toString();
-				chatId = YouTubeBroadcastChatId(item.value("snippet").toObject());
-			}
-		}
-		if (!chatId.isEmpty()) {
-			if (chat_dock)
-				chat_dock->NotifyYouTubeVideo(id, chatId);
-			return;
-		}
+	auto acceptBroadcast = [this, ytReq](const QJsonObject &item) {
+		const QString id = item.value("id").toString();
 		if (id.isEmpty())
 			return;
+		const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
+		if (life == QLatin1String("complete") || life == QLatin1String("revoked") ||
+		    life == QLatin1String("abandoned"))
+			return;
+		if (platform == YouTube)
+			ApplyYouTubeBroadcast(item);
+
+		const QString snippetChat = YouTubeBroadcastChatId(item.value("snippet").toObject());
+		const bool pollable = life == QLatin1String("live") || life == QLatin1String("liveStarting") ||
+				      life == QLatin1String("testing") || life == QLatin1String("testStarting");
+
 		QUrl vurl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
 		QUrlQuery vq;
 		vq.addQueryItem("part", "liveStreamingDetails");
 		vq.addQueryItem("id", id);
 		vurl.setQuery(vq);
-		Http(ytReq(vurl), {}, "GET", [id](int st, const QByteArray &payload, const QString &) {
-			if (st < 200 || st >= 300 || !chat_dock)
-				return;
-			const QJsonArray vids = QJsonDocument::fromJson(payload).object().value("items").toArray();
-			if (vids.isEmpty()) {
-				chat_dock->NotifyYouTubeVideo(id);
-				return;
+		Http(ytReq(vurl), {}, "GET",
+		     [id, snippetChat, pollable](int st, const QByteArray &payload, const QString &) {
+			     if (!chat_dock)
+				     return;
+			     QString chat;
+			     if (st >= 200 && st < 300) {
+				     const QJsonArray vids =
+					     QJsonDocument::fromJson(payload).object().value("items").toArray();
+				     if (!vids.isEmpty())
+					     chat = vids.at(0)
+							    .toObject()
+							    .value("liveStreamingDetails")
+							    .toObject()
+							    .value("activeLiveChatId")
+							    .toString();
+			     }
+			     /* Prefer activeLiveChatId; only use snippet liveChatId when already live/testing. */
+			     if (chat.isEmpty() && pollable)
+				     chat = snippetChat;
+			     if (!chat.isEmpty())
+				     chat_dock->NotifyYouTubeVideo(id, chat);
+			     else
+				     chat_dock->NotifyYouTubeVideo(id);
+		     });
+	};
+
+	auto tryList = std::make_shared<std::function<void(const QString &)>>();
+	*tryList = [this, ytReq, acceptBroadcast, tryList](const QString &status) {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery query;
+		query.addQueryItem("part", "snippet,status");
+		if (status == QLatin1String("mine"))
+			query.addQueryItem("mine", "true");
+		else
+			query.addQueryItem("broadcastStatus", status);
+		query.addQueryItem("broadcastType", "all");
+		query.addQueryItem("maxResults", "25");
+		url.setQuery(query);
+		Http(ytReq(url), {}, "GET", [this, status, acceptBroadcast, tryList](int code, const QByteArray &body,
+										     const QString &) {
+			if (code >= 200 && code < 300) {
+				const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				if (status == QLatin1String("mine")) {
+					const QJsonObject best = PickYouTubeBroadcast(items);
+					if (!best.isEmpty()) {
+						acceptBroadcast(best);
+						return;
+					}
+				} else if (!items.isEmpty()) {
+					acceptBroadcast(items.at(0).toObject());
+					return;
+				}
 			}
-			const QString chat = vids.at(0)
-						    .toObject()
-						    .value("liveStreamingDetails")
-						    .toObject()
-						    .value("activeLiveChatId")
-						    .toString();
-			if (!chat.isEmpty())
-				chat_dock->NotifyYouTubeVideo(id, chat);
-			else
-				chat_dock->NotifyYouTubeVideo(id);
+			if (status == QLatin1String("active"))
+				(*tryList)(QStringLiteral("upcoming"));
+			else if (status == QLatin1String("upcoming"))
+				(*tryList)(QStringLiteral("mine"));
 		});
-	});
+	};
+	(*tryList)(QStringLiteral("active"));
 }
 
 void StreamInfoDock::LoadTwitchChannel()
@@ -1294,10 +1383,17 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	descriptionEdit->setPlainText(snippet.value("description").toString());
 	ytScheduledStart = snippet.value("scheduledStartTime").toString();
 	SetResult(QString());
-	/* Pass broadcast id + liveChatId (when already live) straight to Unified Chat. */
+	const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
 	const QString snippetChatId = YouTubeBroadcastChatId(snippet);
-	if (!ytBroadcastId.isEmpty() && chat_dock)
-		chat_dock->NotifyYouTubeVideo(ytBroadcastId, snippetChatId);
+	const bool pollable = life == QLatin1String("live") || life == QLatin1String("liveStarting") ||
+			      life == QLatin1String("testing") || life == QLatin1String("testStarting");
+	/* Never push ready-broadcast stub chat ids — they 404 until the stream is actually live. */
+	if (!ytBroadcastId.isEmpty() && chat_dock) {
+		if (pollable && !snippetChatId.isEmpty())
+			chat_dock->NotifyYouTubeVideo(ytBroadcastId, snippetChatId);
+		else
+			chat_dock->NotifyYouTubeVideo(ytBroadcastId);
+	}
 	const int gen = authGeneration;
 	QUrl videoUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
 	QUrlQuery vq;
@@ -1313,14 +1409,16 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 		if (!videos.isEmpty()) {
 			const QJsonObject video = videos.at(0).toObject();
 			const QJsonObject snip = video.value("snippet").toObject();
-			ytCategoryId = snip.value("categoryId").toString();
+			ytCategoryId = JsonCategoryId(snip.value("categoryId"));
 			categoryId = ytCategoryId;
+			/* Do not reuse a stale display name (e.g. "Entretenimento" stuck on id 20). */
+			lastCategoryName.clear();
 			QStringList tags;
 			for (const QJsonValue &tag : snip.value("tags").toArray())
 				tags.append(tag.toString());
 			tagsEdit->setText(tags.join(", "));
 			if (!categoryId.isEmpty()) {
-				EnsureCategoryInCatalog(categoryId, lastCategoryName);
+				EnsureCategoryInCatalog(categoryId, QString());
 				PopulateCategoryCombo();
 			}
 			const QString chatId =
@@ -1352,32 +1450,6 @@ static QString JsonId(const QJsonValue &value)
 	if (value.isDouble())
 		return QString::number(value.toInteger());
 	return value.toString();
-}
-
-static QJsonObject PickYouTubeBroadcast(const QJsonArray &items)
-{
-	auto score = [](const QString &life) {
-		if (life == QLatin1String("live") || life == QLatin1String("liveStarting"))
-			return 5;
-		if (life == QLatin1String("ready") || life == QLatin1String("testing") ||
-		    life == QLatin1String("testStarting"))
-			return 4;
-		if (life == QLatin1String("created"))
-			return 3;
-		return 1;
-	};
-	QJsonObject best;
-	int bestScore = -1;
-	for (const QJsonValue &row : items) {
-		const QJsonObject item = row.toObject();
-		const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
-		const int s = score(life);
-		if (s > bestScore) {
-			bestScore = s;
-			best = item;
-		}
-	}
-	return best;
 }
 
 void StreamInfoDock::LoadYouTubeBroadcast()
@@ -1897,9 +1969,20 @@ void StreamInfoDock::LoadCategoryCatalog()
 		}
 		auto finish = [this, keepId, keepName, keepArt] {
 			if (!keepId.isEmpty()) {
-				EnsureCategoryInCatalog(keepId, keepName.isEmpty() ? lastCategoryName : keepName, keepArt);
-				if (!keepName.isEmpty())
-					lastCategoryName = keepName;
+				/* Prefer the official catalog title over a stale/wrong keepName. */
+				QString catalogName;
+				for (const CategoryEntry &entry : categoryCatalog) {
+					if (entry.id == keepId && !entry.name.isEmpty()) {
+						catalogName = entry.name;
+						break;
+					}
+				}
+				const QString useName = !catalogName.isEmpty()
+								 ? catalogName
+								 : (!keepName.isEmpty() ? keepName : lastCategoryName);
+				EnsureCategoryInCatalog(keepId, useName, keepArt);
+				if (!useName.isEmpty())
+					lastCategoryName = useName;
 			}
 			PopulateCategoryCombo();
 		};
@@ -2155,13 +2238,22 @@ void StreamInfoDock::ApplyYouTube()
 		SetResult(Tr("StreamInfoNoBroadcast"));
 		return;
 	}
-	QString wantedCategory = categoryId;
-	if (wantedCategory.isEmpty() && categoryCombo && categoryCombo->currentIndex() >= 0)
-		wantedCategory = categoryCombo->currentData().toString();
+	/* Always take the combo selection at apply time. */
+	QString wantedCategory;
+	QString wantedName;
+	if (categoryCombo && categoryCombo->currentIndex() >= 0) {
+		wantedCategory = categoryCombo->itemData(categoryCombo->currentIndex()).toString();
+		if (wantedCategory.isEmpty())
+			wantedCategory = categoryCombo->itemData(categoryCombo->currentIndex(), Qt::UserRole).toString();
+		wantedName = categoryCombo->currentText().trimmed();
+	}
+	if (wantedCategory.isEmpty())
+		wantedCategory = categoryId;
 
-	/* GET current snippet first so we never send an invalid categoryId (that fails the whole
-	 * videos.update, including title). liveBroadcasts.update is intentionally NOT used here:
-	 * it requires scheduledStartTime/monitorStream and is unreliable while the broadcast is live. */
+	blog(LOG_INFO, "[Stream Suite] YT-apply video=%s category=%s (%s)", ytBroadcastId.toUtf8().constData(),
+	     wantedCategory.toUtf8().constData(), wantedName.toUtf8().constData());
+
+	/* GET current snippet so we preserve tags/description fields YouTube would otherwise clear. */
 	QUrl getUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
 	QUrlQuery gq;
 	gq.addQueryItem("part", "snippet,liveStreamingDetails");
@@ -2169,7 +2261,7 @@ void StreamInfoDock::ApplyYouTube()
 	getUrl.setQuery(gq);
 	QNetworkRequest greq(getUrl);
 	greq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-	Http(greq, {}, "GET", [this, wantedCategory](int gstatus, const QByteArray &gbody, const QString &) {
+	Http(greq, {}, "GET", [this, wantedCategory, wantedName](int gstatus, const QByteArray &gbody, const QString &) {
 		if (gstatus < 200 || gstatus >= 300) {
 			blog(LOG_WARNING, "[Stream Suite] YouTube videos.list before update HTTP %d: %s", gstatus,
 			     gbody.left(300).constData());
@@ -2183,32 +2275,35 @@ void StreamInfoDock::ApplyYouTube()
 		}
 		const QJsonObject current = items.at(0).toObject();
 		const QJsonObject curSnip = current.value("snippet").toObject();
-		const QString existingCategory = curSnip.value("categoryId").toString();
-		const QString chatId =
+		const QString existingCategory = JsonCategoryId(curSnip.value("categoryId"));
+		const QString activeChat =
 			current.value("liveStreamingDetails").toObject().value("activeLiveChatId").toString();
-		if (chat_dock)
-			chat_dock->NotifyYouTubeVideo(ytBroadcastId, chatId);
+		if (chat_dock) {
+			if (!activeChat.isEmpty())
+				chat_dock->NotifyYouTubeVideo(ytBroadcastId, activeChat);
+			else
+				chat_dock->NotifyYouTubeVideo(ytBroadcastId);
+		}
 
-		auto categoryAllowed = [this](const QString &id) {
+		auto looksLikeYouTubeCategory = [](const QString &id) {
 			if (id.isEmpty())
 				return false;
-			for (const CategoryEntry &entry : categoryCatalog) {
-				if (entry.id == id)
-					return true;
-			}
-			/* YouTube category ids are small numeric strings (e.g. "20"). Reject Twitch/Kick leftovers. */
 			bool ok = false;
 			const int n = id.toInt(&ok);
-			return ok && n > 0 && n < 1000 && id.size() <= 3;
+			/* Real YouTube video category ids are small (1–44). Twitch game ids are huge. */
+			return ok && n > 0 && n < 100;
 		};
 
 		QString useCategory = wantedCategory;
-		if (!categoryAllowed(useCategory))
-			useCategory = existingCategory;
-		if (!categoryAllowed(useCategory))
-			useCategory = QStringLiteral("20");
+		if (!looksLikeYouTubeCategory(useCategory)) {
+			SetResult(QStringLiteral("Invalid YouTube category '%1' — pick one from the list")
+					  .arg(wantedCategory.isEmpty() ? QStringLiteral("(empty)") : wantedCategory));
+			return;
+		}
 		ytCategoryId = useCategory;
 		categoryId = useCategory;
+		if (!wantedName.isEmpty())
+			lastCategoryName = wantedName;
 
 		QJsonObject videoSnippet;
 		videoSnippet.insert("title", titleEdit->text().trimmed().isEmpty() ? curSnip.value("title").toString()
@@ -2234,9 +2329,34 @@ void StreamInfoDock::ApplyYouTube()
 		vreq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
 		vreq.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 		Http(vreq, QJsonDocument(video).toJson(QJsonDocument::Compact), "PUT",
-		     [this](int vstatus, const QByteArray &vbody, const QString &) {
+		     [this, useCategory, wantedName, existingCategory](int vstatus, const QByteArray &vbody, const QString &) {
 			     if (vstatus >= 200 && vstatus < 300) {
-				     SetResult(Tr("StreamInfoApplied"));
+				     QString confirmed = JsonCategoryId(QJsonDocument::fromJson(vbody)
+										.object()
+										.value("snippet")
+										.toObject()
+										.value("categoryId"));
+				     if (confirmed.isEmpty())
+					     confirmed = useCategory;
+				     categoryId = confirmed;
+				     ytCategoryId = confirmed;
+				     /* Refresh label from catalog so we never show a wrong name for the id. */
+				     QString name = wantedName;
+				     for (const CategoryEntry &entry : categoryCatalog) {
+					     if (entry.id == confirmed && !entry.name.isEmpty()) {
+						     name = entry.name;
+						     break;
+					     }
+				     }
+				     if (!name.isEmpty())
+					     lastCategoryName = name;
+				     EnsureCategoryInCatalog(confirmed, name);
+				     PopulateCategoryCombo();
+				     QString status = Tr("StreamInfoApplied");
+				     status += QStringLiteral(" · %1").arg(name.isEmpty() ? confirmed : name);
+				     if (confirmed != existingCategory)
+					     status += QStringLiteral(" (%1 → %2)").arg(existingCategory, confirmed);
+				     SetResult(status);
 			     } else {
 				     blog(LOG_WARNING, "[Stream Suite] YouTube videos.update HTTP %d: %s", vstatus,
 					  vbody.left(300).constData());
