@@ -53,9 +53,10 @@ public:
 	void ReloadAccounts();
 	void SyncAccountsFromConfig();
 	void RefreshAvailablePlatforms();
-	/* Stream Info found a YouTube broadcast/video — reuse that id for live chat discovery. */
-	void NotifyYouTubeVideo(const QString &videoId);
+	/* Stream Info found a YouTube broadcast/video — reuse that id (and chat id if already live). */
+	void NotifyYouTubeVideo(const QString &videoId, const QString &liveChatId = QString());
 	void OnStreamingStarted();
+	void PersistYouTubeIds();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -144,6 +145,7 @@ private:
 	bool kickConnectedAnnounced = false;
 	bool youtubeConnectedAnnounced = false;
 	bool youtubeWaitingAnnounced = false;
+	bool youtubeQuotaAnnounced = false;
 	bool youtubePollInFlight = false;
 	int youtubePageTokenFails = 0;
 	qint64 youtubeLastFullDiscoverMs = 0;
@@ -204,6 +206,7 @@ private:
 	void ResolveYouTubeLiveChatId(const QString &videoId, std::function<void(bool)> done = {});
 	void PollYouTubeChat();
 	void SendYouTubeMessage(const QString &text);
+	void ReportYouTubeHttpError(int status, const QByteArray &body);
 
 	void ConnectKickChat();
 	void DisconnectKickChat();

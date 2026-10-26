@@ -235,6 +235,13 @@ QString Tr(const char *key)
 	return QString::fromUtf8(obs_module_text(key));
 }
 
+bool YouTubeBodyLooksLikeQuota(const QByteArray &body)
+{
+	const QByteArray lower = body.toLower();
+	return lower.contains("quota") || lower.contains("\"reason\": \"quotaexceeded\"") ||
+	       lower.contains("\"reason\":\"quotaexceeded\"");
+}
+
 QString EscapeHtml(const QString &text)
 {
 	QString out = text;
@@ -582,6 +589,9 @@ void ChatDock::showEvent(QShowEvent *event)
 	else
 		EnsurePlatformConnections();
 	RefreshViewers();
+	/* If OBS is already live, STREAMING_STARTED already fired — rediscover YouTube chat now. */
+	if (obs_frontend_streaming_active())
+		QTimer::singleShot(1500, this, &ChatDock::OnStreamingStarted);
 	QTimer::singleShot(0, this, &ChatDock::RelayoutMessageItems);
 }
 
@@ -751,8 +761,11 @@ void ChatDock::LoadAccount(Platform platform)
 		acc.login = acc.userName.toLower();
 		if (platform == YouTube) {
 			const QString savedVideo = QString::fromUtf8(obs_data_get_string(one, "youtube_video_id"));
+			const QString savedChat = QString::fromUtf8(obs_data_get_string(one, "youtube_live_chat_id"));
 			if (!savedVideo.isEmpty() && ytVideoId.isEmpty())
 				ytVideoId = savedVideo;
+			if (!savedChat.isEmpty() && ytLiveChatId.isEmpty())
+				ytLiveChatId = savedChat;
 		}
 	}
 	obs_data_release(one);
@@ -906,10 +919,15 @@ void ChatDock::EnsurePlatformConnections()
 
 void ChatDock::StartConnections()
 {
+	/* Preserve YouTube ids across restart — StopConnections clears them, LoadAccount restores from config. */
 	StopConnections();
 	connectionsActive = true;
 	EnsurePlatformConnections();
 	RefreshViewers();
+	if (!ytLiveChatId.isEmpty() && !youtubePollInFlight)
+		PollYouTubeChat();
+	if (obs_frontend_streaming_active())
+		QTimer::singleShot(2000, this, &ChatDock::OnStreamingStarted);
 }
 
 void ChatDock::StopConnections()
@@ -933,6 +951,7 @@ void ChatDock::StopConnections()
 	kickConnectedAnnounced = false;
 	youtubeConnectedAnnounced = false;
 	youtubeWaitingAnnounced = false;
+	youtubeQuotaAnnounced = false;
 	youtubePollInFlight = false;
 	youtubePageTokenFails = 0;
 	youtubeLastFullDiscoverMs = 0;
@@ -1536,43 +1555,98 @@ void ChatDock::SendTwitchMessage(const QString &text)
 	AppendMessage(msg);
 }
 
+void ChatDock::ReportYouTubeHttpError(int status, const QByteArray &body)
+{
+	if (YouTubeBodyLooksLikeQuota(body)) {
+		if (!youtubeQuotaAnnounced) {
+			youtubeQuotaAnnounced = true;
+			AppendSystemMessage(Tr("ChatDockYouTubeQuota"), YouTube);
+		}
+		return;
+	}
+	if (status == 401) {
+		youtubeConnectStarted = false;
+		AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
+		return;
+	}
+	if (status >= 400 && !youtubeConnectedAnnounced) {
+		const QJsonObject err = QJsonDocument::fromJson(body).object().value("error").toObject();
+		const QString msg = err.value("message").toString();
+		if (!msg.isEmpty())
+			AppendSystemMessage(Tr("ChatDockYouTubeApiError").arg(msg.left(120)), YouTube);
+		else if (status == 403)
+			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
+	}
+}
+
 void ChatDock::OnStreamingStarted()
 {
 	if (!connectionsActive || !availablePlatforms.contains(YouTube))
 		return;
-	/* Going live: chat id often appears a few seconds after OBS starts streaming. */
+	/* Going live / already live: chat id often appears shortly after the encoder is up. */
 	youtubeWaitingAnnounced = false;
 	if (ytLiveChatId.isEmpty()) {
-		if (!ytVideoId.isEmpty())
-			ResolveYouTubeLiveChatId(ytVideoId);
-		else if (QDateTime::currentMSecsSinceEpoch() - youtubeLastFullDiscoverMs >= 60000)
+		if (!ytVideoId.isEmpty()) {
+			ResolveYouTubeLiveChatId(ytVideoId, [this](bool ok) {
+				if (!ok && QDateTime::currentMSecsSinceEpoch() - youtubeLastFullDiscoverMs >= 30000)
+					StartYouTubeChat();
+			});
+		} else {
 			StartYouTubeChat();
+		}
 	}
 	if (!youtubeDiscoverTimer->isActive())
 		youtubeDiscoverTimer->start();
 }
 
-void ChatDock::NotifyYouTubeVideo(const QString &videoId)
+void ChatDock::PersistYouTubeIds()
 {
-	if (videoId.isEmpty())
+	if (!current_profile_config)
 		return;
-	ytVideoId = videoId;
-	if (current_profile_config) {
-		obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
-		obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(YouTube)) : nullptr;
-		if (one) {
-			obs_data_set_string(one, "youtube_video_id", videoId.toUtf8().constData());
-			obs_data_set_obj(root, PlatformKey(YouTube), one);
-			obs_data_set_obj(current_profile_config, "stream_accounts", root);
-		}
-		obs_data_release(one);
-		obs_data_release(root);
+	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
+	obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(YouTube)) : nullptr;
+	if (one) {
+		if (!ytVideoId.isEmpty())
+			obs_data_set_string(one, "youtube_video_id", ytVideoId.toUtf8().constData());
+		if (!ytLiveChatId.isEmpty())
+			obs_data_set_string(one, "youtube_live_chat_id", ytLiveChatId.toUtf8().constData());
+		else
+			obs_data_erase(one, "youtube_live_chat_id");
+		obs_data_set_obj(root, PlatformKey(YouTube), one);
+		obs_data_set_obj(current_profile_config, "stream_accounts", root);
 	}
-	if (!connectionsActive || ytLiveChatId.isEmpty() == false)
+	obs_data_release(one);
+	obs_data_release(root);
+}
+
+void ChatDock::NotifyYouTubeVideo(const QString &videoId, const QString &liveChatId)
+{
+	if (videoId.isEmpty() && liveChatId.isEmpty())
+		return;
+	if (!videoId.isEmpty())
+		ytVideoId = videoId;
+	if (!liveChatId.isEmpty()) {
+		const bool wasEmpty = ytLiveChatId.isEmpty();
+		ytLiveChatId = liveChatId;
+		youtubeWaitingAnnounced = false;
+		youtubeQuotaAnnounced = false;
+		PersistYouTubeIds();
+		blog(LOG_INFO, "[Stream Suite] YouTube liveChatId from Stream Info (%d chars)", liveChatId.size());
+		if (connectionsActive && (wasEmpty || !youtubeTimer->isActive()) && !youtubePollInFlight)
+			PollYouTubeChat();
+		else if (!connectionsActive && DockIsOpen())
+			StartConnections();
+		if (!youtubeDiscoverTimer->isActive() && connectionsActive)
+			youtubeDiscoverTimer->start();
+		return;
+	}
+	PersistYouTubeIds();
+	if (!connectionsActive || !ytLiveChatId.isEmpty())
 		return;
 	if (!youtubeDiscoverTimer->isActive())
 		youtubeDiscoverTimer->start();
-	ResolveYouTubeLiveChatId(videoId);
+	if (!ytVideoId.isEmpty())
+		ResolveYouTubeLiveChatId(ytVideoId);
 }
 
 void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<void(bool)> done)
@@ -1603,6 +1677,7 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 		};
 		auto finishOk = [this, done] {
 			youtubeWaitingAnnounced = false;
+			PersistYouTubeIds();
 			if (!youtubePollInFlight && !youtubeTimer->isActive())
 				PollYouTubeChat();
 			if (done)
@@ -1640,6 +1715,7 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 					     }
 				     } else {
 					     blog(LOG_WARNING, "[Stream Suite] YouTube videos.list HTTP %d", st);
+					     ReportYouTubeHttpError(st, payload);
 				     }
 				     if (done)
 					     done(false);
@@ -1652,7 +1728,7 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 		bq.addQueryItem("id", videoId);
 		burl.setQuery(bq);
 		Http(QString::fromUtf8(burl.toEncoded()), authHdr(), {}, "GET",
-		     [this, tryVideos, finishOk](int code, const QByteArray &body, const QString &) {
+		     [this, tryVideos, finishOk, done](int code, const QByteArray &body, const QString &) {
 			     if (!ytLiveChatId.isEmpty()) {
 				     finishOk();
 				     return;
@@ -1673,6 +1749,14 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 						     return;
 					     }
 				     }
+				     tryVideos();
+				     return;
+			     }
+			     ReportYouTubeHttpError(code, body);
+			     if (YouTubeBodyLooksLikeQuota(body)) {
+				     if (done)
+					     done(false);
+				     return;
 			     }
 			     tryVideos();
 		     });
@@ -1686,6 +1770,12 @@ void ChatDock::StartYouTubeChat()
 		if (!ok) {
 			youtubeConnectStarted = false;
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
+			return;
+		}
+		if (!ytLiveChatId.isEmpty()) {
+			youtubeWaitingAnnounced = false;
+			if (!youtubePollInFlight && !youtubeTimer->isActive())
+				PollYouTubeChat();
 			return;
 		}
 		auto authHdr = [this] {
@@ -1934,6 +2024,7 @@ void ChatDock::PollYouTubeChat()
 					     ytLiveChatId.clear();
 					     ytNextPage.clear();
 					     youtubeConnectedAnnounced = false;
+					     PersistYouTubeIds();
 					     blog(LOG_INFO, "[Stream Suite] YouTube live chat went offline");
 					     if (connectionsActive && !youtubeDiscoverTimer->isActive())
 						     youtubeDiscoverTimer->start();
@@ -2029,8 +2120,9 @@ void ChatDock::PollYouTubeChat()
 				     blog(LOG_WARNING, "[Stream Suite] YouTube chat poll HTTP %d: %s", status,
 					  error.isEmpty() ? body.left(200).constData() : error.toUtf8().constData());
 				     if (status == 401 || status == 403) {
-					     youtubeConnectStarted = false;
-					     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
+					     ReportYouTubeHttpError(status, body);
+					     if (status == 401)
+						     youtubeConnectStarted = false;
 					     return;
 				     }
 				     if (status == 400) {

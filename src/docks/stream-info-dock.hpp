@@ -34,6 +34,8 @@ public:
 	void RefreshAvailablePlatforms();
 	void UpdateDisconnectState();
 	void OpenSettings();
+	/* Reload YouTube broadcast (if YouTube account linked) and push liveChatId to chat. */
+	void RefreshYouTubeForChat();
 
 protected:
 	void showEvent(QShowEvent *event) override;
