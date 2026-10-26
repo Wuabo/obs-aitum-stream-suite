@@ -89,6 +89,7 @@ private:
 		Platform platform = Twitch;
 		QString id;
 		QString user;
+		QString userLogin; /* Twitch login / Kick slug for delete-by-user matching */
 		QString color;
 		QString text;
 		qint64 ts = 0;
@@ -214,6 +215,11 @@ private:
 	void AppendMessage(const ChatMessage &msg);
 	void AppendSystemMessage(const QString &text, Platform platform, bool withIcon = true);
 	void ClearSystemMessages();
+	void MarkMessageDeleted(const QString &messageId, const QString &tooltip = QString());
+	void MarkMessagesDeletedByUser(Platform platform, const QString &userLogin, const QString &tooltip = QString());
+	void MarkPlatformMessagesDeleted(Platform platform, const QString &tooltip = QString());
+	void ApplyDeletedStyleToRow(QWidget *row, QListWidgetItem *item, const QString &tooltip);
+	static QPixmap DeletedMessageIconPixmap(int size = 14);
 	void RelayoutMessageItems();
 	int LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewportWidth) const;
 	void FetchBadgePixmap(const QString &url, QLabel *target);

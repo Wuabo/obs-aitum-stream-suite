@@ -12,6 +12,7 @@
 #include <QDockWidget>
 #include <QEvent>
 #include <QFrame>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QJsonArray>
@@ -1395,8 +1396,6 @@ void ChatDock::HandleTwitchLine(const QString &line)
 		}
 		return;
 	}
-	if (!line.contains(QStringLiteral("PRIVMSG")))
-		return;
 
 	QString tags;
 	QString rest = line;
@@ -1405,6 +1404,39 @@ void ChatDock::HandleTwitchLine(const QString &line)
 		tags = rest.mid(1, sp - 1);
 		rest = rest.mid(sp + 1);
 	}
+	auto tagValue = [&tags](const QString &key) -> QString {
+		for (const QString &part : tags.split(QLatin1Char(';'))) {
+			if (part.section(QLatin1Char('='), 0, 0) == key)
+				return part.section(QLatin1Char('='), 1);
+		}
+		return {};
+	};
+
+	/* Single message delete. */
+	if (rest.contains(QStringLiteral("CLEARMSG"))) {
+		const QString msgId = tagValue(QStringLiteral("target-msg-id"));
+		if (!msgId.isEmpty())
+			MarkMessageDeleted(msgId, Tr("ChatDockMessageRemoved"));
+		return;
+	}
+	/* Clear all chat, or all messages from one user (ban/timeout). */
+	if (rest.contains(QStringLiteral("CLEARCHAT"))) {
+		const int colon = rest.lastIndexOf(QStringLiteral(" :"));
+		const QString targetUser = colon >= 0 ? rest.mid(colon + 2).trimmed() : QString();
+		if (targetUser.isEmpty()) {
+			MarkPlatformMessagesDeleted(Twitch, Tr("ChatDockChatCleared"));
+			AppendSystemMessage(Tr("ChatDockChatCleared"), Twitch);
+		} else {
+			const QString tip = Tr("ChatDockMessageRemovedUser").arg(targetUser);
+			MarkMessagesDeletedByUser(Twitch, targetUser, tip);
+			AppendSystemMessage(tip, Twitch);
+		}
+		return;
+	}
+
+	if (!rest.contains(QStringLiteral("PRIVMSG")))
+		return;
+
 	const int excl = rest.indexOf(QLatin1Char('!'));
 	const int priv = rest.indexOf(QStringLiteral("PRIVMSG"));
 	const int colon = rest.indexOf(QStringLiteral(" :"), priv >= 0 ? priv : 0);
@@ -1431,7 +1463,11 @@ void ChatDock::HandleTwitchLine(const QString &line)
 			badgesTag = val;
 		else if (key == QLatin1String("emotes"))
 			emotesTag = val;
+		else if (key == QLatin1String("login") && !val.isEmpty())
+			msg.userLogin = val.toLower();
 	}
+	if (msg.userLogin.isEmpty())
+		msg.userLogin = (excl > 0 ? rest.left(excl).section(QLatin1Char(':'), -1) : msg.user).toLower();
 	msg.badges = TwitchBadgesFromTags(badgesTag);
 	msg.emotes = TwitchEmotesFromTag(emotesTag);
 	if (msg.id.isEmpty())
@@ -1649,6 +1685,24 @@ void ChatDock::PollYouTubeChat()
 					     const QJsonObject obj = row.toObject();
 					     const QJsonObject snip = obj.value("snippet").toObject();
 					     const QString type = snip.value("type").toString();
+					     if (type == QLatin1String("tombstone")) {
+						     const QString tombId = obj.value(QStringLiteral("id")).toString();
+						     if (!tombId.isEmpty())
+							     MarkMessageDeleted(tombId, Tr("ChatDockMessageRemoved"));
+						     continue;
+					     }
+					     if (type == QLatin1String("messageDeletedEvent")) {
+						     QString deletedId =
+							     snip.value(QStringLiteral("messageDeletedDetails"))
+								     .toObject()
+								     .value(QStringLiteral("deletedMessageId"))
+								     .toString();
+						     if (deletedId.isEmpty())
+							     deletedId = obj.value(QStringLiteral("id")).toString();
+						     if (!deletedId.isEmpty())
+							     MarkMessageDeleted(deletedId, Tr("ChatDockMessageRemoved"));
+						     continue;
+					     }
 					     QString text =
 						     snip.value("textMessageDetails").toObject().value("messageText").toString();
 					     if (text.isEmpty())
@@ -2179,13 +2233,45 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 		OnKickStreamOffline();
 		return;
 	}
+
+	const QString type = data.value(QStringLiteral("type")).toString();
+	if (eventName.contains(QStringLiteral("MessageDeleted")) ||
+	    eventName.contains(QStringLiteral("ChatMessageDeleted")) || type == QLatin1String("message_deleted")) {
+		QString msgId = JsonId(data.value(QStringLiteral("message_id")));
+		if (msgId.isEmpty())
+			msgId = JsonId(data.value(QStringLiteral("id")));
+		if (msgId.isEmpty())
+			msgId = JsonId(data.value(QStringLiteral("message")).toObject().value(QStringLiteral("id")));
+		if (!msgId.isEmpty())
+			MarkMessageDeleted(msgId, Tr("ChatDockMessageRemoved"));
+		return;
+	}
+	if (eventName.contains(QStringLiteral("ChatroomClear")) || eventName.contains(QStringLiteral("ChatCleared")) ||
+	    type == QLatin1String("chatroom_clear") || type == QLatin1String("chat_cleared")) {
+		MarkPlatformMessagesDeleted(Kick, Tr("ChatDockChatCleared"));
+		AppendSystemMessage(Tr("ChatDockChatCleared"), Kick);
+		return;
+	}
+	if (eventName.contains(QStringLiteral("UserBanned"))) {
+		const QString user = data.value(QStringLiteral("username"))
+					     .toString(data.value(QStringLiteral("user"))
+							       .toObject()
+							       .value(QStringLiteral("username"))
+							       .toString());
+		if (!user.isEmpty()) {
+			const QString tip = Tr("ChatDockMessageRemovedUser").arg(user);
+			MarkMessagesDeletedByUser(Kick, user, tip);
+			AppendSystemMessage(tip, Kick);
+		}
+		return;
+	}
+
 	const bool looksLikeChat = data.contains(QStringLiteral("content")) || data.contains(QStringLiteral("sender")) ||
 				   eventName.contains(QStringLiteral("ChatMessage"));
 	if (!looksLikeChat)
 		return;
 	if (!eventName.isEmpty() && !eventName.contains(QStringLiteral("ChatMessage")) &&
-	    data.value(QStringLiteral("type")).toString() != QLatin1String("message") &&
-	    data.value(QStringLiteral("type")).toString() != QLatin1String("reply") &&
+	    type != QLatin1String("message") && type != QLatin1String("reply") &&
 	    !data.contains(QStringLiteral("content")))
 		return;
 
@@ -2197,6 +2283,7 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 	if (msg.id.isEmpty())
 		msg.id = JsonId(data.value(QStringLiteral("message_id")));
 	msg.user = sender.value(QStringLiteral("username")).toString(sender.value(QStringLiteral("slug")).toString());
+	msg.userLogin = sender.value(QStringLiteral("slug")).toString(msg.user).toLower();
 	if (msg.user.isEmpty())
 		msg.user = QStringLiteral("Kick");
 	msg.color = identity.value(QStringLiteral("color")).toString(QStringLiteral("#53FC18"));
@@ -2227,7 +2314,8 @@ void ChatDock::OnKickWsMessage(const QString &message)
 		OnKickStreamOffline();
 		return;
 	}
-	if (!event.contains(QStringLiteral("ChatMessage")))
+	if (!event.contains(QStringLiteral("ChatMessage")) && !event.contains(QStringLiteral("MessageDeleted")) &&
+	    !event.contains(QStringLiteral("ChatroomClear")) && !event.contains(QStringLiteral("UserBanned")))
 		return;
 	QJsonObject data = root.value(QStringLiteral("data")).toObject();
 	if (data.isEmpty())
@@ -3124,6 +3212,117 @@ void ChatDock::RelayoutMessageItems()
 	}
 }
 
+QPixmap ChatDock::DeletedMessageIconPixmap(int size)
+{
+	static QHash<int, QPixmap> cache;
+	if (cache.contains(size))
+		return cache.value(size);
+
+	QPixmap pix(size, size);
+	pix.fill(Qt::transparent);
+	QPainter p(&pix);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	/* Soft red circle with a white "✕" — tooltip carries the full explanation. */
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(0xE5, 0x3E, 0x3E));
+	p.drawEllipse(QRectF(0.5, 0.5, size - 1.0, size - 1.0));
+	QPen pen(Qt::white, qMax(1.4, size * 0.14), Qt::SolidLine, Qt::RoundCap);
+	p.setPen(pen);
+	const qreal m = size * 0.30;
+	p.drawLine(QPointF(m, m), QPointF(size - m, size - m));
+	p.drawLine(QPointF(size - m, m), QPointF(m, size - m));
+	cache.insert(size, pix);
+	return pix;
+}
+
+void ChatDock::ApplyDeletedStyleToRow(QWidget *row, QListWidgetItem *item, const QString &tooltip)
+{
+	if (!row || !item)
+		return;
+	if (item->data(Qt::UserRole + 2).toBool())
+		return;
+	item->setData(Qt::UserRole + 2, true);
+
+	row->setStyleSheet(QStringLiteral(
+		"QFrame#chatMsgRow { background: #141820; border-radius: 6px; border: 1px solid #4a2a2a; }"));
+
+	if (auto *body = row->findChild<QWidget *>(QStringLiteral("chatMsgBody"))) {
+		body->setStyleSheet(
+			QStringLiteral("background: transparent; color: #7a7a7a; border: none; padding: 0; margin: 0;"));
+		auto *fade = new QGraphicsOpacityEffect(body);
+		fade->setOpacity(0.55);
+		body->setGraphicsEffect(fade);
+		if (auto *lab = qobject_cast<QLabel *>(body)) {
+			QFont f = lab->font();
+			f.setStrikeOut(true);
+			lab->setFont(f);
+		}
+	}
+
+	auto *lay = qobject_cast<QHBoxLayout *>(row->layout());
+	if (lay && !row->findChild<QLabel *>(QStringLiteral("chatMsgDeletedIcon"))) {
+		auto *delIcon = new QLabel(row);
+		delIcon->setObjectName(QStringLiteral("chatMsgDeletedIcon"));
+		delIcon->setFixedSize(14, 14);
+		delIcon->setScaledContents(true);
+		delIcon->setAlignment(Qt::AlignCenter);
+		delIcon->setPixmap(DeletedMessageIconPixmap(14));
+		delIcon->setToolTip(tooltip.isEmpty() ? Tr("ChatDockMessageRemoved") : tooltip);
+		delIcon->setCursor(Qt::WhatsThisCursor);
+		lay->addWidget(delIcon, 0, Qt::AlignTop);
+	}
+
+	if (messageList)
+		LayoutMessageRow(row, item, messageList->viewport()->width());
+}
+
+void ChatDock::MarkMessageDeleted(const QString &messageId, const QString &tooltip)
+{
+	if (messageId.isEmpty() || !messageList)
+		return;
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || item->data(Qt::UserRole + 1).toString() != messageId)
+			continue;
+		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tooltip);
+		return;
+	}
+}
+
+void ChatDock::MarkMessagesDeletedByUser(Platform platform, const QString &userLogin, const QString &tooltip)
+{
+	if (userLogin.isEmpty() || !messageList)
+		return;
+	const QString want = userLogin.toLower();
+	const QString tip = tooltip.isEmpty() ? Tr("ChatDockMessageRemovedUser").arg(userLogin) : tooltip;
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || item->data(Qt::UserRole).toBool())
+			continue;
+		if (item->data(Qt::UserRole + 4).toInt() != int(platform))
+			continue;
+		const QString login = item->data(Qt::UserRole + 3).toString();
+		if (login != want && login.toLower() != want)
+			continue;
+		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tip);
+	}
+}
+
+void ChatDock::MarkPlatformMessagesDeleted(Platform platform, const QString &tooltip)
+{
+	if (!messageList)
+		return;
+	const QString tip = tooltip.isEmpty() ? Tr("ChatDockChatCleared") : tooltip;
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || item->data(Qt::UserRole).toBool())
+			continue;
+		if (item->data(Qt::UserRole + 4).toInt() != int(platform))
+			continue;
+		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tip);
+	}
+}
+
 void ChatDock::AppendMessage(const ChatMessage &msg)
 {
 	if (msg.text.isEmpty())
@@ -3162,6 +3361,10 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	auto *item = new QListWidgetItem(messageList);
 	item->setData(Qt::UserRole, msg.system);
 	item->setData(Qt::UserRole + 1, msg.id);
+	item->setData(Qt::UserRole + 2, false); /* deleted */
+	item->setData(Qt::UserRole + 3,
+		      msg.userLogin.isEmpty() ? msg.user.toLower() : msg.userLogin.toLower());
+	item->setData(Qt::UserRole + 4, int(msg.platform));
 
 	auto *row = new QFrame(messageList);
 	row->setObjectName(QStringLiteral("chatMsgRow"));
