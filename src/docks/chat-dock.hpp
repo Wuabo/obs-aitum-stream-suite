@@ -209,6 +209,7 @@ private:
 	QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity) const;
 	static QString KickRoleBadgeKey(const QString &type, int count = 0);
 	static QPixmap KickRoleBadgePixmap(const QString &role, int size = 14);
+	static QPixmap YouTubeRoleBadgePixmap(const QString &role, int size = 14);
 	QString KickSubscriberBadgeUrl(int months) const;
 	void IngestKickSubscriberBadges(const QJsonArray &badges);
 	static QString KickEmoteImageUrl(const QString &emoteId);

@@ -428,8 +428,13 @@ ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 	connect(youtubeDiscoverTimer, &QTimer::timeout, this, [this] {
 		if (!connectionsActive || !availablePlatforms.contains(YouTube))
 			return;
-		if (ytLiveChatId.isEmpty())
+		if (ytLiveChatId.isEmpty()) {
 			StartYouTubeChat();
+			return;
+		}
+		/* Chat id known but poll never started (race with viewers) — recover. */
+		if (!youtubeConnectedAnnounced || !youtubeTimer->isActive())
+			PollYouTubeChat();
 	});
 
 	kickReconnectTimer = new QTimer(this);
@@ -1004,72 +1009,119 @@ void ChatDock::FetchYouTubeViewers()
 			SetViewerCount(YouTube, 0, false);
 			return;
 		}
-		auto applyVideoId = [this](const QString &videoId) {
+		auto ytAuth = [this] {
+			return QList<QPair<QByteArray, QByteArray>>{
+				{QByteArrayLiteral("Authorization"),
+				 QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}};
+		};
+		auto applyVideoId = [this, ytAuth](const QString &videoId) {
 			if (videoId.isEmpty()) {
 				SetViewerCount(YouTube, 0, false);
 				return;
 			}
 			if (ytVideoId.isEmpty())
 				ytVideoId = videoId;
-			const Account &acc = accounts[YouTube];
 			const QString url =
 				QStringLiteral("https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=") +
 				videoId;
-			Http(url,
-			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {},
-			     "GET", [this](int status, const QByteArray &body, const QString &) {
-				     if (status < 200 || status >= 300) {
-					     SetViewerCount(YouTube, 0, false);
-					     return;
-				     }
-				     const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-				     if (items.isEmpty()) {
-					     SetViewerCount(YouTube, 0, false);
-					     return;
-				     }
-				     const QString viewers = items.at(0)
-								    .toObject()
-								    .value("liveStreamingDetails")
-								    .toObject()
-								    .value("concurrentViewers")
-								    .toString();
-				     if (viewers.isEmpty())
-					     SetViewerCount(YouTube, 0, false);
-				     else
-					     SetViewerCount(YouTube, viewers.toInt(), true);
-			     });
+			Http(url, ytAuth(), {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+				if (status < 200 || status >= 300) {
+					SetViewerCount(YouTube, 0, false);
+					return;
+				}
+				const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				if (items.isEmpty()) {
+					SetViewerCount(YouTube, 0, false);
+					return;
+				}
+				const QJsonObject details =
+					items.at(0).toObject().value("liveStreamingDetails").toObject();
+				const QString chatId = details.value("activeLiveChatId").toString();
+				if (!chatId.isEmpty()) {
+					const bool needPoll = ytLiveChatId.isEmpty() || !youtubeConnectedAnnounced;
+					ytLiveChatId = chatId;
+					/* Viewers path can find the chat id first — start polling or we stay on Connecting. */
+					if (needPoll && connectionsActive) {
+						if (!youtubeConnectedAnnounced) {
+							youtubeConnectedAnnounced = true;
+							AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+									    YouTube);
+						}
+						if (!youtubeTimer->isActive())
+							PollYouTubeChat();
+					}
+				}
+				const QString viewers = details.value("concurrentViewers").toString();
+				if (viewers.isEmpty())
+					SetViewerCount(YouTube, 0, false);
+				else
+					SetViewerCount(YouTube, viewers.toInt(), true);
+			});
 		};
 		if (!ytVideoId.isEmpty()) {
 			applyVideoId(ytVideoId);
 			return;
 		}
 		/* Discover an active broadcast so the YouTube chip can update without waiting for chat. */
-		const Account &acc = accounts[YouTube];
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 		QUrlQuery query;
 		query.addQueryItem("part", "id,snippet,status");
 		query.addQueryItem("broadcastStatus", "active");
 		query.addQueryItem("broadcastType", "all");
-		query.addQueryItem("maxResults", "1");
+		query.addQueryItem("maxResults", "5");
 		url.setQuery(query);
-		Http(url.toString(),
-		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
-		     [this, applyVideoId](int status, const QByteArray &body, const QString &) {
-			     if (status < 200 || status >= 300) {
-				     SetViewerCount(YouTube, 0, false);
-				     return;
+		Http(url.toString(), ytAuth(), {}, "GET",
+		     [this, applyVideoId, ytAuth](int status, const QByteArray &body, const QString &) {
+			     if (status >= 200 && status < 300) {
+				     const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+				     if (!items.isEmpty()) {
+					     const QJsonObject item = items.at(0).toObject();
+					     const QString id = item.value("id").toString();
+					     const QString chatId =
+						     item.value("snippet").toObject().value("activeLiveChatId").toString();
+					     if (!chatId.isEmpty()) {
+						     const bool needPoll = ytLiveChatId.isEmpty() || !youtubeConnectedAnnounced;
+						     ytLiveChatId = chatId;
+						     if (needPoll && connectionsActive) {
+							     if (!youtubeConnectedAnnounced) {
+								     youtubeConnectedAnnounced = true;
+								     AppendSystemMessage(
+									     Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+									     YouTube);
+							     }
+							     if (!youtubeTimer->isActive())
+								     PollYouTubeChat();
+						     }
+					     }
+					     applyVideoId(id);
+					     return;
+				     }
 			     }
-			     const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-			     if (items.isEmpty()) {
-				     SetViewerCount(YouTube, 0, false);
-				     return;
-			     }
-			     const QJsonObject item = items.at(0).toObject();
-			     const QString id = item.value("id").toString();
-			     const QString chatId = item.value("snippet").toObject().value("activeLiveChatId").toString();
-			     if (!chatId.isEmpty() && ytLiveChatId.isEmpty())
-				     ytLiveChatId = chatId;
-			     applyVideoId(id);
+			     /* Fall back to search.list (live) → videos.list, same as chat discovery. */
+			     QUrl search(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
+			     QUrlQuery sq;
+			     sq.addQueryItem("part", "snippet");
+			     sq.addQueryItem("forMine", "true");
+			     sq.addQueryItem("type", "video");
+			     sq.addQueryItem("eventType", "live");
+			     sq.addQueryItem("maxResults", "5");
+			     search.setQuery(sq);
+			     Http(search.toString(), ytAuth(), {}, "GET",
+				  [applyVideoId](int code, const QByteArray &payload, const QString &) {
+					  QString videoId;
+					  if (code >= 200 && code < 300) {
+						  const QJsonArray items =
+							  QJsonDocument::fromJson(payload).object().value("items").toArray();
+						  if (!items.isEmpty())
+							  videoId = items.at(0)
+									    .toObject()
+									    .value("id")
+									    .toObject()
+									    .value("videoId")
+									    .toString();
+					  }
+					  applyVideoId(videoId);
+				  });
 		     });
 	});
 }
@@ -1501,10 +1553,16 @@ void ChatDock::StartYouTubeChat()
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
 			return;
 		}
-		const Account &acc = accounts[YouTube];
-		auto authHdr = [acc] {
+		if (!ytLiveChatId.isEmpty()) {
+			/* Already resolved (e.g. by FetchYouTubeViewers) — just poll. */
+			if (!youtubeTimer->isActive())
+				PollYouTubeChat();
+			return;
+		}
+		auto authHdr = [this] {
 			return QList<QPair<QByteArray, QByteArray>>{
-				{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}};
+				{QByteArrayLiteral("Authorization"),
+				 QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}};
 		};
 		auto pickBroadcast = [](const QJsonArray &items) -> QJsonObject {
 			QJsonObject best;
@@ -1512,7 +1570,8 @@ void ChatDock::StartYouTubeChat()
 			for (const QJsonValue &row : items) {
 				const QJsonObject item = row.toObject();
 				const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
-				const bool hasChat = !item.value("snippet").toObject().value("activeLiveChatId").toString().isEmpty();
+				const bool hasChat =
+					!item.value("snippet").toObject().value("activeLiveChatId").toString().isEmpty();
 				int score = 0;
 				if (life == QLatin1String("live"))
 					score = 50;
@@ -1534,8 +1593,11 @@ void ChatDock::StartYouTubeChat()
 			return best;
 		};
 		auto startPollOrResolve = [this, authHdr](QString videoId, QString chatId) {
-			ytVideoId = videoId;
-			ytLiveChatId = chatId;
+			/* Never wipe a chat id already found by the viewers path. */
+			if (!videoId.isEmpty())
+				ytVideoId = videoId;
+			if (!chatId.isEmpty())
+				ytLiveChatId = chatId;
 			auto begin = [this] {
 				if (ytLiveChatId.isEmpty()) {
 					if (!youtubeConnectedAnnounced)
@@ -1543,6 +1605,10 @@ void ChatDock::StartYouTubeChat()
 					return;
 				}
 				ytNextPage.clear();
+				if (!youtubeConnectedAnnounced) {
+					youtubeConnectedAnnounced = true;
+					AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
+				}
 				PollYouTubeChat();
 			};
 			if (!ytLiveChatId.isEmpty() || ytVideoId.isEmpty()) {
@@ -1555,13 +1621,18 @@ void ChatDock::StartYouTubeChat()
 				     if (st >= 200 && st < 300) {
 					     const QJsonArray vids =
 						     QJsonDocument::fromJson(payload).object().value("items").toArray();
-					     if (!vids.isEmpty())
-						     ytLiveChatId = vids.at(0)
-									    .toObject()
-									    .value("liveStreamingDetails")
-									    .toObject()
-									    .value("activeLiveChatId")
-									    .toString();
+					     if (!vids.isEmpty()) {
+						     const QString resolved = vids.at(0)
+										     .toObject()
+										     .value("liveStreamingDetails")
+										     .toObject()
+										     .value("activeLiveChatId")
+										     .toString();
+						     if (!resolved.isEmpty())
+							     ytLiveChatId = resolved;
+					     }
+				     } else {
+					     blog(LOG_WARNING, "[Stream Suite] YouTube videos.list HTTP %d", st);
 				     }
 				     begin();
 			     });
@@ -1577,12 +1648,30 @@ void ChatDock::StartYouTubeChat()
 			url.setQuery(query);
 			Http(url.toString(), authHdr(), {}, "GET",
 			     [this, startPollOrResolve](int code, const QByteArray &body, const QString &) {
+				     /* Another path (viewers) may have already resolved the chat. */
+				     if (!ytLiveChatId.isEmpty()) {
+					     if (!youtubeConnectedAnnounced) {
+						     youtubeConnectedAnnounced = true;
+						     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+									 YouTube);
+					     }
+					     if (!youtubeTimer->isActive())
+						     PollYouTubeChat();
+					     return;
+				     }
 				     QString videoId;
 				     if (code >= 200 && code < 300) {
 					     const QJsonArray items =
 						     QJsonDocument::fromJson(body).object().value("items").toArray();
 					     if (!items.isEmpty())
-						     videoId = items.at(0).toObject().value("id").toObject().value("videoId").toString();
+						     videoId = items.at(0)
+								       .toObject()
+								       .value("id")
+								       .toObject()
+								       .value("videoId")
+								       .toString();
+				     } else {
+					     blog(LOG_WARNING, "[Stream Suite] YouTube search.list HTTP %d", code);
 				     }
 				     if (videoId.isEmpty()) {
 					     if (!youtubeConnectedAnnounced)
@@ -1601,21 +1690,35 @@ void ChatDock::StartYouTubeChat()
 			query.addQueryItem("maxResults", "50");
 			url.setQuery(query);
 			Http(url.toString(), authHdr(), {}, "GET",
-			     [pickBroadcast, startPollOrResolve, trySearchLive](int code, const QByteArray &body, const QString &) {
+			     [this, pickBroadcast, startPollOrResolve, trySearchLive](int code, const QByteArray &body,
+										      const QString &) {
+				     if (!ytLiveChatId.isEmpty()) {
+					     if (!youtubeConnectedAnnounced) {
+						     youtubeConnectedAnnounced = true;
+						     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+									 YouTube);
+					     }
+					     if (!youtubeTimer->isActive())
+						     PollYouTubeChat();
+					     return;
+				     }
 				     if (code >= 200 && code < 300) {
-					     const QJsonObject best =
-						     pickBroadcast(QJsonDocument::fromJson(body).object().value("items").toArray());
+					     const QJsonObject best = pickBroadcast(
+						     QJsonDocument::fromJson(body).object().value("items").toArray());
 					     if (!best.isEmpty()) {
-						     startPollOrResolve(best.value("id").toString(),
-									best.value("snippet").toObject().value("activeLiveChatId").toString());
+						     startPollOrResolve(
+							     best.value("id").toString(),
+							     best.value("snippet").toObject().value("activeLiveChatId").toString());
 						     return;
 					     }
+				     } else {
+					     blog(LOG_WARNING, "[Stream Suite] YouTube liveBroadcasts mine HTTP %d", code);
 				     }
 				     trySearchLive();
 			     });
 		};
 		auto tryStatus = [this, authHdr, pickBroadcast, startPollOrResolve](const QString &status,
-										     std::function<void()> next) {
+										    std::function<void()> next) {
 			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 			QUrlQuery query;
 			query.addQueryItem("part", "snippet,contentDetails,status");
@@ -1624,13 +1727,24 @@ void ChatDock::StartYouTubeChat()
 			query.addQueryItem("maxResults", "25");
 			url.setQuery(query);
 			Http(url.toString(), authHdr(), {}, "GET",
-			     [pickBroadcast, startPollOrResolve, next](int code, const QByteArray &body, const QString &) {
+			     [this, pickBroadcast, startPollOrResolve, next](int code, const QByteArray &body, const QString &) {
+				     if (!ytLiveChatId.isEmpty()) {
+					     if (!youtubeConnectedAnnounced) {
+						     youtubeConnectedAnnounced = true;
+						     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+									 YouTube);
+					     }
+					     if (!youtubeTimer->isActive())
+						     PollYouTubeChat();
+					     return;
+				     }
 				     if (code >= 200 && code < 300) {
-					     const QJsonObject best =
-						     pickBroadcast(QJsonDocument::fromJson(body).object().value("items").toArray());
+					     const QJsonObject best = pickBroadcast(
+						     QJsonDocument::fromJson(body).object().value("items").toArray());
 					     if (!best.isEmpty()) {
-						     startPollOrResolve(best.value("id").toString(),
-									best.value("snippet").toObject().value("activeLiveChatId").toString());
+						     startPollOrResolve(
+							     best.value("id").toString(),
+							     best.value("snippet").toObject().value("activeLiveChatId").toString());
 						     return;
 					     }
 				     } else if (code == 401 || code == 403) {
@@ -1639,9 +1753,7 @@ void ChatDock::StartYouTubeChat()
 				     next();
 			     });
 		};
-		tryStatus(QStringLiteral("active"), [this, tryStatus, tryMine] {
-			tryStatus(QStringLiteral("upcoming"), tryMine);
-		});
+		tryStatus(QStringLiteral("active"), [tryStatus, tryMine] { tryStatus(QStringLiteral("upcoming"), tryMine); });
 	});
 }
 
@@ -1651,8 +1763,11 @@ void ChatDock::PollYouTubeChat()
 		return;
 	EnsureToken(YouTube, [this](bool ok) {
 		if (!ok || ytLiveChatId.isEmpty()) {
-			if (!ok)
+			if (!ok) {
 				blog(LOG_WARNING, "[Stream Suite] YouTube chat poll: token failed");
+				if (connectionsActive && !ytLiveChatId.isEmpty())
+					youtubeTimer->start(8000);
+			}
 			return;
 		}
 		const Account &acc = accounts[YouTube];
@@ -1674,7 +1789,11 @@ void ChatDock::PollYouTubeChat()
 					     SetViewerCount(YouTube, 0, false);
 					     ytLiveChatId.clear();
 					     ytNextPage.clear();
+					     youtubeConnectedAnnounced = false;
 					     blog(LOG_INFO, "[Stream Suite] YouTube live chat went offline");
+					     if (connectionsActive && !youtubeDiscoverTimer->isActive())
+						     youtubeDiscoverTimer->start();
+					     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
 					     return;
 				     }
 				     ytNextPage = root.value("nextPageToken").toString();
@@ -1731,16 +1850,20 @@ void ChatDock::PollYouTubeChat()
 					     msg.color = QStringLiteral("#FF5555");
 					     msg.text = text;
 					     msg.ts = QDateTime::currentMSecsSinceEpoch();
+					     msg.userLogin = author.value("channelId").toString();
 					     if (author.value("isChatOwner").toBool())
-						     msg.badges.append({QStringLiteral("owner"), QString(), QStringLiteral("Owner")});
+						     msg.badges.append({QStringLiteral("owner"), QStringLiteral("yt-role:owner"),
+									QStringLiteral("Owner")});
 					     if (author.value("isChatModerator").toBool())
-						     msg.badges.append({QStringLiteral("mod"), QString(), QStringLiteral("Mod")});
+						     msg.badges.append({QStringLiteral("mod"), QStringLiteral("yt-role:moderator"),
+									QStringLiteral("Moderator")});
 					     if (author.value("isChatSponsor").toBool())
-						     msg.badges.append(
-							     {QStringLiteral("member"), QString(), QStringLiteral("Member")});
+						     msg.badges.append({QStringLiteral("member"), QStringLiteral("yt-role:member"),
+									QStringLiteral("Member")});
 					     if (author.value("isVerified").toBool())
-						     msg.badges.append(
-							     {QStringLiteral("verified"), QString(), QStringLiteral("Verified")});
+						     msg.badges.append({QStringLiteral("verified"),
+									QStringLiteral("yt-role:verified"),
+									QStringLiteral("Verified")});
 					     AppendMessage(msg);
 				     }
 			     } else {
@@ -1749,6 +1872,15 @@ void ChatDock::PollYouTubeChat()
 				     if (status == 401 || status == 403) {
 					     youtubeConnectStarted = false;
 					     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
+					     return;
+				     }
+				     if (status == 404 || status == 400) {
+					     /* Stale/invalid liveChatId — rediscover. */
+					     ytLiveChatId.clear();
+					     ytNextPage.clear();
+					     youtubeConnectedAnnounced = false;
+					     if (connectionsActive)
+						     StartYouTubeChat();
 					     return;
 				     }
 				     interval = 8000;
@@ -3039,7 +3171,68 @@ void ChatDock::ApplyBadgeToLabel(const ChatBadge &badge, QLabel *target)
 		target->setPixmap(KickRoleBadgePixmap(role, 14));
 		return;
 	}
+	if (badge.url.startsWith(QLatin1String("yt-role:"))) {
+		const QString role = badge.url.mid(QStringLiteral("yt-role:").size());
+		target->setMovie(nullptr);
+		target->setPixmap(YouTubeRoleBadgePixmap(role, 14));
+		return;
+	}
 	FetchBadgePixmap(badge.url, target);
+}
+
+QPixmap ChatDock::YouTubeRoleBadgePixmap(const QString &role, int size)
+{
+	QString r = role.trimmed().toLower();
+	if (r == QLatin1String("mod"))
+		r = QStringLiteral("moderator");
+	else if (r == QLatin1String("sponsor"))
+		r = QStringLiteral("member");
+
+	const QString cacheKey = QStringLiteral("yt:") + r + QLatin1Char('@') + QString::number(size);
+	static QHash<QString, QPixmap> cache;
+	if (cache.contains(cacheKey))
+		return cache.value(cacheKey);
+
+	QPixmap pix(size, size);
+	pix.fill(Qt::transparent);
+
+	const QString rel = QStringLiteral("youtube-badges/%1.svg").arg(r);
+	char *modPath = obs_module_file(rel.toUtf8().constData());
+	QString svgPath = modPath ? QString::fromUtf8(modPath) : QString();
+	if (modPath)
+		bfree(modPath);
+
+	QSvgRenderer renderer;
+	if (!svgPath.isEmpty() && QFile::exists(svgPath))
+		renderer.load(svgPath);
+	if (!renderer.isValid()) {
+		const QString local = QStringLiteral("data/youtube-badges/%1.svg").arg(r);
+		if (QFile::exists(local))
+			renderer.load(local);
+	}
+	if (renderer.isValid()) {
+		QPainter p(&pix);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		renderer.render(&p, QRectF(0, 0, size, size));
+		cache.insert(cacheKey, pix);
+		return pix;
+	}
+
+	/* Colored square fallback if SVG missing. */
+	QColor fill(0x60, 0x60, 0x60);
+	if (r == QLatin1String("owner"))
+		fill = QColor(0xFF, 0x00, 0x00);
+	else if (r == QLatin1String("moderator"))
+		fill = QColor(0x5B, 0x8D, 0xEF);
+	else if (r == QLatin1String("member"))
+		fill = QColor(0x0F, 0x9D, 0x58);
+	QPainter p(&pix);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(Qt::NoPen);
+	p.setBrush(fill);
+	p.drawRoundedRect(QRectF(0, 0, size, size), size * 0.2, size * 0.2);
+	cache.insert(cacheKey, pix);
+	return pix;
 }
 
 void ChatDock::ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int size)
@@ -3403,23 +3596,10 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	const QString nameColor = msg.system ? QStringLiteral("#9a9a9a")
 					     : (msg.color.isEmpty() ? PlatformAccent(msg.platform).name() : msg.color);
 
-	/* Never paint letter-pill badges — image badges live in their own QLabels (Twitch/Kick).
-	 * YouTube owner/mod without CDN URLs still get a short text chip in the name span. */
-	QString badgesHtml;
-	if (msg.platform == YouTube) {
-		for (const ChatBadge &badge : msg.badges) {
-			if (!badge.label.isEmpty() && badge.url.isEmpty()) {
-				badgesHtml += QStringLiteral(
-						      "<span style='background:#333;color:#ddd;border-radius:3px;padding:0 3px;"
-						      "font-size:9px;font-weight:700;margin-right:3px;'>%1</span>")
-						      .arg(EscapeHtml(badge.label.left(1).toUpper()));
-			}
-		}
-	}
-
+	/* Image badges (Twitch CDN / Kick+YouTube role SVGs) live in their own QLabels — never letter pills. */
 	const QString prefixHtml =
-		QStringLiteral("<span style='color:%1;font-weight:700;'>%2%3</span><span style='color:#e6e6e6;'>: </span>")
-			.arg(nameColor, badgesHtml, EscapeHtml(msg.user));
+		QStringLiteral("<span style='color:%1;font-weight:700;'>%2</span><span style='color:#e6e6e6;'>: </span>")
+			.arg(nameColor, EscapeHtml(msg.user));
 	const bool kickEmotes = !msg.system && msg.platform == Kick && msg.text.contains(QLatin1String("[emote:"));
 	const bool twitchEmotes = !msg.system && msg.platform == Twitch && !msg.emotes.isEmpty();
 
