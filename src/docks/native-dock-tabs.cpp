@@ -15,6 +15,7 @@
 #include <QKeySequence>
 #include <QMainWindow>
 #include <QPointer>
+#include <QSet>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QTabBar>
@@ -427,63 +428,114 @@ QList<QDockWidget *> CollectPreviewDocks(QMainWindow *mainWin)
 	return previewDocks;
 }
 
-/* Break preview↔preview tab groups so docks stay independently movable.
- * Does not touch Controls or force Top (that scrambled the layout before). */
-void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidget *> &previews)
+static bool PreviewTabbedWithPeer(QMainWindow *main, QDockWidget *dock, const QList<QDockWidget *> &previews)
+{
+	if (!main || !dock) {
+		return false;
+	}
+	for (QDockWidget *peer : main->tabifiedDockWidgets(dock)) {
+		if (previews.contains(peer)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void RestoreControlsArea(QMainWindow *main, QDockWidget *controls, Qt::DockWidgetArea area, bool visible)
+{
+	if (!main || !controls || area == Qt::NoDockWidgetArea) {
+		return;
+	}
+	if (main->dockWidgetArea(controls) == area) {
+		return;
+	}
+	const bool floating = controls->isFloating();
+	main->addDockWidget(area, controls);
+	if (floating) {
+		controls->setFloating(true);
+	}
+	controls->setVisible(visible);
+}
+
+/* Break preview↔preview tabs without removeDockWidget (that shoved Controls). */
+void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidget *> &previews, bool showAllPeers)
 {
 	if (!main) {
 		return;
 	}
+	auto *controls = main->findChild<QDockWidget *>(QString::fromUtf8("controlsDock"));
+	const Qt::DockWidgetArea controlsArea = controls ? main->dockWidgetArea(controls) : Qt::NoDockWidgetArea;
+	const bool controlsVis = controls && controls->isVisible();
+
+	QSet<QDockWidget *> processed;
 	for (QDockWidget *dock : previews) {
-		if (!dock) {
+		if (!dock || processed.contains(dock)) {
 			continue;
 		}
-		bool withPeer = false;
+		QList<QDockWidget *> peers;
 		for (QDockWidget *peer : main->tabifiedDockWidgets(dock)) {
 			if (previews.contains(peer)) {
-				withPeer = true;
-				break;
+				peers.append(peer);
 			}
 		}
-		if (!withPeer) {
+		if (peers.isEmpty()) {
 			continue;
 		}
 
-		const bool floating = dock->isFloating();
+		processed.insert(dock);
 		Qt::DockWidgetArea area = main->dockWidgetArea(dock);
 		if (area == Qt::NoDockWidgetArea) {
 			area = Qt::RightDockWidgetArea;
 		}
-		const bool visible = dock->isVisible();
-		const QSize sz = dock->size();
-		const QRect geo = dock->geometry();
 
-		main->removeDockWidget(dock);
-		main->addDockWidget(area, dock);
-		if (floating) {
-			dock->setFloating(true);
-			dock->setGeometry(geo);
-		} else {
-			dock->resize(sz);
+		for (QDockWidget *peer : peers) {
+			processed.insert(peer);
+			const bool peerVis = showAllPeers ? true : peer->isVisible();
+			const bool anchorVis = showAllPeers ? true : dock->isVisible();
+			peer->setFloating(true);
+			peer->show();
+			main->addDockWidget(area, peer);
+			peer->setFloating(false);
+			main->splitDockWidget(dock, peer, Qt::Horizontal);
+			dock->setVisible(anchorVis);
+			peer->setVisible(peerVis);
+			dock->setProperty("aitumSoloActive", false);
+			peer->setProperty("aitumSoloActive", false);
 		}
-		dock->setVisible(visible);
 	}
+
+	RestoreControlsArea(main, controls, controlsArea, controlsVis);
 }
 
-void EnsurePreviewDocksFreeWhenMulti(QMainWindow *mainWin)
+void HandlePreviewVisibilityChanged(QMainWindow *mainWin, QDockWidget *changed, bool visible)
 {
-	if (syncingSoloPreviewSwap || nativeTabsStopped || !mainWin) {
+	if (syncingSoloPreviewSwap || nativeTabsStopped || !mainWin || !changed) {
 		return;
 	}
 	const QList<QDockWidget *> previews = CollectPreviewDocks(mainWin);
+	if (!previews.contains(changed)) {
+		return;
+	}
+
 	int visibleCount = 0;
 	for (QDockWidget *dock : previews) {
 		if (dock && dock->isVisible()) {
 			visibleCount++;
 		}
 	}
-	if (visibleCount >= 2) {
-		UntabifyPreviewDocksFromEachOther(mainWin, previews);
+
+	const bool tabbed = PreviewTabbedWithPeer(mainWin, changed, previews);
+
+	/* Two+ raised previews must never stay tabbed. */
+	if (visibleCount >= 2 && tabbed) {
+		UntabifyPreviewDocksFromEachOther(mainWin, previews, false);
+		return;
+	}
+
+	/* Docks menu raised a hidden peer from a solo tab group → show both
+	 * side-by-side. Skip if this dock is the intentional solo active one. */
+	if (visible && tabbed && visibleCount == 1 && !changed->property("aitumSoloActive").toBool()) {
+		UntabifyPreviewDocksFromEachOther(mainWin, previews, true);
 	}
 }
 
@@ -497,8 +549,8 @@ void BindPreviewDockVisibilityWatchers(QMainWindow *mainWin)
 			continue;
 		}
 		dock->setProperty("aitumPreviewWatch", true);
-		QObject::connect(dock, &QDockWidget::visibilityChanged, dock, [mainWin](bool) {
-			EnsurePreviewDocksFreeWhenMulti(mainWin);
+		QObject::connect(dock, &QDockWidget::visibilityChanged, dock, [mainWin, dock](bool visible) {
+			HandlePreviewVisibilityChanged(mainWin, dock, visible);
 		});
 	}
 }
@@ -531,7 +583,7 @@ void SyncSoloPreviewDockToTab(int index)
 	}
 	if (visibleCount != 1 || !visibleOne) {
 		if (visibleCount >= 2) {
-			UntabifyPreviewDocksFromEachOther(mainWin, previewDocks);
+			UntabifyPreviewDocksFromEachOther(mainWin, previewDocks, false);
 		}
 		return;
 	}
@@ -546,16 +598,21 @@ void SyncSoloPreviewDockToTab(int index)
 		}
 	}
 	if (!target || target == visibleOne) {
+		visibleOne->setProperty("aitumSoloActive", true);
 		return;
 	}
 
-	/* Replace in-place so Controls / other docks keep their side and size.
-	 * Do NOT addDockWidget(area) or ensure_preview_docks_independent here —
-	 * those relocate to Top and scramble the layout. */
+	/* Replace in-place so Controls / other docks keep their side and size. */
 	syncingSoloPreviewSwap = true;
+	for (QDockWidget *dock : previewDocks) {
+		if (dock) {
+			dock->setProperty("aitumSoloActive", false);
+		}
+	}
 	if (visibleOne->isFloating()) {
 		const QRect geo = visibleOne->geometry();
 		visibleOne->hide();
+		target->setProperty("aitumSoloActive", true);
 		target->setFloating(true);
 		target->show();
 		target->setGeometry(geo);
@@ -568,6 +625,7 @@ void SyncSoloPreviewDockToTab(int index)
 		mainWin->tabifyDockWidget(visibleOne, target);
 	}
 	visibleOne->hide();
+	target->setProperty("aitumSoloActive", true);
 	target->show();
 	target->raise();
 	syncingSoloPreviewSwap = false;
@@ -971,15 +1029,25 @@ static void UntabifyFromControls(QMainWindow *main, QDockWidget *dock, QDockWidg
 	}
 
 	const bool visible = dock->isVisible();
-	const bool floating = dock->isFloating();
-	/* Drop out of the Controls tab group and place as its own dock
-	 * (Top is away from the usual bottom Controls strip). */
-	main->removeDockWidget(dock);
-	main->addDockWidget(Qt::TopDockWidgetArea, dock);
-	if (floating) {
-		dock->setFloating(true);
-	}
+	const Qt::DockWidgetArea controlsArea = main->dockWidgetArea(controls);
+	const bool controlsVis = controls->isVisible();
+	/* Split beside Controls in the same area — never force Top / removeDock
+	 * (that shoved Controls to the left on first launch). */
+	dock->setFloating(true);
+	dock->show();
+	Qt::DockWidgetArea area = controlsArea != Qt::NoDockWidgetArea ? controlsArea : Qt::RightDockWidgetArea;
+	main->addDockWidget(area, dock);
+	dock->setFloating(false);
+	main->splitDockWidget(controls, dock, Qt::Horizontal);
 	dock->setVisible(visible);
+	if (controlsArea != Qt::NoDockWidgetArea && main->dockWidgetArea(controls) != controlsArea) {
+		const bool floating = controls->isFloating();
+		main->addDockWidget(controlsArea, controls);
+		if (floating) {
+			controls->setFloating(true);
+		}
+		controls->setVisible(controlsVis);
+	}
 	blog(LOG_INFO, "[Stream Suite] Untabified '%s' from Controls", dock->objectName().toUtf8().constData());
 }
 
