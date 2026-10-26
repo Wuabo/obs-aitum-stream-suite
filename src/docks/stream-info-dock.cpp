@@ -1258,8 +1258,6 @@ void StreamInfoDock::RefreshYouTubeForChat()
 			ApplyYouTubeBroadcast(item);
 
 		const QString snippetChat = YouTubeBroadcastChatId(item.value("snippet").toObject());
-		const bool pollable = life == QLatin1String("live") || life == QLatin1String("liveStarting") ||
-				      life == QLatin1String("testing") || life == QLatin1String("testStarting");
 
 		QUrl vurl(QStringLiteral("https://www.googleapis.com/youtube/v3/videos"));
 		QUrlQuery vq;
@@ -1267,24 +1265,24 @@ void StreamInfoDock::RefreshYouTubeForChat()
 		vq.addQueryItem("id", id);
 		vurl.setQuery(vq);
 		Http(ytReq(vurl), {}, "GET",
-		     [id, snippetChat, pollable](int st, const QByteArray &payload, const QString &) {
+		     [id, snippetChat](int st, const QByteArray &payload, const QString &) {
 			     if (!chat_dock)
 				     return;
-			     QString chat;
+			     QString chat = snippetChat;
 			     if (st >= 200 && st < 300) {
 				     const QJsonArray vids =
 					     QJsonDocument::fromJson(payload).object().value("items").toArray();
-				     if (!vids.isEmpty())
-					     chat = vids.at(0)
-							    .toObject()
-							    .value("liveStreamingDetails")
-							    .toObject()
-							    .value("activeLiveChatId")
-							    .toString();
+				     if (!vids.isEmpty()) {
+					     const QString active = vids.at(0)
+									    .toObject()
+									    .value("liveStreamingDetails")
+									    .toObject()
+									    .value("activeLiveChatId")
+									    .toString();
+					     if (!active.isEmpty())
+						     chat = active;
+				     }
 			     }
-			     /* Prefer activeLiveChatId; only use snippet liveChatId when already live/testing. */
-			     if (chat.isEmpty() && pollable)
-				     chat = snippetChat;
 			     if (!chat.isEmpty())
 				     chat_dock->NotifyYouTubeVideo(id, chat);
 			     else
@@ -1385,11 +1383,11 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	SetResult(QString());
 	const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
 	const QString snippetChatId = YouTubeBroadcastChatId(snippet);
-	const bool pollable = life == QLatin1String("live") || life == QLatin1String("liveStarting") ||
-			      life == QLatin1String("testing") || life == QLatin1String("testStarting");
-	/* Never push ready-broadcast stub chat ids — they 404 until the stream is actually live. */
-	if (!ytBroadcastId.isEmpty() && chat_dock) {
-		if (pollable && !snippetChatId.isEmpty())
+	const bool dead = life == QLatin1String("complete") || life == QLatin1String("revoked") ||
+			  life == QLatin1String("abandoned");
+	/* Pass snippet.liveChatId as soon as it exists (including ready). Chat retries until it opens. */
+	if (!ytBroadcastId.isEmpty() && chat_dock && !dead) {
+		if (!snippetChatId.isEmpty())
 			chat_dock->NotifyYouTubeVideo(ytBroadcastId, snippetChatId);
 		else
 			chat_dock->NotifyYouTubeVideo(ytBroadcastId);

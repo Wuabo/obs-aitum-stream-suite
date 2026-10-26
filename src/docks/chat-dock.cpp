@@ -256,14 +256,6 @@ QString YouTubeVideoActiveChatId(const QJsonObject &liveStreamingDetails)
 	return liveStreamingDetails.value(QStringLiteral("activeLiveChatId")).toString();
 }
 
-/* Chat can be polled only once the broadcast is actually live/testing.
- * ready/created still expose snippet.liveChatId but liveChatMessages returns 404. */
-bool YouTubeBroadcastChatPollable(const QString &life)
-{
-	return life == QLatin1String("live") || life == QLatin1String("liveStarting") ||
-	       life == QLatin1String("testing") || life == QLatin1String("testStarting");
-}
-
 bool YouTubeBroadcastLifeDead(const QString &life)
 {
 	return life == QLatin1String("complete") || life == QLatin1String("revoked") ||
@@ -1868,20 +1860,16 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 							     done(false);
 						     return;
 					     }
-					     /* ready/created: keep video id and wait for activeLiveChatId / live. */
+					     /* snippet.liveChatId exists from ready onward. Poll it; 404 just means
+					      * chat is not open yet and we retry the same id. */
 					     if (!videoId.isEmpty())
 						     ytVideoId = videoId;
-					     if (!chatId.isEmpty() && YouTubeBroadcastChatPollable(life)) {
+					     if (!chatId.isEmpty()) {
 						     ytLiveChatId = chatId;
 						     finishOk();
 						     return;
 					     }
-					     if (life == QLatin1String("ready") || life == QLatin1String("created") ||
-						 life == QLatin1String("testStarting")) {
-						     DebugYouTube(QStringLiteral("broadcast %1 — wait for activeLiveChatId")
-									  .arg(life));
-						     EnsureYouTubeWaitLiveTimer();
-					     }
+					     EnsureYouTubeWaitLiveTimer();
 				     } else {
 					     DebugYouTube(QStringLiteral("liveBroadcasts by id: items vazio"));
 				     }
@@ -1959,11 +1947,11 @@ void ChatDock::StartYouTubeChat()
 					next();
 				return;
 			}
-			if (!hintChatId.isEmpty() && YouTubeBroadcastChatPollable(life)) {
+			if (!hintChatId.isEmpty()) {
 				ytLiveChatId = hintChatId;
 				if (!videoId.isEmpty())
 					ytVideoId = videoId;
-				DebugYouTube(QStringLiteral("trust chat hint (%1)").arg(life));
+				DebugYouTube(QStringLiteral("trust chat hint (%1)").arg(life.isEmpty() ? QStringLiteral("?") : life));
 				beginPoll();
 				return;
 			}
@@ -2004,8 +1992,7 @@ void ChatDock::StartYouTubeChat()
 					c.score = 20;
 				else
 					c.score = 5;
-				/* Only boost chat id when it is actually pollable. */
-				if (!c.chatId.isEmpty() && YouTubeBroadcastChatPollable(c.life))
+				if (!c.chatId.isEmpty())
 					c.score += 100;
 				out.append(c);
 			}
@@ -2159,6 +2146,87 @@ void ChatDock::StartYouTubeChat()
 	});
 }
 
+void ChatDock::TryYouTubeGoLive()
+{
+	if (ytVideoId.isEmpty())
+		return;
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if (now - youtubeLastTransitionMs < 12000)
+		return;
+	youtubeLastTransitionMs = now;
+	EnsureToken(YouTube, [this](bool ok) {
+		if (!ok || ytVideoId.isEmpty())
+			return;
+		auto authHdr = [this] {
+			return QList<QPair<QByteArray, QByteArray>>{
+				{QByteArrayLiteral("Authorization"),
+				 QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}};
+		};
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery query;
+		query.addQueryItem("part", "status,contentDetails");
+		query.addQueryItem("id", ytVideoId);
+		url.setQuery(query);
+		Http(QString::fromUtf8(url.toEncoded()), authHdr(), {}, "GET",
+		     [this, authHdr](int code, const QByteArray &body, const QString &) {
+			     if (code < 200 || code >= 300) {
+				     DebugYouTube(QStringLiteral("go-live status HTTP %1").arg(code));
+				     return;
+			     }
+			     const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
+			     if (items.isEmpty())
+				     return;
+			     const QJsonObject item = items.at(0).toObject();
+			     const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
+			     DebugYouTube(QStringLiteral("go-live check status=%1").arg(life.isEmpty() ? QStringLiteral("?") : life));
+			     if (life == QLatin1String("live") || life == QLatin1String("liveStarting")) {
+				     if (!ytLiveChatId.isEmpty() && !youtubePollInFlight && !youtubeTimer->isActive())
+					     PollYouTubeChat();
+				     return;
+			     }
+			     if (YouTubeBroadcastLifeDead(life))
+				     return;
+			     const bool monitor = item.value("contentDetails")
+							  .toObject()
+							  .value("monitorStream")
+							  .toObject()
+							  .value("enableMonitorStream")
+							  .toBool();
+			     const QString target = (life == QLatin1String("ready") && monitor) ? QStringLiteral("testing")
+												: QStringLiteral("live");
+			     QUrl turl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"));
+			     QUrlQuery tq;
+			     tq.addQueryItem("broadcastStatus", target);
+			     tq.addQueryItem("id", ytVideoId);
+			     tq.addQueryItem("part", "status");
+			     turl.setQuery(tq);
+			     DebugYouTube(QStringLiteral("transition → %1").arg(target));
+			     auto headers = authHdr();
+			     headers.append({QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")});
+			     Http(QString::fromUtf8(turl.toEncoded()), headers, QByteArray("{}"), "POST",
+				  [this, target](int st, const QByteArray &payload, const QString &) {
+					  const QString msg = QJsonDocument::fromJson(payload)
+								      .object()
+								      .value("error")
+								      .toObject()
+								      .value("message")
+								      .toString();
+					  if (st >= 200 && st < 300) {
+						  DebugYouTube(QStringLiteral("transition %1 OK").arg(target));
+						  if (!youtubePollInFlight && !ytLiveChatId.isEmpty())
+							  QTimer::singleShot(2000, this, &ChatDock::PollYouTubeChat);
+					  } else {
+						  DebugYouTube(QStringLiteral("transition %1 HTTP %2: %3")
+								       .arg(target)
+								       .arg(st)
+								       .arg(msg.isEmpty() ? QString::fromUtf8(payload.left(120))
+											  : msg.left(140)));
+					  }
+				  });
+		     });
+	});
+}
+
 void ChatDock::PollYouTubeChat()
 {
 	if (ytLiveChatId.isEmpty() || youtubePollInFlight)
@@ -2178,7 +2246,8 @@ void ChatDock::PollYouTubeChat()
 			return;
 		}
 		const Account &acc = accounts[YouTube];
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChatMessages"));
+		/* Discovery path is liveChat/messages — liveChatMessages 404s with an empty body. */
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
 		QUrlQuery query;
 		query.addQueryItem("liveChatId", ytLiveChatId);
 		query.addQueryItem("part", "snippet,authorDetails");
@@ -2301,8 +2370,9 @@ void ChatDock::PollYouTubeChat()
 								   .toObject()
 								   .value("message")
 								   .toString();
-				     DebugYouTube(QStringLiteral("poll HTTP %1: %2")
+				     DebugYouTube(QStringLiteral("poll HTTP %1 (%2 bytes): %3")
 							  .arg(status)
+							  .arg(body.size())
 							  .arg(errMsg.isEmpty() ? QString::fromUtf8(body.left(80))
 										: errMsg.left(100)));
 				     blog(LOG_WARNING, "[Stream Suite] YouTube chat poll HTTP %d: %s", status,
@@ -2341,33 +2411,20 @@ void ChatDock::PollYouTubeChat()
 					     }
 					     interval = youtubePageTokenFails > 3 ? 10000 : 3000;
 				     } else if (status == 404) {
-					     /* Stub chat id from a ready broadcast, or a dead complete chat.
-					      * Keep video id while OBS is streaming — activeLiveChatId appears after go-live. */
-					     DebugYouTube(QStringLiteral("poll 404 → clear chat id (keep video %1)")
-								  .arg(ytVideoId.isEmpty() ? QStringLiteral("-")
-											   : ytVideoId.left(11)));
-					     ytLiveChatId.clear();
+					     /* Chat stays closed while the broadcast is still "ready". Custom RTMP
+					      * outputs do not call liveBroadcasts.transition, so do that ourselves. */
 					     ytNextPage.clear();
-					     youtubeConnectedAnnounced = false;
-					     youtubeConnectStarted = false;
-					     if (!obs_frontend_streaming_active()) {
-						     ytVideoId.clear();
-						     PersistYouTubeIds();
+					     youtubePageTokenFails++;
+					     DebugYouTube(QStringLiteral("poll 404 #%1 — retry same chat id")
+								  .arg(youtubePageTokenFails));
+					     if (!youtubeWaitingAnnounced && !youtubeConnectedAnnounced) {
+						     youtubeWaitingAnnounced = true;
+						     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
 					     }
-					     if (connectionsActive) {
-						     const int delay = obs_frontend_streaming_active() ? 3000 : 5000;
-						     QTimer::singleShot(delay, this, [this] {
-							     if (!connectionsActive || !ytLiveChatId.isEmpty())
-								     return;
-							     if (!ytVideoId.isEmpty())
-								     ResolveYouTubeLiveChatId(ytVideoId, [this](bool ok) {
-									     if (!ok)
-										     StartYouTubeChat();
-								     });
-							     else
-								     StartYouTubeChat();
-						     });
-					     }
+					     if (youtubePageTokenFails >= 1)
+						     TryYouTubeGoLive();
+					     if (connectionsActive && !ytLiveChatId.isEmpty())
+						     youtubeTimer->start(8000);
 					     return;
 				     } else {
 					     interval = 8000;
@@ -2411,7 +2468,7 @@ void ChatDock::SendYouTubeMessage(const QString &text)
 		snip.insert("textMessageDetails", details);
 		QJsonObject body;
 		body.insert("snippet", snip);
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChatMessages"));
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
 		QUrlQuery q;
 		q.addQueryItem("part", "snippet");
 		url.setQuery(q);

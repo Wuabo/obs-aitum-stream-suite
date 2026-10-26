@@ -154,6 +154,7 @@ private:
 	int youtubeDebugSeq = 0;
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
+	qint64 youtubeLastTransitionMs = 0;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
@@ -208,6 +209,7 @@ private:
 
 	void StartYouTubeChat();
 	void ResolveYouTubeLiveChatId(const QString &videoId, std::function<void(bool)> done = {});
+	void TryYouTubeGoLive();
 	void EnsureYouTubeWaitLiveTimer();
 	void TickYouTubeWaitLive();
 	void PollYouTubeChat();
