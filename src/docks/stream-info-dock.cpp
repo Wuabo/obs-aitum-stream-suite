@@ -42,9 +42,11 @@
 #include <QVBoxLayout>
 #include <src/utils/icon.hpp>
 #include "output-dock.hpp"
+#include "chat-dock.hpp"
 
 extern obs_data_t *current_profile_config;
 extern OutputDock *output_dock;
+extern ChatDock *chat_dock;
 void save_current_profile_config(bool save_docks);
 
 static const int kRedirectPort = 17654;
@@ -772,6 +774,8 @@ void StreamInfoDock::SavePlatform()
 	obs_data_release(one);
 	obs_data_release(root);
 	save_current_profile_config(false);
+	if (chat_dock)
+		chat_dock->SyncAccountsFromConfig();
 }
 
 void StreamInfoDock::SetStatus(const QString &text)

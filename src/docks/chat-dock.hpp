@@ -47,6 +47,7 @@ public:
 	~ChatDock() override;
 
 	void ReloadAccounts();
+	void SyncAccountsFromConfig();
 	void RefreshAvailablePlatforms();
 
 protected:
@@ -119,6 +120,12 @@ private:
 	bool twitchConnectedAnnounced = false;
 	bool kickConnectedAnnounced = false;
 	bool youtubeConnectedAnnounced = false;
+	bool twitchConnectStarted = false;
+	bool youtubeConnectStarted = false;
+	bool kickConnectStarted = false;
+	bool twitchNotLinkedAnnounced = false;
+	bool youtubeNotLinkedAnnounced = false;
+	bool kickNotLinkedAnnounced = false;
 	int twitchWsGen = 0;
 	int kickWsGen = 0;
 
@@ -139,6 +146,8 @@ private:
 
 	void StartConnections();
 	void StopConnections();
+	void EnsurePlatformConnections();
+	void TryStartPlatform(Platform platform);
 
 	void RefreshViewers();
 	void FetchTwitchViewers();

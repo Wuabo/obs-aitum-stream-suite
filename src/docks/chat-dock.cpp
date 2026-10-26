@@ -429,7 +429,8 @@ void ChatDock::showEvent(QShowEvent *event)
 	if (!connectionsActive)
 		StartConnections();
 	else
-		RefreshViewers();
+		EnsurePlatformConnections();
+	RefreshViewers();
 	QTimer::singleShot(0, this, &ChatDock::RelayoutMessageItems);
 }
 
@@ -446,8 +447,48 @@ void ChatDock::ReloadAccounts()
 		LoadAccount(Platform(i));
 	if (!DockIsOpen() && !connectionsActive)
 		return;
+	/* Full restart so a newly linked YouTube/Kick account connects immediately. */
 	StartConnections();
 	RefreshViewers();
+}
+
+void ChatDock::SyncAccountsFromConfig()
+{
+	QString previous[3];
+	for (int i = 0; i < 3; ++i)
+		previous[i] = accounts[i].accessToken;
+	for (int i = 0; i < 3; ++i)
+		LoadAccount(Platform(i));
+	for (int i = 0; i < 3; ++i) {
+		if (previous[i] == accounts[i].accessToken)
+			continue;
+		if (i == Twitch) {
+			twitchConnectStarted = false;
+			twitchConnectedAnnounced = false;
+			twitchNotLinkedAnnounced = false;
+			DisconnectTwitchIrc();
+		} else if (i == YouTube) {
+			youtubeConnectStarted = false;
+			youtubeConnectedAnnounced = false;
+			youtubeNotLinkedAnnounced = false;
+			ytLiveChatId.clear();
+			ytVideoId.clear();
+			ytNextPage.clear();
+		} else {
+			kickConnectStarted = false;
+			kickConnectedAnnounced = false;
+			kickNotLinkedAnnounced = false;
+			DisconnectKickChat();
+			kickChatroomId.clear();
+			kickSlug.clear();
+		}
+	}
+	if (!connectionsActive) {
+		if (DockIsOpen())
+			StartConnections();
+		return;
+	}
+	EnsurePlatformConnections();
 }
 
 void ChatDock::RefreshAvailablePlatforms()
@@ -497,6 +538,8 @@ void ChatDock::RefreshAvailablePlatforms()
 		sendPlatform = *availablePlatforms.constBegin();
 	RebuildViewerBar();
 	UpdateSendStatus();
+	if (connectionsActive)
+		EnsurePlatformConnections();
 }
 
 void ChatDock::RebuildViewerBar()
@@ -654,27 +697,59 @@ void ChatDock::Http(const QString &url, const QList<QPair<QByteArray, QByteArray
 		std::move(done));
 }
 
+void ChatDock::TryStartPlatform(Platform platform)
+{
+	if (!availablePlatforms.contains(platform))
+		return;
+
+	bool &started = platform == YouTube ? youtubeConnectStarted
+					    : (platform == Kick ? kickConnectStarted : twitchConnectStarted);
+	bool &notLinked = platform == YouTube ? youtubeNotLinkedAnnounced
+					      : (platform == Kick ? kickNotLinkedAnnounced : twitchNotLinkedAnnounced);
+
+	if (accounts[platform].accessToken.isEmpty()) {
+		started = false;
+		if (!notLinked) {
+			notLinked = true;
+			AppendSystemMessage(Tr("ChatDockNotLinked").arg(PlatformLabel(platform)), platform);
+		}
+		return;
+	}
+
+	notLinked = false;
+	if (started)
+		return;
+	started = true;
+	AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(platform)), platform);
+	if (platform == Twitch) {
+		ConnectTwitchIrc();
+	} else if (platform == YouTube) {
+		StartYouTubeChat();
+		if (!youtubeDiscoverTimer->isActive())
+			youtubeDiscoverTimer->start();
+	} else {
+		ResolveKickChatroom();
+	}
+}
+
+void ChatDock::EnsurePlatformConnections()
+{
+	if (!connectionsActive)
+		return;
+	for (int i = 0; i < 3; ++i)
+		LoadAccount(Platform(i));
+	TryStartPlatform(Twitch);
+	TryStartPlatform(YouTube);
+	TryStartPlatform(Kick);
+	if (!viewerTimer->isActive())
+		viewerTimer->start();
+}
+
 void ChatDock::StartConnections()
 {
 	StopConnections();
 	connectionsActive = true;
-	twitchConnectedAnnounced = false;
-	kickConnectedAnnounced = false;
-	youtubeConnectedAnnounced = false;
-	if (availablePlatforms.contains(Twitch) && !accounts[Twitch].accessToken.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Twitch)), Twitch);
-		ConnectTwitchIrc();
-	}
-	if (availablePlatforms.contains(YouTube) && !accounts[YouTube].accessToken.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(YouTube)), YouTube);
-		StartYouTubeChat();
-		youtubeDiscoverTimer->start();
-	}
-	if (availablePlatforms.contains(Kick) && !accounts[Kick].accessToken.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Kick)), Kick);
-		ResolveKickChatroom();
-	}
-	viewerTimer->start();
+	EnsurePlatformConnections();
 	RefreshViewers();
 }
 
@@ -690,10 +765,18 @@ void ChatDock::StopConnections()
 	ytLiveChatId.clear();
 	ytVideoId.clear();
 	ytNextPage.clear();
+	kickSlug.clear();
+	kickChatroomId.clear();
 	connectionsActive = false;
 	twitchConnectedAnnounced = false;
 	kickConnectedAnnounced = false;
 	youtubeConnectedAnnounced = false;
+	twitchConnectStarted = false;
+	youtubeConnectStarted = false;
+	kickConnectStarted = false;
+	twitchNotLinkedAnnounced = false;
+	youtubeNotLinkedAnnounced = false;
+	kickNotLinkedAnnounced = false;
 }
 
 void ChatDock::RefreshViewers()
@@ -878,6 +961,7 @@ void ChatDock::ConnectTwitchIrc()
 		return;
 	EnsureToken(Twitch, [this](bool ok) {
 		if (!ok || !connectionsActive) {
+			twitchConnectStarted = false;
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)), Twitch);
 			return;
 		}
@@ -1108,6 +1192,7 @@ void ChatDock::StartYouTubeChat()
 {
 	EnsureToken(YouTube, [this](bool ok) {
 		if (!ok) {
+			youtubeConnectStarted = false;
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
 			return;
 		}
@@ -1309,6 +1394,7 @@ void ChatDock::ResolveKickChatroom()
 {
 	EnsureToken(Kick, [this](bool ok) {
 		if (!ok) {
+			kickConnectStarted = false;
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Kick)), Kick);
 			return;
 		}
