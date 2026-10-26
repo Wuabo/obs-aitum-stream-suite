@@ -396,6 +396,9 @@ void StreamInfoDock::BuildUi()
 		if (index < 0)
 			return;
 		categoryId = categoryCombo->itemData(index).toString();
+		const QString name = categoryCombo->itemText(index).trimmed();
+		if (!name.isEmpty())
+			lastCategoryName = name;
 	});
 
 	UpdateFieldVisibility();
@@ -434,10 +437,13 @@ void StreamInfoDock::RefreshAvailablePlatforms()
 		descriptionEdit->clear();
 		tagsEdit->clear();
 		categoryId.clear();
+		lastCategoryName.clear();
 		ytBroadcastId.clear();
 		SetResult(QString());
 		LoadPlatform();
 		UpdateFieldVisibility();
+		if (!categoryId.isEmpty() && !lastCategoryName.isEmpty())
+			PopulateCategoryCombo();
 		if (!accessToken.isEmpty())
 			EnsureToken([this](bool ok) {
 				if (ok)
@@ -666,11 +672,14 @@ void StreamInfoDock::SwitchPlatform(int index)
 	descriptionEdit->clear();
 	tagsEdit->clear();
 	categoryId.clear();
+	lastCategoryName.clear();
 	ytBroadcastId.clear();
 	ytScheduledStart.clear();
 	SetResult(QString());
 	LoadPlatform();
 	UpdateFieldVisibility();
+	if (!categoryId.isEmpty() && !lastCategoryName.isEmpty())
+		PopulateCategoryCombo();
 	if (accessToken.isEmpty()) {
 		SetConnected(false);
 		return;
@@ -693,6 +702,7 @@ void StreamInfoDock::LoadPlatform()
 	userId.clear();
 	userName.clear();
 	categoryId.clear();
+	lastCategoryName.clear();
 	lastTitle.clear();
 	lastTags.clear();
 	if (!current_profile_config)
@@ -708,8 +718,11 @@ void StreamInfoDock::LoadPlatform()
 		userId = QString::fromUtf8(obs_data_get_string(one, "user_id"));
 		userName = QString::fromUtf8(obs_data_get_string(one, "user_name"));
 		categoryId = QString::fromUtf8(obs_data_get_string(one, "category_id"));
+		lastCategoryName = QString::fromUtf8(obs_data_get_string(one, "category_name"));
 		lastTitle = QString::fromUtf8(obs_data_get_string(one, "last_title"));
 		lastTags = QString::fromUtf8(obs_data_get_string(one, "last_tags"));
+		if (!categoryId.isEmpty() && !lastCategoryName.isEmpty())
+			EnsureCategoryInCatalog(categoryId, lastCategoryName);
 	}
 	obs_data_release(one);
 	obs_data_release(root);
@@ -734,6 +747,22 @@ void StreamInfoDock::SavePlatform()
 	obs_data_set_string(one, "user_id", userId.toUtf8().constData());
 	obs_data_set_string(one, "user_name", userName.toUtf8().constData());
 	obs_data_set_string(one, "category_id", categoryId.toUtf8().constData());
+	if (!categoryId.isEmpty()) {
+		if (lastCategoryName.isEmpty()) {
+			for (const CategoryEntry &entry : categoryCatalog) {
+				if (entry.id == categoryId && !entry.name.isEmpty()) {
+					lastCategoryName = entry.name;
+					break;
+				}
+			}
+		}
+		if (lastCategoryName.isEmpty() && categoryCombo && categoryCombo->currentIndex() >= 0 &&
+		    categoryCombo->currentData().toString() == categoryId)
+			lastCategoryName = categoryCombo->currentText().trimmed();
+	} else {
+		lastCategoryName.clear();
+	}
+	obs_data_set_string(one, "category_name", lastCategoryName.toUtf8().constData());
 	if (titleEdit)
 		obs_data_set_string(one, "last_title", titleEdit->text().trimmed().toUtf8().constData());
 	if (tagsEdit)
@@ -1156,8 +1185,12 @@ void StreamInfoDock::LoadTwitchChannel()
 					for (const QJsonValue &tag : row.value("tags").toArray())
 						tags.append(tag.toString());
 					tagsEdit->setText(tags.join(", "));
-					if (!categoryId.isEmpty())
-						EnsureCategoryInCatalog(categoryId, gameName);
+					if (!categoryId.isEmpty()) {
+						if (!gameName.isEmpty())
+							lastCategoryName = gameName;
+						EnsureCategoryInCatalog(categoryId, lastCategoryName);
+						PopulateCategoryCombo();
+					}
 				}
 			}
 			categorySearch->clear();
@@ -1194,6 +1227,10 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 			for (const QJsonValue &tag : snip.value("tags").toArray())
 				tags.append(tag.toString());
 			tagsEdit->setText(tags.join(", "));
+			if (!categoryId.isEmpty()) {
+				EnsureCategoryInCatalog(categoryId, lastCategoryName);
+				PopulateCategoryCombo();
+			}
 		}
 		categorySearch->clear();
 		LoadCategoryCatalog();
@@ -1420,6 +1457,10 @@ void StreamInfoDock::LoadKickChannel()
 		titleEdit->setText(lastTitle);
 	if (!lastTags.isEmpty() && tagsEdit->text().isEmpty())
 		tagsEdit->setText(lastTags);
+	if (!categoryId.isEmpty() && !lastCategoryName.isEmpty()) {
+		EnsureCategoryInCatalog(categoryId, lastCategoryName);
+		PopulateCategoryCombo();
+	}
 
 	Http(KickApiRequest(QUrl(QStringLiteral("https://api.kick.com/public/v1/users")), accessToken), {}, "GET",
 	     [this, gen](int status, const QByteArray &body, const QString &) {
@@ -1447,9 +1488,12 @@ void StreamInfoDock::LoadKickChannel()
 			     const QJsonObject category = channel.value("category").toObject();
 			     const QString id = JsonId(category.value("id"));
 			     const QString name = category.value("name").toString().trimmed();
-			     if (!id.isEmpty() && id != QLatin1String("0") && !name.isEmpty()) {
+			     if (!id.isEmpty() && id != QLatin1String("0")) {
 				     categoryId = id;
-				     EnsureCategoryInCatalog(id, name, category.value("thumbnail").toString());
+				     if (!name.isEmpty())
+					     lastCategoryName = name;
+				     EnsureCategoryInCatalog(id, lastCategoryName, category.value("thumbnail").toString());
+				     PopulateCategoryCombo();
 			     }
 			     QStringList tags;
 			     for (const QJsonValue &tag : channel.value("stream").toObject().value("custom_tags").toArray())
@@ -1638,42 +1682,54 @@ void StreamInfoDock::PopulateCategoryCombo()
 	static const int kMaxComboItems = 80;
 	const QString filter = categorySearch->text().trimmed();
 	const QString selected = categoryId;
+	QString selectedName = lastCategoryName;
+	QString selectedArt;
+	for (const CategoryEntry &entry : categoryCatalog) {
+		if (entry.id != selected)
+			continue;
+		if (!entry.name.isEmpty())
+			selectedName = entry.name;
+		selectedArt = entry.boxArt;
+		break;
+	}
+	if (!selected.isEmpty() && !selectedName.isEmpty())
+		lastCategoryName = selectedName;
+
 	categoryCombo->setUpdatesEnabled(false);
 	categoryCombo->blockSignals(true);
 	categoryCombo->clear();
 	int selectIndex = -1;
+	/* Selected category always first so the field shows the current value. */
+	if (!selected.isEmpty() && (filter.isEmpty() || selectedName.contains(filter, Qt::CaseInsensitive))) {
+		categoryCombo->addItem(categoryIcons.value(selected),
+				       selectedName.isEmpty() ? selected : selectedName, selected);
+		selectIndex = 0;
+	}
 	for (const CategoryEntry &entry : categoryCatalog) {
 		if (categoryCombo->count() >= kMaxComboItems)
 			break;
+		if (entry.id == selected)
+			continue;
 		if (!filter.isEmpty() && !entry.name.contains(filter, Qt::CaseInsensitive))
 			continue;
-		const int index = categoryCombo->count();
+		if (entry.name.isEmpty())
+			continue;
 		categoryCombo->addItem(categoryIcons.value(entry.id), entry.name, entry.id);
-		if (entry.id == selected)
-			selectIndex = index;
 	}
 	if (selectIndex >= 0)
 		categoryCombo->setCurrentIndex(selectIndex);
-	else if (!selected.isEmpty()) {
-		for (const CategoryEntry &entry : categoryCatalog) {
-			if (entry.id != selected)
-				continue;
-			if (selectIndex < 0) {
-				categoryCombo->insertItem(0, categoryIcons.value(entry.id), entry.name, entry.id);
-				categoryCombo->setCurrentIndex(0);
-			}
-			break;
-		}
-	}
 	categoryCombo->blockSignals(false);
 	categoryCombo->setUpdatesEnabled(true);
 	if (categoryCombo->currentIndex() >= 0)
 		categoryId = categoryCombo->currentData().toString();
-	/* Only fetch the selected cover now; the rest load when the popup opens. */
-	for (const CategoryEntry &entry : categoryCatalog) {
-		if (entry.id == categoryId) {
-			FetchCategoryIcon(entry.id, entry.boxArt);
-			break;
+	if (!selectedArt.isEmpty())
+		FetchCategoryIcon(selected, selectedArt);
+	else {
+		for (const CategoryEntry &entry : categoryCatalog) {
+			if (entry.id == categoryId) {
+				FetchCategoryIcon(entry.id, entry.boxArt);
+				break;
+			}
 		}
 	}
 }
@@ -1682,14 +1738,12 @@ void StreamInfoDock::AppendCategoriesFromJson(const QJsonArray &rows, const char
 					      const char *artKey)
 {
 	static const int kMaxCatalog = 200;
-	QSet<QString> known;
-	known.reserve(categoryCatalog.size() + rows.size());
-	for (const CategoryEntry &entry : categoryCatalog)
-		known.insert(entry.id);
+	QHash<QString, int> indexById;
+	indexById.reserve(categoryCatalog.size() + rows.size());
+	for (int i = 0; i < categoryCatalog.size(); ++i)
+		indexById.insert(categoryCatalog.at(i).id, i);
 
 	for (const QJsonValue &row : rows) {
-		if (categoryCatalog.size() >= kMaxCatalog)
-			break;
 		const QJsonObject obj = row.toObject();
 		const QJsonValue idValue = obj.value(QLatin1String(idKey));
 		const QString id = idValue.isDouble() ? QString::number(idValue.toInteger()) : idValue.toString();
@@ -1706,10 +1760,24 @@ void StreamInfoDock::AppendCategoriesFromJson(const QJsonArray &rows, const char
 			if (assignable.isBool() && !assignable.toBool())
 				continue;
 		}
-		if (id.isEmpty() || name.isEmpty() || known.contains(id))
+		if (id.isEmpty() || name.isEmpty())
 			continue;
-		known.insert(id);
+		const auto it = indexById.constFind(id);
+		if (it != indexById.cend()) {
+			CategoryEntry &entry = categoryCatalog[it.value()];
+			entry.name = name;
+			if (!art.isEmpty())
+				entry.boxArt = art;
+			if (id == categoryId)
+				lastCategoryName = name;
+			continue;
+		}
+		if (categoryCatalog.size() >= kMaxCatalog)
+			continue;
+		indexById.insert(id, categoryCatalog.size());
 		categoryCatalog.append({id, name, art});
+		if (id == categoryId)
+			lastCategoryName = name;
 	}
 }
 
@@ -1721,33 +1789,39 @@ void StreamInfoDock::LoadCategoryCatalog()
 		if (!ok)
 			return;
 		const QString keepId = categoryId;
-		QString keepName;
+		QString keepName = lastCategoryName;
 		QString keepArt;
 		for (const CategoryEntry &entry : categoryCatalog) {
 			if (entry.id == keepId) {
-				keepName = entry.name;
+				if (!entry.name.isEmpty())
+					keepName = entry.name;
 				keepArt = entry.boxArt;
 				break;
 			}
 		}
 		auto finish = [this, keepId, keepName, keepArt] {
-			if (!keepId.isEmpty())
-				EnsureCategoryInCatalog(keepId, keepName, keepArt);
-			/* Defer so title/tags paint before the combo rebuild. */
-			QTimer::singleShot(0, this, [this] { PopulateCategoryCombo(); });
+			if (!keepId.isEmpty()) {
+				EnsureCategoryInCatalog(keepId, keepName.isEmpty() ? lastCategoryName : keepName, keepArt);
+				if (!keepName.isEmpty())
+					lastCategoryName = keepName;
+			}
+			PopulateCategoryCombo();
 		};
 		if (platform == Twitch) {
 			auto req = StreamInfoDock_Helix("https://api.twitch.tv/helix/games/top?first=50", clientId, accessToken);
 			Http(req, {}, "GET", [this, keepId, keepName, keepArt, finish](int status, const QByteArray &body,
 										       const QString &) {
-				if (status < 200 || status >= 300)
+				if (status < 200 || status >= 300) {
+					finish();
 					return;
+				}
 				categoryCatalog.clear();
-				AppendCategoriesFromJson(QJsonDocument::fromJson(body).object().value("data").toArray(), "id",
-							 "name", "box_art_url");
 				if (!keepId.isEmpty())
 					EnsureCategoryInCatalog(keepId, keepName, keepArt);
-				if (!keepId.isEmpty() && keepArt.isEmpty()) {
+				AppendCategoriesFromJson(QJsonDocument::fromJson(body).object().value("data").toArray(), "id",
+							 "name", "box_art_url");
+				const bool needLookup = !keepId.isEmpty() && (keepName.isEmpty() || keepArt.isEmpty());
+				if (needLookup) {
 					auto gameReq = StreamInfoDock_Helix(
 						"https://api.twitch.tv/helix/games?id=" +
 							QString::fromUtf8(QUrl::toPercentEncoding(keepId)),
@@ -1761,7 +1835,10 @@ void StreamInfoDock::LoadCategoryCatalog()
 											.toArray();
 							if (!data.isEmpty()) {
 								const QJsonObject obj = data.at(0).toObject();
-								EnsureCategoryInCatalog(keepId, obj.value("name").toString(),
+								const QString name = obj.value("name").toString();
+								if (!name.isEmpty())
+									lastCategoryName = name;
+								EnsureCategoryInCatalog(keepId, name,
 											obj.value("box_art_url").toString());
 							}
 						}
@@ -1828,24 +1905,46 @@ void StreamInfoDock::LoadCategoryCatalog()
 		categoryCatalog.clear();
 		if (!keepId.isEmpty())
 			EnsureCategoryInCatalog(keepId, keepName, keepArt);
-		QUrl url(QStringLiteral("https://api.kick.com/public/v1/categories"));
-		QUrlQuery query;
-		query.addQueryItem("q", QStringLiteral("a"));
-		query.addQueryItem("page", QStringLiteral("1"));
-		url.setQuery(query);
-		Http(KickApiRequest(url, accessToken), {}, "GET",
-		     [this, finish](int status, const QByteArray &body, const QString &) {
-			     if (status >= 200 && status < 300) {
-				     const QJsonDocument doc = QJsonDocument::fromJson(body);
-				     const QJsonArray rows = doc.object().value("data").isArray()
-								     ? doc.object().value("data").toArray()
-								     : doc.array();
-				     AppendCategoriesFromJson(rows, "id", "name", "thumbnail");
-			     }
-			     if (categoryCatalog.isEmpty())
-				     SetResult(Tr("StreamInfoKickCategoriesFailed"));
-			     finish();
-		     });
+		PopulateCategoryCombo();
+		auto seedPage = [this, finish](const QString &q) {
+			QUrl url(QStringLiteral("https://api.kick.com/public/v1/categories"));
+			QUrlQuery query;
+			query.addQueryItem("q", q);
+			query.addQueryItem("page", QStringLiteral("1"));
+			url.setQuery(query);
+			Http(KickApiRequest(url, accessToken), {}, "GET",
+			     [this, finish](int status, const QByteArray &body, const QString &) {
+				     if (status >= 200 && status < 300) {
+					     const QJsonDocument doc = QJsonDocument::fromJson(body);
+					     const QJsonArray rows = doc.object().value("data").isArray()
+									     ? doc.object().value("data").toArray()
+									     : doc.array();
+					     AppendCategoriesFromJson(rows, "id", "name", "thumbnail");
+				     }
+				     if (categoryCatalog.isEmpty())
+					     SetResult(Tr("StreamInfoKickCategoriesFailed"));
+				     finish();
+			     });
+		};
+		if (!keepId.isEmpty() && keepName.isEmpty()) {
+			QUrl byId(QStringLiteral("https://api.kick.com/public/v1/categories/") +
+				  QString::fromUtf8(QUrl::toPercentEncoding(keepId)));
+			Http(KickApiRequest(byId, accessToken), {}, "GET",
+			     [this, keepId, seedPage, finish](int status, const QByteArray &body, const QString &) {
+				     if (status >= 200 && status < 300) {
+					     const QJsonObject obj = FirstDataObject(body);
+					     const QString name = obj.value("name").toString();
+					     if (!name.isEmpty()) {
+						     lastCategoryName = name;
+						     EnsureCategoryInCatalog(keepId, name, obj.value("thumbnail").toString());
+						     PopulateCategoryCombo();
+					     }
+				     }
+				     seedPage(lastCategoryName.isEmpty() ? QStringLiteral("a") : lastCategoryName.left(1));
+			     });
+			return;
+		}
+		seedPage(keepName.isEmpty() ? QStringLiteral("a") : keepName.left(1));
 	});
 }
 

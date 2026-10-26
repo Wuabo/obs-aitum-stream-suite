@@ -58,6 +58,7 @@ private:
 	QString userId;
 	QString userName;
 	QString categoryId;
+	QString lastCategoryName;
 	QString lastTitle;
 	QString lastTags;
 	QString ytBroadcastId;
