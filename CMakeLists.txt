@@ -102,8 +102,6 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/event-filter.cpp
   src/utils/icon.cpp
   src/utils/obs-websocket.cpp
-  src/utils/widgets/accessible-alignment-cell.cpp
-  src/utils/widgets/accessible-alignment-selector.cpp
   src/utils/widgets/alignment-selector.cpp
   src/utils/widgets/double-slider.cpp
   src/utils/widgets/focus-scroll-spinbox.cpp
@@ -126,8 +124,6 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/color.hpp
   src/utils/event-filter.hpp
   src/utils/icon.hpp
-  src/utils/widgets/accessible-alignment-cell.hpp
-  src/utils/widgets/accessible-alignment-selector.hpp
   src/utils/widgets/alignment-selector.hpp
   src/utils/widgets/double-slider.hpp
   src/utils/widgets/focus-scroll-spinbox.hpp

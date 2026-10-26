@@ -19,7 +19,6 @@
 
 #include <util/base.h>
 
-#include <QAccessible>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QStyleOptionButton>
@@ -276,14 +275,6 @@ void AlignmentSelector::setFocusedCell(int cell)
 	if (cell != focusedCell) {
 		focusedCell = cell;
 		update();
-
-		if (AccessibleAlignmentSelector *interface =
-			    dynamic_cast<AccessibleAlignmentSelector *>(QAccessible::queryAccessibleInterface(this))) {
-			if (QAccessibleInterface *child = interface->child(cell)) {
-				QAccessibleEvent event(child, QAccessible::Focus);
-				QAccessible::updateAccessibility(&event);
-			}
-		}
 	}
 }
 
@@ -297,17 +288,6 @@ void AlignmentSelector::selectCell(int cell)
 		emit currentIndexChanged(cell);
 	}
 	update();
-
-	if (AccessibleAlignmentSelector *interface =
-		    dynamic_cast<AccessibleAlignmentSelector *>(QAccessible::queryAccessibleInterface(this))) {
-		if (QAccessibleInterface *child = interface->child(cell)) {
-			QAccessible::State state;
-			state.checked = true;
-
-			QAccessibleStateChangeEvent event(child, state);
-			QAccessible::updateAccessibility(&event);
-		}
-	}
 }
 
 void AlignmentSelector::focusInEvent(QFocusEvent *)

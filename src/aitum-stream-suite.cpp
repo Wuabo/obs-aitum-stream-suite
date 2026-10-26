@@ -426,27 +426,11 @@ static void log_same_sources()
 	}
 }
 
-static bool restart = false;
-
 static void frontend_event(enum obs_frontend_event event, void *private_data)
 {
 	UNUSED_PARAMETER(private_data);
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
 		finished_loading = true;
-		if (restart) {
-			const auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-			if (!main_window) {
-				return;
-			}
-			QTimer::singleShot(2000, main_window, [main_window] {
-				auto dialogs = main_window->findChildren<QDialog *>();
-				for (auto dialog : dialogs) {
-					dialog->close();
-				}
-				QMetaObject::invokeMethod(main_window, "close", Qt::QueuedConnection);
-			});
-			return;
-		}
 		log_same_sources();
 		struct obs_frontend_source_list transitions = {};
 		obs_frontend_get_transitions(&transitions);

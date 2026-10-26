@@ -17,17 +17,12 @@
 
 #pragma once
 
-#include "accessible-alignment-selector.hpp"
-
 #include <QFocusEvent>
 #include <QKeyEvent>
 #include <QWidget>
 
 class AlignmentSelector : public QWidget {
 	Q_OBJECT
-
-	friend class AccessibleAlignmentSelector;
-	friend class AccessibleAlignmentCell;
 
 public:
 	explicit AlignmentSelector(QWidget *parent = nullptr);
