@@ -1,4 +1,5 @@
 #include "source-toolbar.hpp"
+#include "media-controls.hpp"
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -773,4 +774,90 @@ void TextSourceToolbar::onTextChanged()
 	obs_data_set_string(settings, "text", newText.c_str());
 	obs_source_update(source, nullptr);
 	SetUndoProperties(source, true);
+}
+
+static bool is_network_media_source(obs_source_t *source, const char *id)
+{
+	if (strcmp(id, "ffmpeg_source") != 0) {
+		return false;
+	}
+	OBSDataAutoRelease s = obs_source_get_settings(source);
+	return !obs_data_get_bool(s, "is_local_file");
+}
+
+QWidget *CreateSourceContextToolbar(QWidget *parent, obs_source_t *source)
+{
+	if (!parent || !source) {
+		return nullptr;
+	}
+
+	const uint32_t flags = obs_source_get_output_flags(source);
+	const char *id = obs_source_get_unversioned_id(source);
+	OBSSource obsSource(source);
+
+	if ((flags & OBS_SOURCE_CONTROLLABLE_MEDIA) && !is_network_media_source(source, id)) {
+		auto *media = new MediaControls(parent);
+		media->SetSource(obsSource);
+		return media;
+	}
+	if (strcmp(id, "browser_source") == 0) {
+		return new BrowserToolbar(parent, obsSource);
+	}
+	if (strcmp(id, "wasapi_input_capture") == 0 || strcmp(id, "wasapi_output_capture") == 0 ||
+	    strcmp(id, "coreaudio_input_capture") == 0 || strcmp(id, "coreaudio_output_capture") == 0 ||
+	    strcmp(id, "pulse_input_capture") == 0 || strcmp(id, "pulse_output_capture") == 0 ||
+	    strcmp(id, "alsa_input_capture") == 0) {
+		auto *tb = new AudioCaptureToolbar(parent, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "wasapi_process_output_capture") == 0) {
+		auto *tb = new ApplicationAudioCaptureToolbar(parent, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "window_capture") == 0 || strcmp(id, "xcomposite_input") == 0) {
+		auto *tb = new WindowCaptureToolbar(parent, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 || strcmp(id, "xshm_input") == 0) {
+		auto *tb = new DisplayCaptureToolbar(parent, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "dshow_input") == 0) {
+		return new DeviceCaptureToolbar(parent, obsSource);
+	}
+	if (strcmp(id, "game_capture") == 0) {
+		return new GameCaptureToolbar(parent, obsSource);
+	}
+	if (strcmp(id, "image_source") == 0) {
+		return new ImageSourceToolbar(parent, obsSource);
+	}
+	if (strcmp(id, "color_source") == 0) {
+		return new ColorSourceToolbar(parent, obsSource);
+	}
+	if (strcmp(id, "text_ft2_source") == 0 || strcmp(id, "text_gdiplus") == 0) {
+		return new TextSourceToolbar(parent, obsSource);
+	}
+
+	return nullptr;
+}
+
+OBSSource ContextToolbarGetSource(QWidget *widget)
+{
+	if (!widget) {
+		return OBSSource();
+	}
+	if (auto *tb = dynamic_cast<SourceToolbar *>(widget)) {
+		return tb->GetSource();
+	}
+	if (auto *tb = dynamic_cast<MediaControls *>(widget)) {
+		return tb->GetSource();
+	}
+	if (auto *tb = dynamic_cast<DeviceCaptureToolbar *>(widget)) {
+		return tb->GetSource();
+	}
+	return OBSSource();
 }

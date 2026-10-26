@@ -175,3 +175,7 @@ void UpdateSourceComboToolbarProperties(QComboBox *combo, OBSSource source, obs_
 					const char *prop_name, bool is_int);
 void UpdateSourceComboToolbarValue(QComboBox *combo, OBSSource source, int idx, const char *prop_name, bool is_int);
 void SetComboItemEnabled(QComboBox *c, int idx, bool enabled);
+
+/* Same typed toolbars OBSBasic::createContextBarWidget injects into emptySpace. */
+QWidget *CreateSourceContextToolbar(QWidget *parent, obs_source_t *source);
+OBSSource ContextToolbarGetSource(QWidget *widget);

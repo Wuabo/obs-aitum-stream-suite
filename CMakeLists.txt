@@ -66,6 +66,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/canvas-clone-dock.hpp
   src/docks/native-dock-tabs.cpp
   src/docks/native-dock-tabs.hpp
+  src/docks/main-canvas-context-fix.cpp
+  src/docks/main-canvas-context-fix.hpp
   src/docks/controls-other-options.cpp
   src/docks/controls-other-options.hpp
   src/docks/filters-dock.cpp

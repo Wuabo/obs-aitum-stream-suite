@@ -4,7 +4,6 @@
 #include "../utils/color.hpp"
 #include "../utils/icon.hpp"
 #include "../utils/widgets/focus-scroll-spinbox.hpp"
-#include "../utils/widgets/media-controls.hpp"
 #include "../utils/widgets/source-toolbar.hpp"
 #include "../utils/widgets/source-tree.hpp"
 #include "canvas-dock.hpp"
@@ -1387,74 +1386,9 @@ void CanvasDock::ClearContextBar()
 	}
 }
 
-static bool is_network_media_source(obs_source_t *source, const char *id)
-{
-	if (strcmp(id, "ffmpeg_source") != 0) {
-		return false;
-	}
-	OBSDataAutoRelease s = obs_source_get_settings(source);
-	return !obs_data_get_bool(s, "is_local_file");
-}
-
 QWidget *CanvasDock::CreateContextBarWidget(obs_source_t *source)
 {
-	if (!source || !emptySpace) {
-		return nullptr;
-	}
-
-	const uint32_t flags = obs_source_get_output_flags(source);
-	const char *id = obs_source_get_unversioned_id(source);
-	OBSSource obsSource(source);
-
-	if ((flags & OBS_SOURCE_CONTROLLABLE_MEDIA) && !is_network_media_source(source, id)) {
-		auto *media = new MediaControls(emptySpace);
-		media->SetSource(obsSource);
-		return media;
-	}
-	if (strcmp(id, "browser_source") == 0) {
-		return new BrowserToolbar(emptySpace, obsSource);
-	}
-	if (strcmp(id, "wasapi_input_capture") == 0 || strcmp(id, "wasapi_output_capture") == 0 ||
-	    strcmp(id, "coreaudio_input_capture") == 0 || strcmp(id, "coreaudio_output_capture") == 0 ||
-	    strcmp(id, "pulse_input_capture") == 0 || strcmp(id, "pulse_output_capture") == 0 ||
-	    strcmp(id, "alsa_input_capture") == 0) {
-		auto *tb = new AudioCaptureToolbar(emptySpace, obsSource);
-		tb->Init();
-		return tb;
-	}
-	if (strcmp(id, "wasapi_process_output_capture") == 0) {
-		auto *tb = new ApplicationAudioCaptureToolbar(emptySpace, obsSource);
-		tb->Init();
-		return tb;
-	}
-	if (strcmp(id, "window_capture") == 0 || strcmp(id, "xcomposite_input") == 0) {
-		auto *tb = new WindowCaptureToolbar(emptySpace, obsSource);
-		tb->Init();
-		return tb;
-	}
-	if (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 ||
-	    strcmp(id, "xshm_input") == 0) {
-		auto *tb = new DisplayCaptureToolbar(emptySpace, obsSource);
-		tb->Init();
-		return tb;
-	}
-	if (strcmp(id, "dshow_input") == 0) {
-		return new DeviceCaptureToolbar(emptySpace, obsSource);
-	}
-	if (strcmp(id, "game_capture") == 0) {
-		return new GameCaptureToolbar(emptySpace, obsSource);
-	}
-	if (strcmp(id, "image_source") == 0) {
-		return new ImageSourceToolbar(emptySpace, obsSource);
-	}
-	if (strcmp(id, "color_source") == 0) {
-		return new ColorSourceToolbar(emptySpace, obsSource);
-	}
-	if (strcmp(id, "text_ft2_source") == 0 || strcmp(id, "text_gdiplus") == 0) {
-		return new TextSourceToolbar(emptySpace, obsSource);
-	}
-
-	return nullptr;
+	return CreateSourceContextToolbar(emptySpace, source);
 }
 
 void CanvasDock::UpdateContextBarVisibility()
@@ -1503,18 +1437,9 @@ void CanvasDock::UpdateContextBar(bool force)
 
 		bool updateNeeded = true;
 		if (QLayoutItem *la = emptySpace->layout()->itemAt(0)) {
-			if (auto *toolbar = dynamic_cast<SourceToolbar *>(la->widget())) {
-				if (toolbar->GetSource() == source) {
-					updateNeeded = false;
-				}
-			} else if (auto *toolbar = dynamic_cast<MediaControls *>(la->widget())) {
-				if (toolbar->GetSource() == source) {
-					updateNeeded = false;
-				}
-			} else if (auto *toolbar = dynamic_cast<DeviceCaptureToolbar *>(la->widget())) {
-				if (toolbar->GetSource() == source) {
-					updateNeeded = false;
-				}
+			OBSSource current = ContextToolbarGetSource(la->widget());
+			if (current == source) {
+				updateNeeded = false;
 			}
 		}
 

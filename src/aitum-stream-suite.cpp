@@ -3,6 +3,7 @@
 #include "dialogs/source-select-dialog.hpp"
 #include "docks/canvas-clone-dock.hpp"
 #include "docks/native-dock-tabs.hpp"
+#include "docks/main-canvas-context-fix.hpp"
 #include "docks/canvas-dock.hpp"
 #include "docks/filters-dock.hpp"
 #include "docks/output-dock.hpp"
@@ -471,6 +472,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		obs_frontend_source_list_free(&transitions);
 
 		load_current_profile_config();
+		install_main_canvas_context_bar_fix();
 		auto scene = obs_frontend_get_current_scene();
 		if (scene) {
 			if (properties_dock) {
@@ -499,6 +501,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * (SCRIPTING_SHUTDOWN runs first) so callbacks never hit
 		 * destroyed docks during scene teardown. */
 		shutdown_native_canvas_tabs();
+		shutdown_main_canvas_context_bar_fix();
 		if (sources_dock) {
 			sources_dock->Shutdown();
 		}
@@ -733,6 +736,8 @@ bool obs_module_load(void)
 		l->setMinimumSize(0, 0);
 		l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 		main_window->setCentralWidget(l);
+		/* Dock is narrow → OBS Minimized clears typed toolbars; reinject. */
+		QTimer::singleShot(0, main_window, [] { install_main_canvas_context_bar_fix(); });
 	}
 
 	output_dock = new OutputDock(main_window);
