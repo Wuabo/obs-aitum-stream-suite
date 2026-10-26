@@ -30,6 +30,7 @@
 #include <QMimeData>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -1068,7 +1069,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 		return;
 	}
 
-	/* Mirror OBSBasic.ui gridLayout: preview + scale row (previewXContainer). */
+	/* Mirror OBSBasic.ui gridLayout: preview + Y scrollbar + scale row with X scrollbar. */
 	auto *gridHost = new QWidget(this);
 	auto *grid = new QGridLayout(gridHost);
 	grid->setContentsMargins(0, 0, 0, 0);
@@ -1078,6 +1079,10 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	if (previewDisabledWidget) {
 		grid->addWidget(previewDisabledWidget, 1, 0, 1, 2);
 	}
+
+	previewYScrollBar = new QScrollBar(Qt::Vertical, gridHost);
+	previewYScrollBar->setObjectName(QStringLiteral("previewYScrollBar"));
+	grid->addWidget(previewYScrollBar, 1, 2);
 
 	auto *scaleRow = new QWidget(gridHost);
 	scaleRow->setObjectName(QStringLiteral("previewXContainer"));
@@ -1099,6 +1104,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	previewScalePercent = new QLabel(QStringLiteral("100%"), scaleRow);
 	previewScalePercent->setObjectName(QStringLiteral("previewScalePercent"));
 	previewScalePercent->setAlignment(Qt::AlignCenter);
+	previewScalePercent->setFixedHeight(14);
 
 	previewZoomInButton = new QPushButton(scaleRow);
 	previewZoomInButton->setObjectName(QStringLiteral("previewZoomInButton"));
@@ -1113,6 +1119,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 
 	previewScalingMode = new QComboBox(scaleRow);
 	previewScalingMode->setObjectName(QStringLiteral("previewScalingMode"));
+	previewScalingMode->setFixedHeight(14);
 	previewScalingMode->addItem(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Scale.Window")));
 	previewScalingMode->addItem(
@@ -1128,19 +1135,46 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 		}
 	});
 
+	previewXScrollBar = new QScrollBar(Qt::Horizontal, scaleRow);
+	previewXScrollBar->setObjectName(QStringLiteral("previewXScrollBar"));
+	previewXScrollBar->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+	previewXScrollBar->setFixedHeight(16);
+	previewXScrollBar->setSingleStep(10);
+	previewXScrollBar->setPageStep(100);
+
 	scaleLayout->addWidget(previewZoomOutButton);
 	scaleLayout->addWidget(previewScalePercent);
 	scaleLayout->addWidget(previewZoomInButton);
 	scaleLayout->addWidget(previewScalingMode);
 	scaleLayout->addSpacing(4);
-	scaleLayout->addStretch(1);
+	scaleLayout->addWidget(previewXScrollBar, 1);
 	grid->addWidget(scaleRow, 2, 1);
+
+	connect(previewXScrollBar, &QScrollBar::valueChanged, this, [this](int value) {
+		if (!fixedScaling) {
+			return;
+		}
+		scrollingOffset.x = float(-value);
+		if (preview) {
+			preview->update();
+		}
+	});
+	connect(previewYScrollBar, &QScrollBar::valueChanged, this, [this](int value) {
+		if (!fixedScaling) {
+			return;
+		}
+		scrollingOffset.y = float(-value);
+		if (preview) {
+			preview->update();
+		}
+	});
 
 	previewContainerLayout->addWidget(gridHost, 1);
 
 	/* Mirror OBSBasic.ui: contextContainer is sibling of canvasEditor. */
 	contextContainer = new QFrame(this);
 	contextContainer->setObjectName(QStringLiteral("contextContainer"));
+	contextContainer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 	auto *hl = new QHBoxLayout(contextContainer);
 	hl->setContentsMargins(6, 4, 6, 4);
 	hl->setSpacing(6);
@@ -1199,6 +1233,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 
 	sourceFiltersButton = new QPushButton(contextSub);
 	sourceFiltersButton->setObjectName(QStringLiteral("sourceFiltersButton"));
+	sourceFiltersButton->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 	sourceFiltersButton->setMinimumHeight(22);
 	sourceFiltersButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SourceFilters")));
 	sourceFiltersButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Filters")));
@@ -1534,11 +1569,62 @@ void CanvasDock::ResizePreview()
 	UpdatePreviewScaleControls();
 }
 
+void CanvasDock::UpdatePreviewScrollBars()
+{
+	if (!previewXScrollBar || !previewYScrollBar || !preview) {
+		return;
+	}
+	if (!fixedScaling) {
+		QSignalBlocker bx(previewXScrollBar);
+		QSignalBlocker by(previewYScrollBar);
+		previewXScrollBar->setRange(0, 0);
+		previewYScrollBar->setRange(0, 0);
+		return;
+	}
+
+	const QSize target = preview->size() * preview->devicePixelRatioF();
+	const float cx = float(canvas_width > 0 ? canvas_width : 1) * scalingAmount;
+	const float cy = float(canvas_height > 0 ? canvas_height : 1) * scalingAmount;
+	float offX = (cx - float(target.width())) * 0.5f;
+	float offY = (cy - float(target.height())) * 0.5f;
+	if (offX < 0.0f) {
+		offX = 0.0f;
+	}
+	if (offY < 0.0f) {
+		offY = 0.0f;
+	}
+	offX += float(target.width()) * 0.5f;
+	offY += float(target.height()) * 0.5f;
+
+	scrollingOffset.x = std::clamp(scrollingOffset.x, -offX, offX);
+	scrollingOffset.y = std::clamp(scrollingOffset.y, -offY, offY);
+
+	{
+		QSignalBlocker bx(previewXScrollBar);
+		previewXScrollBar->setRange(int(-offX), int(offX));
+		previewXScrollBar->setPageStep(int(float(target.width()) / std::min(scalingAmount, 1.0f)));
+		previewXScrollBar->setValue(int(-scrollingOffset.x));
+	}
+	{
+		QSignalBlocker by(previewYScrollBar);
+		previewYScrollBar->setRange(int(-offY), int(offY));
+		previewYScrollBar->setPageStep(int(float(target.height()) / std::min(scalingAmount, 1.0f)));
+		previewYScrollBar->setValue(int(-scrollingOffset.y));
+	}
+}
+
 void CanvasDock::UpdatePreviewScaleControls()
 {
 	if (previewScalePercent) {
 		previewScalePercent->setText(QString::number(int(floor(previewScale * 100.0f))) + QStringLiteral("%"));
 	}
+	if (previewZoomInButton) {
+		previewZoomInButton->setEnabled(!fixedScaling || scalingLevel != MAX_SCALING_LEVEL);
+	}
+	if (previewZoomOutButton) {
+		previewZoomOutButton->setEnabled(!fixedScaling || scalingLevel != -MAX_SCALING_LEVEL);
+	}
+	UpdatePreviewScrollBars();
 	if (!previewScalingMode) {
 		return;
 	}
@@ -5480,7 +5566,10 @@ bool CanvasDock::HandleMouseMoveEvent(QMouseEvent *event)
 		scrollingOffset.y += pixelRatio * ((float)qtPos.y() - scrollingFrom.y);
 		scrollingFrom.x = (float)qtPos.x();
 		scrollingFrom.y = (float)qtPos.y();
-		//emit DisplayResized();
+		UpdatePreviewScrollBars();
+		if (preview) {
+			preview->update();
+		}
 		return true;
 	}
 

@@ -18,6 +18,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QWheelEvent>
@@ -100,6 +101,8 @@ private:
 	QLabel *previewScalePercent = nullptr;
 	QPushButton *previewZoomInButton = nullptr;
 	QComboBox *previewScalingMode = nullptr;
+	QScrollBar *previewXScrollBar = nullptr;
+	QScrollBar *previewYScrollBar = nullptr;
 	QFrame *contextContainer = nullptr;
 	QFrame *emptySpace = nullptr;
 	QLabel *contextSourceIcon = nullptr;
@@ -163,6 +166,7 @@ private:
 	void SetPreviewScalingOutput();
 	void ResizePreview();
 	void UpdatePreviewScaleControls();
+	void UpdatePreviewScrollBars();
 	void BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayout *outerLayout);
 	void ClearContextBar();
 	QWidget *CreateContextBarWidget(obs_source_t *source);
