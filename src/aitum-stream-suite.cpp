@@ -6,6 +6,7 @@
 #include "docks/canvas-dock.hpp"
 #include "docks/output-dock.hpp"
 #include "docks/stream-info-dock.hpp"
+#include "docks/chat-dock.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
 #include <obs-frontend-api.h>
@@ -26,6 +27,7 @@ obs_data_t *current_profile_config = nullptr;
 OBSBasicSettings *configDialog = nullptr;
 OutputDock *output_dock = nullptr;
 StreamInfoDock *stream_info_dock = nullptr;
+ChatDock *chat_dock = nullptr;
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -435,11 +437,15 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		load_current_profile_config();
 		if (stream_info_dock)
 			stream_info_dock->ReloadAccounts();
+		if (chat_dock)
+			chat_dock->ReloadAccounts();
 		install_main_canvas_context_bar_fix();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
 		if (stream_info_dock)
 			stream_info_dock->ReloadAccounts();
+		if (chat_dock)
+			chat_dock->ReloadAccounts();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
@@ -463,6 +469,8 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		output_dock = nullptr;
 		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
 		stream_info_dock = nullptr;
+		obs_frontend_remove_dock("AitumStreamSuiteChat");
+		chat_dock = nullptr;
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
@@ -626,6 +634,8 @@ void open_config_dialog(int tab, const char *create_type)
 			load_outputs();
 			if (stream_info_dock)
 				stream_info_dock->RefreshAvailablePlatforms();
+			if (chat_dock)
+				chat_dock->RefreshAvailablePlatforms();
 			if (vendor) {
 				obs_websocket_vendor_emit_event(vendor, "outputs_changed", nullptr);
 			}
@@ -666,6 +676,8 @@ bool obs_module_load(void)
 	stream_info_dock = new StreamInfoDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteStreamInfo", obs_module_text("AitumStreamSuiteStreamInfo"),
 				    stream_info_dock);
+	chat_dock = new ChatDock(main_window);
+	obs_frontend_add_dock_by_id("AitumStreamSuiteChat", obs_module_text("AitumStreamSuiteChat"), chat_dock);
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */
 
@@ -711,6 +723,10 @@ void obs_module_unload()
 	if (stream_info_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
 		stream_info_dock = nullptr;
+	}
+	if (chat_dock) {
+		obs_frontend_remove_dock("AitumStreamSuiteChat");
+		chat_dock = nullptr;
 	}
 }
 

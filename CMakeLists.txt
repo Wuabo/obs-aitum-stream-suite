@@ -75,6 +75,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/output-dock.hpp
   src/docks/stream-info-dock.cpp
   src/docks/stream-info-dock.hpp
+  src/docks/chat-dock.cpp
+  src/docks/chat-dock.hpp
   src/docks/sources-dock.cpp
   src/docks/sources-dock.hpp)
 

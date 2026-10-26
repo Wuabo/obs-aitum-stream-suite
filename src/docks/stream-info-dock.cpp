@@ -48,7 +48,7 @@ extern OutputDock *output_dock;
 void save_current_profile_config(bool save_docks);
 
 static const int kRedirectPort = 17654;
-static const char *kTwitchScopes = "channel:manage:broadcast";
+static const char *kTwitchScopes = "channel:manage:broadcast chat:read chat:edit";
 static const QSize kCategoryIconSize(24, 32);
 
 class CategoryComboBox : public QComboBox {
@@ -1074,7 +1074,7 @@ void StreamInfoDock::BeginAuthCode()
 		query.addQueryItem("prompt", "consent");
 	} else {
 		url = QUrl(QStringLiteral("https://id.kick.com/oauth/authorize"));
-		query.addQueryItem("scope", "user:read channel:read channel:write");
+		query.addQueryItem("scope", "user:read channel:read channel:write chat:write");
 	}
 	url.setQuery(query);
 	QDesktopServices::openUrl(url);
