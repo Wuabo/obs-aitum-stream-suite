@@ -745,7 +745,7 @@ void ensure_preview_docks_independent()
 		return;
 	}
 
-	static const char *kPreviewDockIds[] = {"AitumStreamSuiteCanvasPreviews", "AitumStreamSuiteMainCanvas"};
+	static const char *kPreviewDockIds[] = {"AitumStreamSuiteMainCanvas"};
 	for (const char *id : kPreviewDockIds) {
 		if (auto *dock = main->findChild<QDockWidget *>(QString::fromUtf8(id))) {
 			UntabifyFromControls(main, dock, controls);

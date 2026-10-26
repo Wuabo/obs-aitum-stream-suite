@@ -64,8 +64,6 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/canvas-dock.hpp
   src/docks/canvas-clone-dock.cpp
   src/docks/canvas-clone-dock.hpp
-  src/docks/canvas-previews-dock.cpp
-  src/docks/canvas-previews-dock.hpp
   src/docks/native-dock-tabs.cpp
   src/docks/native-dock-tabs.hpp
   src/docks/controls-other-options.cpp
@@ -117,6 +115,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/widgets/locked-checkbox.cpp
   src/utils/widgets/output-widget.cpp
   src/utils/widgets/slider-ignore-scroll.cpp
+  src/utils/widgets/absolute-slider.cpp
+  src/utils/widgets/media-controls.cpp
+  src/utils/widgets/source-toolbar.cpp
   src/utils/widgets/scene-tree.cpp
   src/utils/widgets/scene-tree.hpp
   src/utils/widgets/source-tree.cpp
@@ -138,6 +139,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/utils/widgets/locked-checkbox.hpp
   src/utils/widgets/output-widget.hpp
   src/utils/widgets/slider-ignore-scroll.hpp
+  src/utils/widgets/absolute-slider.hpp
+  src/utils/widgets/media-controls.hpp
+  src/utils/widgets/source-toolbar.hpp
   src/utils/widgets/source-tree.hpp
   src/utils/widgets/stream-key-input.hpp
   src/utils/widgets/switching-splitter.hpp

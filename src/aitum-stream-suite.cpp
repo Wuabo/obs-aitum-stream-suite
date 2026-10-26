@@ -4,7 +4,6 @@
 #include "docks/canvas-clone-dock.hpp"
 #include "docks/native-dock-tabs.hpp"
 #include "docks/canvas-dock.hpp"
-#include "docks/canvas-previews-dock.hpp"
 #include "docks/filters-dock.hpp"
 #include "docks/output-dock.hpp"
 #include "docks/properties-dock.hpp"
@@ -510,7 +509,6 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		obs_frontend_remove_dock("AitumStreamSuiteStats");
 		obs_frontend_remove_dock("AitumStreamSuiteSources");
 		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
-		obs_frontend_remove_dock("AitumStreamSuiteCanvasPreviews");
 		output_dock = nullptr;
 		stats_dock = nullptr;
 		sources_dock = nullptr;
@@ -737,10 +735,6 @@ bool obs_module_load(void)
 		main_window->setCentralWidget(l);
 	}
 
-	auto *canvas_previews_dock = new CanvasPreviewsDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteCanvasPreviews", obs_module_text("CanvasPreviews"),
-				    canvas_previews_dock);
-
 	output_dock = new OutputDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteOutput", obs_module_text("AitumStreamSuiteOutput"), output_dock);
 	/* Keep Properties/Filters/Transform as hidden helpers — use OBS native dialogs in the UI. */
@@ -799,7 +793,6 @@ void obs_module_unload()
 		obs_frontend_remove_dock("AitumStreamSuiteStats");
 		obs_frontend_remove_dock("AitumStreamSuiteSources");
 		obs_frontend_remove_dock("AitumStreamSuiteTransitions");
-		obs_frontend_remove_dock("AitumStreamSuiteCanvasPreviews");
 		output_dock = nullptr;
 		stats_dock = nullptr;
 		sources_dock = nullptr;

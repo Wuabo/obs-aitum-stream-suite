@@ -4,6 +4,8 @@
 #include "../utils/color.hpp"
 #include "../utils/icon.hpp"
 #include "../utils/widgets/focus-scroll-spinbox.hpp"
+#include "../utils/widgets/media-controls.hpp"
+#include "../utils/widgets/source-toolbar.hpp"
 #include "../utils/widgets/source-tree.hpp"
 #include "canvas-dock.hpp"
 #include "sources-dock.hpp"
@@ -1341,7 +1343,12 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 		}
 	});
 
-	/* Native order: icon → label → iconSpacer → line → Properties → Filters → Interact */
+	/* Native order: icon → label → iconSpacer → line → Properties → Filters → Interact → line */
+	auto *sepAfter = new QFrame(contextSub);
+	sepAfter->setFrameShape(QFrame::VLine);
+	sepAfter->setFrameShadow(QFrame::Plain);
+	sepAfter->setObjectName(QStringLiteral("line"));
+
 	sub->addWidget(contextSourceIcon);
 	sub->addWidget(contextSourceLabel);
 	sub->addWidget(contextSourceIconSpacer);
@@ -1349,33 +1356,182 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	sub->addWidget(sourcePropertiesButton);
 	sub->addWidget(sourceFiltersButton);
 	sub->addWidget(sourceInteractButton);
+	sub->addWidget(sepAfter);
 
-	auto *emptySpace = new QFrame(contextContainer);
+	emptySpace = new QFrame(contextContainer);
 	emptySpace->setObjectName(QStringLiteral("emptySpace"));
-	emptySpace->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+	emptySpace->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 	emptySpace->setMinimumHeight(22);
+	auto *emptyLayout = new QHBoxLayout(emptySpace);
+	emptyLayout->setContentsMargins(0, 0, 0, 0);
+	emptyLayout->setSpacing(0);
 
 	hl->addWidget(contextSub);
 	hl->addWidget(emptySpace, 1);
 	outerLayout->addWidget(contextContainer);
 
 	UpdatePreviewScaleControls();
-	UpdateContextBar();
+	UpdateContextBarVisibility();
+	UpdateContextBar(true);
 }
 
-void CanvasDock::UpdateContextBar()
+void CanvasDock::ClearContextBar()
 {
-	if (!contextContainer) {
+	if (!emptySpace || !emptySpace->layout()) {
 		return;
 	}
+	QLayout *layout = emptySpace->layout();
+	while (QLayoutItem *la = layout->takeAt(0)) {
+		delete la->widget();
+		delete la;
+	}
+}
+
+static bool is_network_media_source(obs_source_t *source, const char *id)
+{
+	if (strcmp(id, "ffmpeg_source") != 0) {
+		return false;
+	}
+	OBSDataAutoRelease s = obs_source_get_settings(source);
+	return !obs_data_get_bool(s, "is_local_file");
+}
+
+QWidget *CanvasDock::CreateContextBarWidget(obs_source_t *source)
+{
+	if (!source || !emptySpace) {
+		return nullptr;
+	}
+
+	const uint32_t flags = obs_source_get_output_flags(source);
+	const char *id = obs_source_get_unversioned_id(source);
+	OBSSource obsSource(source);
+
+	if ((flags & OBS_SOURCE_CONTROLLABLE_MEDIA) && !is_network_media_source(source, id)) {
+		auto *media = new MediaControls(emptySpace);
+		media->SetSource(obsSource);
+		return media;
+	}
+	if (strcmp(id, "browser_source") == 0) {
+		return new BrowserToolbar(emptySpace, obsSource);
+	}
+	if (strcmp(id, "wasapi_input_capture") == 0 || strcmp(id, "wasapi_output_capture") == 0 ||
+	    strcmp(id, "coreaudio_input_capture") == 0 || strcmp(id, "coreaudio_output_capture") == 0 ||
+	    strcmp(id, "pulse_input_capture") == 0 || strcmp(id, "pulse_output_capture") == 0 ||
+	    strcmp(id, "alsa_input_capture") == 0) {
+		auto *tb = new AudioCaptureToolbar(emptySpace, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "wasapi_process_output_capture") == 0) {
+		auto *tb = new ApplicationAudioCaptureToolbar(emptySpace, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "window_capture") == 0 || strcmp(id, "xcomposite_input") == 0) {
+		auto *tb = new WindowCaptureToolbar(emptySpace, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "monitor_capture") == 0 || strcmp(id, "display_capture") == 0 ||
+	    strcmp(id, "xshm_input") == 0) {
+		auto *tb = new DisplayCaptureToolbar(emptySpace, obsSource);
+		tb->Init();
+		return tb;
+	}
+	if (strcmp(id, "dshow_input") == 0) {
+		return new DeviceCaptureToolbar(emptySpace, obsSource);
+	}
+	if (strcmp(id, "game_capture") == 0) {
+		return new GameCaptureToolbar(emptySpace, obsSource);
+	}
+	if (strcmp(id, "image_source") == 0) {
+		return new ImageSourceToolbar(emptySpace, obsSource);
+	}
+	if (strcmp(id, "color_source") == 0) {
+		return new ColorSourceToolbar(emptySpace, obsSource);
+	}
+	if (strcmp(id, "text_ft2_source") == 0 || strcmp(id, "text_gdiplus") == 0) {
+		return new TextSourceToolbar(emptySpace, obsSource);
+	}
+
+	return nullptr;
+}
+
+void CanvasDock::UpdateContextBarVisibility()
+{
+	/* Match OBSBasic thresholds, but measure the dock itself (not the
+	 * whole main window). Prefer icon-only chrome when a typed toolbar
+	 * also needs room — same look as native Main Canvas with Window Capture. */
+	const int width = contextContainer ? contextContainer->width() : size().width();
+	ContextBarSize next;
+	if (width >= 900) {
+		next = ContextBarSize_Normal;
+	} else if (width >= 360) {
+		next = ContextBarSize_Reduced;
+	} else {
+		next = ContextBarSize_Minimized;
+	}
+
+	if (contextBarSize == next) {
+		return;
+	}
+	contextBarSize = next;
+	UpdateContextBar(true);
+}
+
+void CanvasDock::resizeEvent(QResizeEvent *event)
+{
+	QFrame::resizeEvent(event);
+	UpdateContextBarVisibility();
+}
+
+void CanvasDock::UpdateContextBar(bool force)
+{
+	if (!contextContainer || !emptySpace) {
+		return;
+	}
+
 	obs_sceneitem_t *item = GetSelectedItem(scene);
 	if (!item && sourceList) {
 		item = GetCurrentSceneItem();
 	}
+
 	if (item) {
 		obs_source_t *source = obs_sceneitem_get_source(item);
 		const char *id = obs_source_get_unversioned_id(source);
 		const uint32_t flags = obs_source_get_output_flags(source);
+
+		bool updateNeeded = true;
+		if (QLayoutItem *la = emptySpace->layout()->itemAt(0)) {
+			if (auto *toolbar = dynamic_cast<SourceToolbar *>(la->widget())) {
+				if (toolbar->GetSource() == source) {
+					updateNeeded = false;
+				}
+			} else if (auto *toolbar = dynamic_cast<MediaControls *>(la->widget())) {
+				if (toolbar->GetSource() == source) {
+					updateNeeded = false;
+				}
+			} else if (auto *toolbar = dynamic_cast<DeviceCaptureToolbar *>(la->widget())) {
+				if (toolbar->GetSource() == source) {
+					updateNeeded = false;
+				}
+			}
+		}
+
+		if (sourceInteractButton) {
+			sourceInteractButton->setVisible(flags & OBS_SOURCE_INTERACTION);
+		}
+
+		/* Keep typed toolbars even in Minimized — docks are often narrow. */
+		if (updateNeeded || force) {
+			ClearContextBar();
+			if (contextBarSize >= ContextBarSize_Reduced) {
+				if (QWidget *widget = CreateContextBarWidget(source)) {
+					emptySpace->layout()->addWidget(widget);
+				}
+			}
+		}
+
 		QIcon icon;
 		if (strcmp(id, "scene") == 0) {
 			icon = GetSceneIcon();
@@ -1390,10 +1546,8 @@ void CanvasDock::UpdateContextBar()
 		contextSourceLabel->setText(QString::fromUtf8(obs_source_get_name(source)));
 		sourceFiltersButton->setEnabled(true);
 		sourcePropertiesButton->setEnabled(obs_source_configurable(source));
-		if (sourceInteractButton) {
-			sourceInteractButton->setVisible(flags & OBS_SOURCE_INTERACTION);
-		}
 	} else {
+		ClearContextBar();
 		contextSourceIcon->hide();
 		contextSourceIconSpacer->show();
 		contextSourceLabel->setText(
@@ -1402,6 +1556,20 @@ void CanvasDock::UpdateContextBar()
 		sourcePropertiesButton->setEnabled(false);
 		if (sourceInteractButton) {
 			sourceInteractButton->hide();
+		}
+	}
+
+	if (contextBarSize == ContextBarSize_Normal) {
+		sourcePropertiesButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Properties")));
+		sourceFiltersButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Filters")));
+		if (sourceInteractButton) {
+			sourceInteractButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Interact")));
+		}
+	} else {
+		sourcePropertiesButton->setText(QString());
+		sourceFiltersButton->setText(QString());
+		if (sourceInteractButton) {
+			sourceInteractButton->setText(QString());
 		}
 	}
 }

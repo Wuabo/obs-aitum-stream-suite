@@ -17,6 +17,7 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QWheelEvent>
@@ -103,12 +104,19 @@ private:
 	QPushButton *previewZoomInButton = nullptr;
 	QComboBox *previewScalingMode = nullptr;
 	QFrame *contextContainer = nullptr;
+	QFrame *emptySpace = nullptr;
 	QLabel *contextSourceIcon = nullptr;
 	QLabel *contextSourceIconSpacer = nullptr;
 	QLabel *contextSourceLabel = nullptr;
 	QPushButton *sourcePropertiesButton = nullptr;
 	QPushButton *sourceFiltersButton = nullptr;
 	QPushButton *sourceInteractButton = nullptr;
+	enum ContextBarSize {
+		ContextBarSize_Minimized,
+		ContextBarSize_Reduced,
+		ContextBarSize_Normal,
+	};
+	ContextBarSize contextBarSize = ContextBarSize_Normal;
 
 	SourceTree *sourceList = nullptr;
 	QListWidget *sceneList = nullptr;
@@ -160,7 +168,11 @@ private:
 	void ResizePreview();
 	void UpdatePreviewScaleControls();
 	void BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayout *outerLayout);
-	void UpdateContextBar();
+	void ClearContextBar();
+	QWidget *CreateContextBarWidget(obs_source_t *source);
+	void UpdateContextBar(bool force = false);
+	void UpdateContextBarVisibility();
+	void resizeEvent(QResizeEvent *event) override;
 	vec2 GetMouseEventPos(QMouseEvent *event);
 	bool SelectedAtPos(obs_scene_t *scene, const vec2 &pos);
 
