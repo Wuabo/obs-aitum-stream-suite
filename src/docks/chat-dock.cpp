@@ -1,5 +1,4 @@
 #include "chat-dock.hpp"
-#include "stream-info-dock.hpp"
 #include <src/utils/icon.hpp>
 
 #include <obs-frontend-api.h>
@@ -7,9 +6,9 @@
 #include <util/config-file.h>
 
 #include <QAbstractItemView>
-#include <QAbstractSocket>
 #include <QColor>
 #include <QDateTime>
+#include <QDockWidget>
 #include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -21,24 +20,25 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
-#include <QNetworkRequest>
+#include <QPixmap>
 #include <QPointer>
-#include <QPushButton>
-#include <QScrollBar>
+#include <QHideEvent>
 #include <QShowEvent>
-#include <QSslSocket>
-#include <QStyle>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVBoxLayout>
+#include <util/base.h>
 
 #include <curl/curl.h>
+#include <curl/websockets.h>
 #include <thread>
-#include <QtEndian>
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
 
 extern obs_data_t *current_profile_config;
-extern StreamInfoDock *stream_info_dock;
 
 namespace {
 
@@ -146,11 +146,14 @@ QJsonObject FirstDataObject(const QByteArray &body)
 		return doc.array().at(0).toObject();
 	const QJsonObject root = doc.object();
 	const QJsonValue data = root.value("data");
-	if (data.isArray() && !data.toArray().isEmpty())
+	if (data.isArray()) {
+		if (data.toArray().isEmpty())
+			return {};
 		return data.toArray().at(0).toObject();
+	}
 	if (data.isObject())
 		return data.toObject();
-	return root;
+	return {};
 }
 
 QString JsonId(const QJsonValue &value)
@@ -158,6 +161,60 @@ QString JsonId(const QJsonValue &value)
 	if (value.isDouble())
 		return QString::number(value.toInteger());
 	return value.toString();
+}
+
+void ApplyCurlSsl(CURL *curl)
+{
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, "aitum-stream-suite");
+	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+#ifdef _WIN32
+#ifdef CURLSSLOPT_REVOKE_BEST_EFFORT
+	curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_REVOKE_BEST_EFFORT);
+#elif defined(CURLSSLOPT_NO_REVOKE)
+	curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NO_REVOKE);
+#endif
+#endif
+}
+
+bool CurlWsSendText(CURL *curl, const QByteArray &payload)
+{
+	size_t sent = 0;
+	size_t left = static_cast<size_t>(payload.size());
+	const char *ptr = payload.constData();
+	while (left > 0) {
+		sent = 0;
+		const CURLcode rc = curl_ws_send(curl, ptr, left, &sent, 0, CURLWS_TEXT);
+		if (rc == CURLE_AGAIN)
+			continue;
+		if (rc != CURLE_OK)
+			return false;
+		ptr += sent;
+		left -= sent;
+	}
+	return true;
+}
+
+bool CurlWsWaitReadable(CURL *curl, int timeoutMs)
+{
+	curl_socket_t sock = CURL_SOCKET_BAD;
+	if (curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sock) != CURLE_OK || sock == CURL_SOCKET_BAD)
+		return false;
+#ifdef _WIN32
+	fd_set fds;
+	FD_ZERO(&fds);
+	FD_SET(sock, &fds);
+	timeval tv;
+	tv.tv_sec = timeoutMs / 1000;
+	tv.tv_usec = (timeoutMs % 1000) * 1000;
+	return select(0, &fds, nullptr, nullptr, &tv) >= 0;
+#else
+	pollfd pfd{};
+	pfd.fd = sock;
+	pfd.events = POLLIN;
+	return poll(&pfd, 1, timeoutMs) >= 0;
+#endif
 }
 
 } // namespace
@@ -205,9 +262,22 @@ QColor ChatDock::PlatformAccent(Platform platform)
 {
 	switch (platform) {
 	case YouTube:
-		return QColor(QStringLiteral("#FF0000"));
+		return QColor(QStringLiteral("#FF5555"));
 	case Kick:
 		return QColor(QStringLiteral("#53FC18"));
+	case Twitch:
+	default:
+		return QColor(QStringLiteral("#9146FF"));
+	}
+}
+
+QColor ChatDock::PlatformChipAccent(Platform platform)
+{
+	switch (platform) {
+	case YouTube:
+		return QColor(QStringLiteral("#CC0000"));
+	case Kick:
+		return QColor(QStringLiteral("#1B7A2E"));
 	case Twitch:
 	default:
 		return QColor(QStringLiteral("#9146FF"));
@@ -220,16 +290,35 @@ ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 	curl_global_init(CURL_GLOBAL_DEFAULT);
 
 	viewerTimer = new QTimer(this);
-	viewerTimer->setInterval(15000);
+	viewerTimer->setInterval(5000);
 	connect(viewerTimer, &QTimer::timeout, this, &ChatDock::RefreshViewers);
 
 	youtubeTimer = new QTimer(this);
 	youtubeTimer->setSingleShot(true);
 	connect(youtubeTimer, &QTimer::timeout, this, &ChatDock::PollYouTubeChat);
 
+	youtubeDiscoverTimer = new QTimer(this);
+	youtubeDiscoverTimer->setInterval(20000);
+	connect(youtubeDiscoverTimer, &QTimer::timeout, this, [this] {
+		if (!connectionsActive || !availablePlatforms.contains(YouTube))
+			return;
+		if (ytLiveChatId.isEmpty())
+			StartYouTubeChat();
+	});
+
 	kickReconnectTimer = new QTimer(this);
 	kickReconnectTimer->setSingleShot(true);
-	connect(kickReconnectTimer, &QTimer::timeout, this, &ChatDock::ConnectKickChat);
+	connect(kickReconnectTimer, &QTimer::timeout, this, [this] {
+		if (connectionsActive)
+			ConnectKickChat();
+	});
+
+	twitchReconnectTimer = new QTimer(this);
+	twitchReconnectTimer->setSingleShot(true);
+	connect(twitchReconnectTimer, &QTimer::timeout, this, [this] {
+		if (connectionsActive)
+			ConnectTwitchIrc();
+	});
 
 	BuildUi();
 	RefreshAvailablePlatforms();
@@ -266,7 +355,7 @@ void ChatDock::BuildUi()
 		viewerLabels[i]->setStyleSheet(QStringLiteral("color: white; font-weight: 600;"));
 		chipLayout->addWidget(icon);
 		chipLayout->addWidget(viewerLabels[i]);
-		const QColor accent = PlatformAccent(Platform(i));
+		const QColor accent = PlatformChipAccent(Platform(i));
 		viewerChips[i]->setStyleSheet(
 			QStringLiteral("QFrame#chatViewerChip { background: %1; border-radius: 4px; }")
 				.arg(accent.name()));
@@ -274,34 +363,20 @@ void ChatDock::BuildUi()
 		barLayout->addWidget(viewerChips[i]);
 	}
 	barLayout->addStretch(1);
-
-	settingsButton = new QPushButton(viewerBar);
-	settingsButton->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
-	settingsButton->setFlat(true);
-	settingsButton->setFixedSize(28, 28);
-	settingsButton->setToolTip(Tr("ChatDockSettings"));
-	connect(settingsButton, &QPushButton::clicked, this, [this] {
-		if (stream_info_dock)
-			stream_info_dock->OpenSettings();
-	});
-	accountsButton = new QPushButton(viewerBar);
-	accountsButton->setIcon(style()->standardIcon(QStyle::SP_DialogYesButton));
-	accountsButton->setFlat(true);
-	accountsButton->setFixedSize(28, 28);
-	accountsButton->setToolTip(Tr("ChatDockAccounts"));
-	connect(accountsButton, &QPushButton::clicked, this, &ChatDock::ReloadAccounts);
-	barLayout->addWidget(settingsButton);
-	barLayout->addWidget(accountsButton);
 	root->addWidget(viewerBar);
 
 	messageList = new QListWidget(this);
 	messageList->setObjectName(QStringLiteral("chatMessageList"));
 	messageList->setSelectionMode(QAbstractItemView::NoSelection);
 	messageList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-	messageList->setSpacing(2);
+	messageList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+	messageList->setUniformItemSizes(false);
+	messageList->setSpacing(4);
 	messageList->setStyleSheet(QStringLiteral(
-		"QListWidget#chatMessageList { background: #141414; border: none; color: #eee; }"
-		"QListWidget#chatMessageList::item { padding: 2px 6px; }"));
+		"QListWidget#chatMessageList { background: #141414; border: none; color: #eee; outline: none; }"
+		"QListWidget#chatMessageList::item { padding: 0; margin: 0; border: none; }"
+		"QListWidget#chatMessageList::item:selected { background: transparent; }"));
+	messageList->viewport()->installEventFilter(this);
 	root->addWidget(messageList, 1);
 
 	auto *inputRow = new QFrame(this);
@@ -333,20 +408,47 @@ bool ChatDock::eventFilter(QObject *watched, QEvent *event)
 		CycleSendPlatform();
 		return true;
 	}
+	if (messageList && watched == messageList->viewport() && event->type() == QEvent::Resize)
+		RelayoutMessageItems();
 	return QFrame::eventFilter(watched, event);
+}
+
+bool ChatDock::DockIsOpen() const
+{
+	if (auto *dw = qobject_cast<QDockWidget *>(parentWidget()))
+		return dw->isVisible();
+	return isVisible();
 }
 
 void ChatDock::showEvent(QShowEvent *event)
 {
 	QFrame::showEvent(event);
 	RefreshAvailablePlatforms();
-	StartConnections();
+	if (!connectionsActive)
+		StartConnections();
+	else
+		RefreshViewers();
+}
+
+void ChatDock::hideEvent(QHideEvent *event)
+{
+	QFrame::hideEvent(event);
+	/* Only tear down when the OBS dock itself is closed — not when the
+	 * widget is briefly hidden while tabbed/resized. */
+	QTimer::singleShot(0, this, [this] {
+		if (!DockIsOpen()) {
+			StopConnections();
+			connectionsActive = false;
+		}
+	});
 }
 
 void ChatDock::ReloadAccounts()
 {
 	for (int i = 0; i < 3; ++i)
 		LoadAccount(Platform(i));
+	if (!DockIsOpen())
+		return;
 	StartConnections();
 	RefreshViewers();
 }
@@ -558,12 +660,20 @@ void ChatDock::Http(const QString &url, const QList<QPair<QByteArray, QByteArray
 void ChatDock::StartConnections()
 {
 	StopConnections();
-	if (availablePlatforms.contains(Twitch) && !accounts[Twitch].accessToken.isEmpty())
+	connectionsActive = true;
+	if (availablePlatforms.contains(Twitch) && !accounts[Twitch].accessToken.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Twitch)));
 		ConnectTwitchIrc();
-	if (availablePlatforms.contains(YouTube) && !accounts[YouTube].accessToken.isEmpty())
+	}
+	if (availablePlatforms.contains(YouTube) && !accounts[YouTube].accessToken.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(YouTube)));
 		StartYouTubeChat();
-	if (availablePlatforms.contains(Kick) && !accounts[Kick].accessToken.isEmpty())
+		youtubeDiscoverTimer->start();
+	}
+	if (availablePlatforms.contains(Kick) && !accounts[Kick].accessToken.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Kick)));
 		ResolveKickChatroom();
+	}
 	viewerTimer->start();
 	RefreshViewers();
 }
@@ -572,12 +682,15 @@ void ChatDock::StopConnections()
 {
 	viewerTimer->stop();
 	youtubeTimer->stop();
+	youtubeDiscoverTimer->stop();
 	kickReconnectTimer->stop();
+	twitchReconnectTimer->stop();
 	DisconnectTwitchIrc();
 	DisconnectKickChat();
 	ytLiveChatId.clear();
 	ytVideoId.clear();
 	ytNextPage.clear();
+	connectionsActive = false;
 }
 
 void ChatDock::RefreshViewers()
@@ -597,22 +710,50 @@ void ChatDock::SetViewerCount(Platform platform, int count, bool live)
 	if (!live)
 		viewerLabels[platform]->setText(QStringLiteral("—"));
 	else
-		viewerLabels[platform]->setText(QString::number(count));
+		viewerLabels[platform]->setText(QString::number(qMax(0, count)));
 }
 
 void ChatDock::FetchTwitchViewers()
 {
 	EnsureToken(Twitch, [this](bool ok) {
-		if (!ok)
+		if (!ok) {
+			SetViewerCount(Twitch, 0, false);
 			return;
+		}
 		const Account &acc = accounts[Twitch];
-		if (acc.userId.isEmpty() || acc.clientId.isEmpty())
+		if (acc.clientId.isEmpty())
 			return;
-		const QString url = QStringLiteral("https://api.twitch.tv/helix/streams?user_id=") + acc.userId;
-		Http(url,
+		auto requestStreams = [this](const QString &userId) {
+			if (userId.isEmpty()) {
+				SetViewerCount(Twitch, 0, false);
+				return;
+			}
+			const Account &a = accounts[Twitch];
+			const QString url = QStringLiteral("https://api.twitch.tv/helix/streams?user_id=") + userId;
+			Http(url,
+			     {{QByteArrayLiteral("Client-Id"), a.clientId.toUtf8()},
+			      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + a.accessToken.toUtf8()}},
+			     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+				     if (status < 200 || status >= 300) {
+					     SetViewerCount(Twitch, 0, false);
+					     return;
+				     }
+				     const QJsonArray data = QJsonDocument::fromJson(body).object().value("data").toArray();
+				     if (data.isEmpty()) {
+					     SetViewerCount(Twitch, 0, false);
+					     return;
+				     }
+				     SetViewerCount(Twitch, data.at(0).toObject().value("viewer_count").toInt(), true);
+			     });
+		};
+		if (!acc.userId.isEmpty()) {
+			requestStreams(acc.userId);
+			return;
+		}
+		Http(QStringLiteral("https://api.twitch.tv/helix/users"),
 		     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
 		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
-		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+		     {}, "GET", [this, requestStreams](int status, const QByteArray &body, const QString &) {
 			     if (status < 200 || status >= 300) {
 				     SetViewerCount(Twitch, 0, false);
 				     return;
@@ -622,7 +763,8 @@ void ChatDock::FetchTwitchViewers()
 				     SetViewerCount(Twitch, 0, false);
 				     return;
 			     }
-			     SetViewerCount(Twitch, data.at(0).toObject().value("viewer_count").toInt(), true);
+			     accounts[Twitch].userId = data.at(0).toObject().value("id").toString();
+			     requestStreams(accounts[Twitch].userId);
 		     });
 	});
 }
@@ -663,11 +805,48 @@ void ChatDock::FetchYouTubeViewers()
 void ChatDock::FetchKickViewers()
 {
 	EnsureToken(Kick, [this](bool ok) {
-		if (!ok)
+		if (!ok) {
+			SetViewerCount(Kick, 0, false);
 			return;
+		}
 		const Account &acc = accounts[Kick];
-		if (acc.userId.isEmpty())
+		auto applyLive = [this](const QJsonObject &live) {
+			if (live.isEmpty()) {
+				SetViewerCount(Kick, 0, false);
+				return;
+			}
+			const QJsonObject stream = live.value("stream").toObject();
+			if (!stream.isEmpty()) {
+				if (!stream.value("is_live").toBool(true)) {
+					SetViewerCount(Kick, 0, false);
+					return;
+				}
+				SetViewerCount(Kick, stream.value("viewer_count").toInt(stream.value("viewers").toInt()), true);
+				return;
+			}
+			const int count = live.value("viewer_count").toInt(live.value("viewers").toInt(-1));
+			if (count < 0)
+				SetViewerCount(Kick, 0, false);
+			else
+				SetViewerCount(Kick, count, true);
+		};
+		auto fromChannels = [this, applyLive] {
+			const Account &a = accounts[Kick];
+			Http(QStringLiteral("https://api.kick.com/public/v1/channels"),
+			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + a.accessToken.toUtf8()},
+			      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
+			     {}, "GET", [applyLive](int status, const QByteArray &body, const QString &) {
+				     if (status < 200 || status >= 300) {
+					     applyLive({});
+					     return;
+				     }
+				     applyLive(FirstDataObject(body));
+			     });
+		};
+		if (acc.userId.isEmpty()) {
+			fromChannels();
 			return;
+		}
 		QUrl url(QStringLiteral("https://api.kick.com/public/v1/users/livestreams"));
 		QUrlQuery query;
 		query.addQueryItem("user_id", acc.userId);
@@ -675,18 +854,16 @@ void ChatDock::FetchKickViewers()
 		Http(url.toString(),
 		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()},
 		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
-		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+		     {}, "GET", [this, applyLive, fromChannels](int status, const QByteArray &body, const QString &) {
 			     if (status < 200 || status >= 300) {
-				     SetViewerCount(Kick, 0, false);
+				     fromChannels();
 				     return;
 			     }
 			     const QJsonObject live = FirstDataObject(body);
-			     if (live.isEmpty()) {
-				     SetViewerCount(Kick, 0, false);
-				     return;
-			     }
-			     const int count = live.value("viewer_count").toInt(live.value("viewers").toInt());
-			     SetViewerCount(Kick, count, true);
+			     if (live.isEmpty())
+				     fromChannels();
+			     else
+				     applyLive(live);
 		     });
 	});
 }
@@ -694,16 +871,26 @@ void ChatDock::FetchKickViewers()
 void ChatDock::ConnectTwitchIrc()
 {
 	DisconnectTwitchIrc();
+	if (!connectionsActive)
+		return;
 	EnsureToken(Twitch, [this](bool ok) {
-		if (!ok)
+		if (!ok || !connectionsActive) {
+			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)));
 			return;
+		}
 		const Account &acc = accounts[Twitch];
 		Http(QStringLiteral("https://api.twitch.tv/helix/users"),
 		     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
 		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
 		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
-			     if (status < 200 || status >= 300)
+			     if (!connectionsActive)
 				     return;
+			     if (status < 200 || status >= 300) {
+				     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)));
+				     if (!twitchReconnectTimer->isActive())
+					     twitchReconnectTimer->start(5000);
+				     return;
+			     }
 			     const QJsonArray data = QJsonDocument::fromJson(body).object().value("data").toArray();
 			     if (data.isEmpty())
 				     return;
@@ -713,66 +900,147 @@ void ChatDock::ConnectTwitchIrc()
 			     accounts[Twitch].login = twitchLogin;
 			     accounts[Twitch].userName = user.value("display_name").toString(twitchLogin);
 
-			     twitchIrc = new QSslSocket(this);
+			     const QByteArray token = accounts[Twitch].accessToken.toUtf8();
+			     const QByteArray nick = twitchLogin.toUtf8();
 			     twitchJoined = false;
 			     twitchBuffer.clear();
-			     connect(twitchIrc, &QSslSocket::encrypted, this, &ChatDock::OnTwitchReady);
-			     connect(twitchIrc, &QSslSocket::readyRead, this, &ChatDock::OnTwitchData);
-			     connect(twitchIrc, &QAbstractSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
-				     QTimer::singleShot(3000, this, &ChatDock::ConnectTwitchIrc);
-			     });
-			     twitchIrc->connectToHostEncrypted(QStringLiteral("irc.chat.twitch.tv"), 6697);
+			     twitchWsGen++;
+			     const int gen = twitchWsGen;
+			     auto session = std::make_shared<ChatCurlWsSession>();
+			     twitchWs = session;
+			     QPointer<ChatDock> alive(this);
+			     std::thread([alive, session, gen, token, nick] {
+				     CURL *curl = curl_easy_init();
+				     if (!curl)
+					     return;
+				     ApplyCurlSsl(curl);
+				     curl_easy_setopt(curl, CURLOPT_URL, "wss://irc-ws.chat.twitch.tv:443");
+				     curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
+				     const CURLcode connectRc = curl_easy_perform(curl);
+				     if (connectRc != CURLE_OK) {
+					     blog(LOG_WARNING, "[Stream Suite] Twitch WS connect failed: %s",
+						  curl_easy_strerror(connectRc));
+					     curl_easy_cleanup(curl);
+					     if (alive) {
+						     QMetaObject::invokeMethod(
+							     alive, [alive] {
+								     if (!alive || !alive->connectionsActive)
+									     return;
+								     if (!alive->twitchReconnectTimer->isActive())
+									     alive->twitchReconnectTimer->start(4000);
+							     },
+							     Qt::QueuedConnection);
+					     }
+					     return;
+				     }
+
+				     CurlWsSendText(curl, "PASS oauth:" + token + "\r\n");
+				     CurlWsSendText(curl, "NICK " + nick + "\r\n");
+				     CurlWsSendText(curl, "CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
+
+				     QByteArray lineBuf;
+				     while (!session->stop.load()) {
+					     for (const QByteArray &out : session->takeOutbound()) {
+						     if (!CurlWsSendText(curl, out)) {
+							     session->stop = true;
+							     break;
+						     }
+					     }
+					     char buffer[4096];
+					     size_t n = 0;
+					     const curl_ws_frame *meta = nullptr;
+					     const CURLcode rc = curl_ws_recv(curl, buffer, sizeof(buffer), &n, &meta);
+					     if (rc == CURLE_AGAIN) {
+						     CurlWsWaitReadable(curl, 200);
+						     continue;
+					     }
+					     if (rc != CURLE_OK || !meta)
+						     break;
+					     if (meta->flags & CURLWS_CLOSE)
+						     break;
+					     if (meta->flags & CURLWS_PING) {
+						     size_t sent = 0;
+						     curl_ws_send(curl, buffer, n, &sent, 0, CURLWS_PONG);
+						     continue;
+					     }
+					     if (!(meta->flags & CURLWS_TEXT) || n == 0)
+						     continue;
+					     lineBuf.append(buffer, static_cast<int>(n));
+					     while (true) {
+						     int idx = lineBuf.indexOf("\r\n");
+						     int skip = 2;
+						     if (idx < 0) {
+							     idx = lineBuf.indexOf('\n');
+							     skip = 1;
+						     }
+						     if (idx < 0)
+							     break;
+						     const QString line = QString::fromUtf8(lineBuf.left(idx)).trimmed();
+						     lineBuf.remove(0, idx + skip);
+						     if (line.isEmpty() || !alive)
+							     continue;
+						     QMetaObject::invokeMethod(
+							     alive,
+							     [alive, gen, line] {
+								     if (!alive || alive->twitchWsGen != gen)
+									     return;
+								     alive->HandleTwitchLine(line);
+							     },
+							     Qt::QueuedConnection);
+					     }
+				     }
+				     curl_easy_cleanup(curl);
+				     if (alive) {
+					     QMetaObject::invokeMethod(
+						     alive,
+						     [alive, gen] {
+							     if (!alive || alive->twitchWsGen != gen || !alive->connectionsActive)
+								     return;
+							     alive->twitchJoined = false;
+							     if (!alive->twitchReconnectTimer->isActive())
+								     alive->twitchReconnectTimer->start(3000);
+						     },
+						     Qt::QueuedConnection);
+				     }
+			     }).detach();
 		     });
 	});
 }
 
 void ChatDock::DisconnectTwitchIrc()
 {
-	if (!twitchIrc)
-		return;
-	twitchIrc->disconnectFromHost();
-	twitchIrc->deleteLater();
-	twitchIrc = nullptr;
+	twitchWsGen++;
+	if (twitchWs) {
+		twitchWs->stop = true;
+		twitchWs.reset();
+	}
 	twitchJoined = false;
 	twitchBuffer.clear();
 }
 
-void ChatDock::OnTwitchReady()
-{
-	if (!twitchIrc)
-		return;
-	const Account &acc = accounts[Twitch];
-	const QByteArray nick = twitchLogin.toUtf8();
-	twitchIrc->write("CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
-	twitchIrc->write("PASS oauth:" + acc.accessToken.toUtf8() + "\r\n");
-	twitchIrc->write("NICK " + nick + "\r\n");
-}
-
-void ChatDock::OnTwitchData()
-{
-	if (!twitchIrc)
-		return;
-	twitchBuffer.append(twitchIrc->readAll());
-	while (true) {
-		const int idx = twitchBuffer.indexOf("\r\n");
-		if (idx < 0)
-			break;
-		const QString line = QString::fromUtf8(twitchBuffer.left(idx));
-		twitchBuffer.remove(0, idx + 2);
-		HandleTwitchLine(line);
-	}
-}
-
 void ChatDock::HandleTwitchLine(const QString &line)
 {
-	if (line.startsWith(QStringLiteral("PING "))) {
-		if (twitchIrc)
-			twitchIrc->write("PONG :tmi.twitch.tv\r\n");
+	if (line.startsWith(QStringLiteral("PING"))) {
+		const QByteArray payload = line.section(QLatin1Char(':'), 1).toUtf8();
+		const QByteArray pong =
+			"PONG :" + (payload.isEmpty() ? QByteArrayLiteral("tmi.twitch.tv") : payload) + "\r\n";
+		if (twitchWs)
+			twitchWs->enqueue(pong);
 		return;
 	}
-	if (line.contains(QStringLiteral(" 001 ")) && !twitchJoined && !twitchLogin.isEmpty()) {
+	if (line.contains(QStringLiteral("Login authentication failed"), Qt::CaseInsensitive) ||
+	    line.contains(QStringLiteral("Improperly formatted auth"), Qt::CaseInsensitive)) {
+		AppendSystemMessage(Tr("ChatDockTwitchReauth"));
+		blog(LOG_WARNING, "[Stream Suite] Twitch IRC auth failed — reconnect with chat:read chat:edit");
+		return;
+	}
+	if ((line.contains(QStringLiteral(" 001 ")) || line.contains(QStringLiteral("GLOBALUSERSTATE"))) && !twitchJoined &&
+	    !twitchLogin.isEmpty()) {
 		twitchJoined = true;
-		twitchIrc->write("JOIN #" + twitchLogin.toUtf8() + "\r\n");
+		if (twitchWs)
+			twitchWs->enqueue("JOIN #" + twitchLogin.toUtf8() + "\r\n");
+		AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Twitch)));
+		FetchTwitchBadgeSets();
 		return;
 	}
 	if (!line.contains(QStringLiteral("PRIVMSG")))
@@ -787,7 +1055,7 @@ void ChatDock::HandleTwitchLine(const QString &line)
 	}
 	const int excl = rest.indexOf(QLatin1Char('!'));
 	const int priv = rest.indexOf(QStringLiteral("PRIVMSG"));
-	const int colon = rest.indexOf(QStringLiteral(" :"), priv);
+	const int colon = rest.indexOf(QStringLiteral(" :"), priv >= 0 ? priv : 0);
 	if (colon < 0)
 		return;
 	ChatMessage msg;
@@ -795,7 +1063,8 @@ void ChatDock::HandleTwitchLine(const QString &line)
 	msg.text = rest.mid(colon + 2);
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
 	msg.user = excl > 0 ? rest.left(excl).section(QLatin1Char(':'), -1) : QStringLiteral("twitch");
-	msg.color = QStringLiteral("#9146FF");
+	msg.color = QStringLiteral("#BF94FF");
+	QString badgesTag;
 	for (const QString &part : tags.split(QLatin1Char(';'))) {
 		const QString key = part.section(QLatin1Char('='), 0, 0);
 		const QString val = part.section(QLatin1Char('='), 1);
@@ -805,7 +1074,10 @@ void ChatDock::HandleTwitchLine(const QString &line)
 			msg.color = val;
 		else if (key == QLatin1String("id"))
 			msg.id = val;
+		else if (key == QLatin1String("badges"))
+			badgesTag = val;
 	}
+	msg.badges = TwitchBadgesFromTags(badgesTag);
 	if (msg.id.isEmpty())
 		msg.id = QStringLiteral("tw-%1-%2").arg(msg.ts).arg(msg.user);
 	AppendMessage(msg);
@@ -813,9 +1085,9 @@ void ChatDock::HandleTwitchLine(const QString &line)
 
 void ChatDock::SendTwitchMessage(const QString &text)
 {
-	if (!twitchIrc || !twitchJoined || twitchLogin.isEmpty())
+	if (!twitchWs || !twitchJoined || twitchLogin.isEmpty())
 		return;
-	twitchIrc->write("PRIVMSG #" + twitchLogin.toUtf8() + " :" + text.toUtf8() + "\r\n");
+	twitchWs->enqueue("PRIVMSG #" + twitchLogin.toUtf8() + " :" + text.toUtf8() + "\r\n");
 	ChatMessage msg;
 	msg.platform = Twitch;
 	msg.user = accounts[Twitch].userName.isEmpty() ? twitchLogin : accounts[Twitch].userName;
@@ -877,11 +1149,15 @@ void ChatDock::StartYouTubeChat()
 														  .value("activeLiveChatId")
 														  .toString();
 										  }
-										  if (!ytLiveChatId.isEmpty())
+										  if (!ytLiveChatId.isEmpty()) {
+											  AppendSystemMessage(
+												  Tr("ChatDockConnected").arg(PlatformLabel(YouTube)));
 											  PollYouTubeChat();
+										  }
 									  });
 							     });
 						     } else {
+							     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)));
 							     PollYouTubeChat();
 						     }
 						     return;
@@ -891,7 +1167,9 @@ void ChatDock::StartYouTubeChat()
 			     });
 		};
 		tryStatus(QStringLiteral("active"), [this, tryStatus] {
-			tryStatus(QStringLiteral("upcoming"), [] {});
+			tryStatus(QStringLiteral("upcoming"), [this] {
+				AppendSystemMessage(Tr("ChatDockYouTubeWaiting"));
+			});
 		});
 	});
 }
@@ -925,13 +1203,24 @@ void ChatDock::PollYouTubeChat()
 					     const QJsonObject snip = obj.value("snippet").toObject();
 					     if (snip.value("type").toString() != QLatin1String("textMessageEvent"))
 						     continue;
+					     const QJsonObject author = obj.value("authorDetails").toObject();
 					     ChatMessage msg;
 					     msg.platform = YouTube;
 					     msg.id = obj.value("id").toString();
-					     msg.user = obj.value("authorDetails").toObject().value("displayName").toString();
+					     msg.user = author.value("displayName").toString();
 					     msg.color = QStringLiteral("#FF5555");
 					     msg.text = snip.value("textMessageDetails").toObject().value("messageText").toString();
 					     msg.ts = QDateTime::currentMSecsSinceEpoch();
+					     if (author.value("isChatOwner").toBool())
+						     msg.badges.append({QStringLiteral("owner"), QString(), QStringLiteral("Owner")});
+					     if (author.value("isChatModerator").toBool())
+						     msg.badges.append({QStringLiteral("mod"), QString(), QStringLiteral("Mod")});
+					     if (author.value("isChatSponsor").toBool())
+						     msg.badges.append(
+							     {QStringLiteral("member"), QString(), QStringLiteral("Member")});
+					     if (author.value("isVerified").toBool())
+						     msg.badges.append(
+							     {QStringLiteral("verified"), QString(), QStringLiteral("Verified")});
 					     AppendMessage(msg);
 				     }
 			     }
@@ -1016,161 +1305,129 @@ void ChatDock::ResolveKickChatroom()
 void ChatDock::ConnectKickChat()
 {
 	DisconnectKickChat();
-	if (kickChatroomId.isEmpty())
+	if (kickChatroomId.isEmpty() || !connectionsActive)
 		return;
-	kickWs = new QSslSocket(this);
-	kickBuffer.clear();
-	kickWsReady = false;
 	kickSubscribed = false;
-	connect(kickWs, &QSslSocket::encrypted, this, &ChatDock::OnKickEncrypted);
-	connect(kickWs, &QSslSocket::readyRead, this, &ChatDock::OnKickData);
-	connect(kickWs, &QAbstractSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
-		if (!kickReconnectTimer->isActive())
-			kickReconnectTimer->start(4000);
-	});
-	connect(kickWs, &QAbstractSocket::disconnected, this, [this] {
-		kickWsReady = false;
-		if (!kickReconnectTimer->isActive())
-			kickReconnectTimer->start(4000);
-	});
-	kickWs->connectToHostEncrypted(QStringLiteral("ws-us2.pusher.com"), 443);
-}
-
-void ChatDock::DisconnectKickChat()
-{
-	if (!kickWs)
-		return;
-	kickWs->disconnectFromHost();
-	kickWs->deleteLater();
-	kickWs = nullptr;
-	kickBuffer.clear();
-	kickWsReady = false;
-	kickSubscribed = false;
-}
-
-void ChatDock::OnKickEncrypted()
-{
-	if (!kickWs)
-		return;
-	const QByteArray key = QByteArrayLiteral("32cbd69e4b950bf97679");
-	const QByteArray path =
-		"/app/" + key + "?protocol=7&client=js&version=7.4.0&flash=false";
-	const QByteArray handshake =
-		"GET " + path +
-		" HTTP/1.1\r\n"
-		"Host: ws-us2.pusher.com\r\n"
-		"Upgrade: websocket\r\n"
-		"Connection: Upgrade\r\n"
-		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-		"Sec-WebSocket-Version: 13\r\n"
-		"\r\n";
-	kickWs->write(handshake);
-}
-
-void ChatDock::OnKickData()
-{
-	if (!kickWs)
-		return;
-	kickBuffer.append(kickWs->readAll());
-	if (!kickWsReady) {
-		const int hdrEnd = kickBuffer.indexOf("\r\n\r\n");
-		if (hdrEnd < 0)
+	kickWsGen++;
+	const int gen = kickWsGen;
+	const QString chatroom = kickChatroomId;
+	auto session = std::make_shared<ChatCurlWsSession>();
+	kickWs = session;
+	QPointer<ChatDock> alive(this);
+	std::thread([alive, session, gen, chatroom] {
+		CURL *curl = curl_easy_init();
+		if (!curl)
 			return;
-		const QByteArray header = kickBuffer.left(hdrEnd);
-		kickBuffer.remove(0, hdrEnd + 4);
-		if (!header.contains("101")) {
-			DisconnectKickChat();
-			if (!kickReconnectTimer->isActive())
-				kickReconnectTimer->start(8000);
+		ApplyCurlSsl(curl);
+		curl_easy_setopt(
+			curl, CURLOPT_URL,
+			"wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=7.4.0&flash=false");
+		curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
+		const CURLcode connectRc = curl_easy_perform(curl);
+		if (connectRc != CURLE_OK) {
+			blog(LOG_WARNING, "[Stream Suite] Kick WS connect failed: %s", curl_easy_strerror(connectRc));
+			curl_easy_cleanup(curl);
+			if (alive) {
+				QMetaObject::invokeMethod(
+					alive,
+					[alive] {
+						if (!alive || !alive->connectionsActive)
+							return;
+						if (!alive->kickReconnectTimer->isActive())
+							alive->kickReconnectTimer->start(4000);
+					},
+					Qt::QueuedConnection);
+			}
 			return;
 		}
-		kickWsReady = true;
+
 		const QJsonObject sub{
 			{QStringLiteral("event"), QStringLiteral("pusher:subscribe")},
 			{QStringLiteral("data"),
 			 QJsonObject{{QStringLiteral("auth"), QString()},
-				     {QStringLiteral("channel"),
-				      QStringLiteral("chatrooms.%1.v2").arg(kickChatroomId)}}}};
-		SendKickWsText(QString::fromUtf8(QJsonDocument(sub).toJson(QJsonDocument::Compact)));
-		kickSubscribed = true;
-	}
+				     {QStringLiteral("channel"), QStringLiteral("chatrooms.%1.v2").arg(chatroom)}}}};
+		CurlWsSendText(curl, QJsonDocument(sub).toJson(QJsonDocument::Compact));
+		if (alive) {
+			QMetaObject::invokeMethod(
+				alive,
+				[alive, gen] {
+					if (!alive || alive->kickWsGen != gen)
+						return;
+					alive->kickSubscribed = true;
+					alive->AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Kick)));
+				},
+				Qt::QueuedConnection);
+		}
 
-	while (kickBuffer.size() >= 2) {
-		const quint8 b0 = static_cast<quint8>(kickBuffer.at(0));
-		const quint8 b1 = static_cast<quint8>(kickBuffer.at(1));
-		const bool fin = (b0 & 0x80) != 0;
-		const quint8 opcode = b0 & 0x0f;
-		const bool masked = (b1 & 0x80) != 0;
-		quint64 payloadLen = b1 & 0x7f;
-		int headerLen = 2;
-		if (payloadLen == 126) {
-			if (kickBuffer.size() < 4)
-				return;
-			payloadLen = qFromBigEndian<quint16>(reinterpret_cast<const uchar *>(kickBuffer.constData() + 2));
-			headerLen = 4;
-		} else if (payloadLen == 127) {
-			if (kickBuffer.size() < 10)
-				return;
-			payloadLen = qFromBigEndian<quint64>(reinterpret_cast<const uchar *>(kickBuffer.constData() + 2));
-			headerLen = 10;
+		while (!session->stop.load()) {
+			for (const QByteArray &out : session->takeOutbound()) {
+				if (!CurlWsSendText(curl, out)) {
+					session->stop = true;
+					break;
+				}
+			}
+			char buffer[8192];
+			size_t n = 0;
+			const curl_ws_frame *meta = nullptr;
+			const CURLcode rc = curl_ws_recv(curl, buffer, sizeof(buffer), &n, &meta);
+			if (rc == CURLE_AGAIN) {
+				CurlWsWaitReadable(curl, 200);
+				continue;
+			}
+			if (rc != CURLE_OK || !meta)
+				break;
+			if (meta->flags & CURLWS_CLOSE)
+				break;
+			if (meta->flags & CURLWS_PING) {
+				size_t sent = 0;
+				curl_ws_send(curl, buffer, n, &sent, 0, CURLWS_PONG);
+				continue;
+			}
+			if (!(meta->flags & CURLWS_TEXT) || n == 0)
+				continue;
+			const QString message = QString::fromUtf8(buffer, static_cast<int>(n));
+			if (!alive)
+				continue;
+			QMetaObject::invokeMethod(
+				alive,
+				[alive, gen, message] {
+					if (!alive || alive->kickWsGen != gen)
+						return;
+					alive->OnKickWsMessage(message);
+				},
+				Qt::QueuedConnection);
 		}
-		const int maskLen = masked ? 4 : 0;
-		if (static_cast<quint64>(kickBuffer.size()) < headerLen + maskLen + payloadLen)
-			return;
-		QByteArray payload = kickBuffer.mid(headerLen + maskLen, static_cast<int>(payloadLen));
-		if (masked) {
-			const QByteArray mask = kickBuffer.mid(headerLen, 4);
-			for (int i = 0; i < payload.size(); ++i)
-				payload[i] = char(payload.at(i) ^ mask.at(i % 4));
+		curl_easy_cleanup(curl);
+		if (alive) {
+			QMetaObject::invokeMethod(
+				alive,
+				[alive, gen] {
+					if (!alive || alive->kickWsGen != gen || !alive->connectionsActive)
+						return;
+					alive->kickSubscribed = false;
+					if (!alive->kickReconnectTimer->isActive())
+						alive->kickReconnectTimer->start(4000);
+				},
+				Qt::QueuedConnection);
 		}
-		kickBuffer.remove(0, headerLen + maskLen + static_cast<int>(payloadLen));
-		if (!fin)
-			continue;
-		if (opcode == 0x8) {
-			DisconnectKickChat();
-			return;
-		}
-		if (opcode == 0x9) {
-			/* pong */
-			QByteArray frame;
-			frame.append(char(0x8a));
-			frame.append(char(0x80 | payload.size()));
-			const QByteArray mask = QByteArray::fromHex("01020304");
-			frame.append(mask);
-			for (int i = 0; i < payload.size(); ++i)
-				frame.append(char(payload.at(i) ^ mask.at(i % 4)));
-			kickWs->write(frame);
-			continue;
-		}
-		if (opcode == 0x1)
-			HandleKickFrame(payload);
+	}).detach();
+}
+
+void ChatDock::DisconnectKickChat()
+{
+	kickWsGen++;
+	if (kickWs) {
+		kickWs->stop = true;
+		kickWs.reset();
 	}
+	kickSubscribed = false;
 }
 
 void ChatDock::SendKickWsText(const QString &text)
 {
-	if (!kickWs || !kickWsReady)
+	if (!kickWs)
 		return;
-	const QByteArray payload = text.toUtf8();
-	QByteArray frame;
-	frame.append(char(0x81));
-	if (payload.size() < 126) {
-		frame.append(char(0x80 | payload.size()));
-	} else {
-		frame.append(char(0x80 | 126));
-		quint16 len = qToBigEndian<quint16>(static_cast<quint16>(payload.size()));
-		frame.append(reinterpret_cast<const char *>(&len), 2);
-	}
-	const QByteArray mask = QByteArray::fromHex("0a0b0c0d");
-	frame.append(mask);
-	for (int i = 0; i < payload.size(); ++i)
-		frame.append(char(payload.at(i) ^ mask.at(i % 4)));
-	kickWs->write(frame);
-}
-
-void ChatDock::HandleKickFrame(const QByteArray &payload)
-{
-	OnKickWsMessage(QString::fromUtf8(payload));
+	kickWs->enqueue(text.toUtf8());
 }
 
 void ChatDock::OnKickWsMessage(const QString &message)
@@ -1189,13 +1446,15 @@ void ChatDock::OnKickWsMessage(const QString &message)
 		data = QJsonDocument::fromJson(raw.toUtf8()).object();
 	}
 	const QJsonObject sender = data.value("sender").toObject();
+	const QJsonObject identity = sender.value("identity").toObject();
 	ChatMessage msg;
 	msg.platform = Kick;
 	msg.id = JsonId(data.value("id"));
 	msg.user = sender.value("username").toString(sender.value("slug").toString());
-	msg.color = sender.value("identity").toObject().value("color").toString(QStringLiteral("#53FC18"));
+	msg.color = identity.value("color").toString(QStringLiteral("#53FC18"));
 	msg.text = data.value("content").toString();
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
+	msg.badges = KickBadgesFromIdentity(identity);
 	if (msg.id.isEmpty())
 		msg.id = QStringLiteral("kick-%1-%2").arg(msg.ts).arg(msg.user);
 	AppendMessage(msg);
@@ -1232,6 +1491,145 @@ void ChatDock::SendKickMessage(const QString &text)
 	});
 }
 
+void ChatDock::FetchTwitchBadgeSets()
+{
+	EnsureToken(Twitch, [this](bool ok) {
+		if (!ok)
+			return;
+		const Account &acc = accounts[Twitch];
+		auto load = [this](const QString &url) {
+			const Account &a = accounts[Twitch];
+			Http(url,
+			     {{QByteArrayLiteral("Client-Id"), a.clientId.toUtf8()},
+			      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + a.accessToken.toUtf8()}},
+			     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+				     if (status < 200 || status >= 300)
+					     return;
+				     IngestTwitchBadgeSets(QJsonDocument::fromJson(body).object().value("data").toArray());
+			     });
+		};
+		load(QStringLiteral("https://api.twitch.tv/helix/chat/badges/global"));
+		if (!acc.userId.isEmpty())
+			load(QStringLiteral("https://api.twitch.tv/helix/chat/badges?broadcaster_id=") + acc.userId);
+	});
+}
+
+void ChatDock::IngestTwitchBadgeSets(const QJsonArray &sets)
+{
+	for (const QJsonValue &row : sets) {
+		const QJsonObject set = row.toObject();
+		const QString setId = set.value("set_id").toString();
+		for (const QJsonValue &ver : set.value("versions").toArray()) {
+			const QJsonObject v = ver.toObject();
+			const QString version = v.value("id").toString();
+			const QString url = v.value("image_url_1x").toString(v.value("image_url_2x").toString());
+			if (setId.isEmpty() || version.isEmpty() || url.isEmpty())
+				continue;
+			twitchBadgeUrls.insert(setId + QLatin1Char('/') + version, url);
+		}
+	}
+}
+
+QVector<ChatDock::ChatBadge> ChatDock::TwitchBadgesFromTags(const QString &badgesTag) const
+{
+	QVector<ChatBadge> out;
+	if (badgesTag.isEmpty())
+		return out;
+	for (const QString &part : badgesTag.split(QLatin1Char(','))) {
+		if (part.isEmpty())
+			continue;
+		const QString setId = part.section(QLatin1Char('/'), 0, 0);
+		const QString version = part.section(QLatin1Char('/'), 1, 1);
+		ChatBadge badge;
+		badge.key = setId + QLatin1Char('/') + version;
+		badge.label = setId;
+		badge.url = twitchBadgeUrls.value(badge.key);
+		if (badge.url.isEmpty())
+			badge.url = twitchBadgeUrls.value(setId + QStringLiteral("/1"));
+		if (badge.url.isEmpty())
+			badge.url = twitchBadgeUrls.value(setId + QStringLiteral("/0"));
+		out.append(badge);
+	}
+	return out;
+}
+
+QVector<ChatDock::ChatBadge> ChatDock::KickBadgesFromIdentity(const QJsonObject &identity)
+{
+	QVector<ChatBadge> out;
+	for (const QJsonValue &row : identity.value("badges").toArray()) {
+		const QJsonObject obj = row.toObject();
+		ChatBadge badge;
+		badge.key = obj.value("type").toString(obj.value("name").toString());
+		badge.label = obj.value("text").toString(badge.key);
+		badge.url = obj.value("image").toString(obj.value("src").toString());
+		if (badge.key.isEmpty() && badge.label.isEmpty())
+			continue;
+		out.append(badge);
+	}
+	return out;
+}
+
+void ChatDock::FetchBadgePixmap(const QString &url, QLabel *target)
+{
+	if (!target || url.isEmpty())
+		return;
+	if (badgePixmaps.contains(url)) {
+		target->setPixmap(badgePixmaps.value(url));
+		return;
+	}
+	if (badgeFetchPending.contains(url))
+		return;
+	badgeFetchPending.insert(url);
+	QPointer<QLabel> alive(target);
+	Http(url, {}, {}, "GET", [this, url, alive](int status, const QByteArray &body, const QString &) {
+		badgeFetchPending.remove(url);
+		if (status < 200 || status >= 300 || body.isEmpty())
+			return;
+		QPixmap pix;
+		if (!pix.loadFromData(body))
+			return;
+		const QPixmap scaled = pix.scaled(14, 14, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+		badgePixmaps.insert(url, scaled);
+		if (alive)
+			alive->setPixmap(scaled);
+	});
+}
+
+void ChatDock::AppendSystemMessage(const QString &text)
+{
+	ChatMessage msg;
+	msg.system = true;
+	msg.user = QStringLiteral("System");
+	msg.color = QStringLiteral("#9a9a9a");
+	msg.text = text;
+	msg.ts = QDateTime::currentMSecsSinceEpoch();
+	msg.id = QStringLiteral("sys-%1").arg(msg.ts);
+	AppendMessage(msg);
+}
+
+void ChatDock::RelayoutMessageItems()
+{
+	if (!messageList)
+		return;
+	const int vw = qMax(120, messageList->viewport()->width());
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		QWidget *row = messageList->itemWidget(item);
+		if (!item || !row)
+			continue;
+		row->setFixedWidth(vw);
+		if (auto *label = row->findChild<QLabel *>(QStringLiteral("chatMsgText"))) {
+			const int textW = qMax(80, vw - 28 - 8);
+			label->setFixedWidth(textW);
+			const int h = qMax(label->heightForWidth(textW), label->sizeHint().height());
+			item->setSizeHint(QSize(vw, h + 10));
+		} else {
+			row->adjustSize();
+			item->setSizeHint(QSize(vw, qMax(24, row->sizeHint().height())));
+		}
+	}
+}
+
 void ChatDock::AppendMessage(const ChatMessage &msg)
 {
 	if (msg.text.isEmpty())
@@ -1240,41 +1638,89 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		if (seenMessageIds.contains(msg.id))
 			return;
 		seenMessageIds.insert(msg.id);
-		if (seenMessageIds.size() > 2000) {
+		if (seenMessageIds.size() > 2000)
 			seenMessageIds.clear();
-		}
 	}
 
-	const QString iconPath = PlatformIcon(msg.platform).name().isEmpty()
-					 ? QString()
-					 : QString();
-	Q_UNUSED(iconPath);
-	const QString color = msg.color.isEmpty() ? PlatformAccent(msg.platform).name() : msg.color;
-	const QString html =
-		QStringLiteral(
-			"<table cellspacing='0' cellpadding='0'><tr>"
-			"<td style='padding-right:6px; vertical-align:top;'>"
-			"<img src='%1' width='16' height='16'/></td>"
-			"<td style='vertical-align:top;'>"
-			"<span style='color:%2; font-weight:600;'>%3</span>"
-			"<span style='color:#ddd;'>: %4</span></td></tr></table>")
-			.arg(msg.platform == YouTube   ? QStringLiteral(":/aitum/media/youtube.png")
-			     : msg.platform == Kick    ? QStringLiteral(":/aitum/media/kick.png")
-						       : QStringLiteral(":/aitum/media/twitch.png"),
-			     color, EscapeHtml(msg.user), Linkify(EscapeHtml(msg.text)));
-
+	const QString color = msg.system ? QStringLiteral("#9a9a9a")
+					 : (msg.color.isEmpty() ? PlatformAccent(msg.platform).name() : msg.color);
 	auto *item = new QListWidgetItem(messageList);
-	auto *label = new QLabel(html);
+	auto *row = new QWidget(messageList);
+	auto *layout = new QHBoxLayout(row);
+	layout->setContentsMargins(8, 4, 8, 4);
+	layout->setSpacing(6);
+	layout->setAlignment(Qt::AlignTop);
+
+	auto *icon = new QLabel(row);
+	icon->setFixedSize(18, 18);
+	icon->setScaledContents(true);
+	if (!msg.system)
+		icon->setPixmap(PlatformIcon(msg.platform).pixmap(18, 18));
+	layout->addWidget(icon, 0, Qt::AlignTop);
+
+	auto *body = new QWidget(row);
+	auto *bodyLayout = new QVBoxLayout(body);
+	bodyLayout->setContentsMargins(0, 0, 0, 0);
+	bodyLayout->setSpacing(2);
+
+	auto *meta = new QWidget(body);
+	auto *metaLayout = new QHBoxLayout(meta);
+	metaLayout->setContentsMargins(0, 0, 0, 0);
+	metaLayout->setSpacing(4);
+	metaLayout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+	for (const ChatBadge &badge : msg.badges) {
+		auto *badgeLabel = new QLabel(meta);
+		badgeLabel->setFixedSize(14, 14);
+		badgeLabel->setScaledContents(true);
+		badgeLabel->setToolTip(badge.label.isEmpty() ? badge.key : badge.label);
+		if (!badge.url.isEmpty()) {
+			FetchBadgePixmap(badge.url, badgeLabel);
+		} else if (!badge.label.isEmpty()) {
+			badgeLabel->setAlignment(Qt::AlignCenter);
+			badgeLabel->setStyleSheet(
+				QStringLiteral("QLabel { background:#333; color:#ddd; border-radius:3px; padding:0 3px; "
+					       "font-size:9px; font-weight:700; }"));
+			const QString shortLabel = badge.label.left(1).toUpper();
+			badgeLabel->setText(shortLabel);
+			badgeLabel->setFixedHeight(14);
+			badgeLabel->setFixedWidth(qMax(14, badgeLabel->fontMetrics().horizontalAdvance(shortLabel) + 6));
+		}
+		metaLayout->addWidget(badgeLabel, 0, Qt::AlignVCenter);
+	}
+
+	auto *userLabel = new QLabel(meta);
+	userLabel->setTextFormat(Qt::RichText);
+	userLabel->setStyleSheet(QStringLiteral("background: transparent;"));
+	userLabel->setText(QStringLiteral("<span style='color:%1; font-weight:700;'>%2</span>")
+				   .arg(color, EscapeHtml(msg.user)));
+	metaLayout->addWidget(userLabel, 0, Qt::AlignVCenter);
+	metaLayout->addStretch(1);
+	bodyLayout->addWidget(meta);
+
+	auto *label = new QLabel(body);
+	label->setObjectName(QStringLiteral("chatMsgText"));
 	label->setTextFormat(Qt::RichText);
 	label->setWordWrap(true);
 	label->setOpenExternalLinks(true);
-	label->setStyleSheet(QStringLiteral("background: transparent; color: #eee;"));
 	label->setTextInteractionFlags(Qt::TextBrowserInteraction);
-	const int width = qMax(120, messageList->viewport()->width() - 16);
-	label->setFixedWidth(width);
-	item->setSizeHint(label->sizeHint() + QSize(0, 4));
+	label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+	label->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6;"));
+	label->setText(Linkify(EscapeHtml(msg.text)));
+	bodyLayout->addWidget(label);
+	layout->addWidget(body, 1);
+
+	const int vw = qMax(160, messageList->viewport()->width());
+	const int textW = qMax(80, vw - 28 - 8);
+	row->setFixedWidth(vw);
+	label->setFixedWidth(textW);
+	const int textH = qMax(label->heightForWidth(textW), label->fontMetrics().height());
+	const int metaH = msg.badges.isEmpty() && !msg.system ? userLabel->sizeHint().height() : qMax(16, meta->sizeHint().height());
+	item->setSizeHint(QSize(vw, textH + metaH + 14));
+
 	messageList->addItem(item);
-	messageList->setItemWidget(item, label);
+	messageList->setItemWidget(item, row);
 
 	while (messageList->count() > maxMessages) {
 		auto *old = messageList->takeItem(0);

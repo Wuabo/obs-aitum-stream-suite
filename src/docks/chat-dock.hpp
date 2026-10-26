@@ -5,17 +5,40 @@
 #include <QSet>
 #include <QString>
 #include <QVector>
+#include <atomic>
 #include <functional>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 class QLabel;
 class QLineEdit;
 class QListWidget;
-class QPushButton;
 class QTimer;
-class QSslSocket;
+
+struct ChatCurlWsSession {
+	std::atomic<bool> stop{false};
+	std::mutex mu;
+	std::vector<QByteArray> outbound;
+
+	void enqueue(QByteArray payload)
+	{
+		std::lock_guard<std::mutex> lock(mu);
+		outbound.push_back(std::move(payload));
+	}
+
+	std::vector<QByteArray> takeOutbound()
+	{
+		std::lock_guard<std::mutex> lock(mu);
+		std::vector<QByteArray> out;
+		out.swap(outbound);
+		return out;
+	}
+};
 
 /* Unified multi-platform chat + per-platform viewer counts.
- * Uses the same stream_accounts OAuth tokens as Stream Info. */
+ * Uses the same stream_accounts OAuth tokens as Stream Info.
+ * Twitch/Kick realtime uses libcurl WebSockets (OBS Qt has no SSL plugins). */
 class ChatDock : public QFrame {
 	Q_OBJECT
 
@@ -28,6 +51,7 @@ public:
 
 protected:
 	void showEvent(QShowEvent *event) override;
+	void hideEvent(QHideEvent *event) override;
 	bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
@@ -44,6 +68,12 @@ private:
 		QString login;
 	};
 
+	struct ChatBadge {
+		QString key;
+		QString url;
+		QString label;
+	};
+
 	struct ChatMessage {
 		Platform platform = Twitch;
 		QString id;
@@ -51,6 +81,8 @@ private:
 		QString color;
 		QString text;
 		qint64 ts = 0;
+		bool system = false;
+		QVector<ChatBadge> badges;
 	};
 
 	QSet<int> availablePlatforms;
@@ -70,24 +102,27 @@ private:
 	QLabel *sendPlatformIcon = nullptr;
 	QLineEdit *messageEdit = nullptr;
 	QLabel *sendStatus = nullptr;
-	QPushButton *settingsButton = nullptr;
-	QPushButton *accountsButton = nullptr;
 
 	QTimer *viewerTimer = nullptr;
 	QTimer *youtubeTimer = nullptr;
+	QTimer *youtubeDiscoverTimer = nullptr;
 	QTimer *kickReconnectTimer = nullptr;
+	QTimer *twitchReconnectTimer = nullptr;
 
-	QSslSocket *twitchIrc = nullptr;
+	std::shared_ptr<ChatCurlWsSession> twitchWs;
+	std::shared_ptr<ChatCurlWsSession> kickWs;
 	QByteArray twitchBuffer;
 	bool twitchJoined = false;
-
-	QSslSocket *kickWs = nullptr;
-	QByteArray kickBuffer;
-	bool kickWsReady = false;
+	bool connectionsActive = false;
 	bool kickSubscribed = false;
+	int twitchWsGen = 0;
+	int kickWsGen = 0;
 
 	QSet<QString> seenMessageIds;
 	int maxMessages = 400;
+	QHash<QString, QString> twitchBadgeUrls;
+	QHash<QString, QPixmap> badgePixmaps;
+	QSet<QString> badgeFetchPending;
 
 	void BuildUi();
 	void RebuildViewerBar();
@@ -109,10 +144,11 @@ private:
 
 	void ConnectTwitchIrc();
 	void DisconnectTwitchIrc();
-	void OnTwitchReady();
-	void OnTwitchData();
 	void HandleTwitchLine(const QString &line);
 	void SendTwitchMessage(const QString &text);
+	void FetchTwitchBadgeSets();
+	void IngestTwitchBadgeSets(const QJsonArray &sets);
+	QVector<ChatBadge> TwitchBadgesFromTags(const QString &badgesTag) const;
 
 	void StartYouTubeChat();
 	void PollYouTubeChat();
@@ -121,17 +157,20 @@ private:
 	void ConnectKickChat();
 	void DisconnectKickChat();
 	void ResolveKickChatroom();
-	void OnKickEncrypted();
-	void OnKickData();
-	void HandleKickFrame(const QByteArray &payload);
 	void SendKickWsText(const QString &text);
 	void OnKickWsMessage(const QString &message);
 	void SendKickMessage(const QString &text);
+	static QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity);
 
 	void AppendMessage(const ChatMessage &msg);
+	void AppendSystemMessage(const QString &text);
+	void RelayoutMessageItems();
+	void FetchBadgePixmap(const QString &url, QLabel *target);
+	bool DockIsOpen() const;
 	void SendChatMessage();
 	static const char *PlatformKey(Platform platform);
 	static QString PlatformLabel(Platform platform);
 	static QIcon PlatformIcon(Platform platform);
 	static QColor PlatformAccent(Platform platform);
+	static QColor PlatformChipAccent(Platform platform);
 };

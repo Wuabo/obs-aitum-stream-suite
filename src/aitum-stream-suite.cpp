@@ -437,8 +437,13 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		load_current_profile_config();
 		if (stream_info_dock)
 			stream_info_dock->ReloadAccounts();
-		if (chat_dock)
+		if (chat_dock) {
 			chat_dock->ReloadAccounts();
+			if (auto *dw = qobject_cast<QDockWidget *>(chat_dock->parentWidget()))
+				dw->hide();
+			else
+				chat_dock->hide();
+		}
 		install_main_canvas_context_bar_fix();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
@@ -678,6 +683,15 @@ bool obs_module_load(void)
 				    stream_info_dock);
 	chat_dock = new ChatDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteChat", obs_module_text("AitumStreamSuiteChat"), chat_dock);
+	/* Chat stays off until the user enables it in View → Docks. */
+	QTimer::singleShot(0, main_window, [] {
+		if (!chat_dock)
+			return;
+		if (auto *dw = qobject_cast<QDockWidget *>(chat_dock->parentWidget()))
+			dw->hide();
+		else
+			chat_dock->hide();
+	});
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */
 
