@@ -5,6 +5,7 @@
 #include "docks/main-canvas-context-fix.hpp"
 #include "docks/canvas-dock.hpp"
 #include "docks/output-dock.hpp"
+#include "docks/stream-info-dock.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
 #include <obs-frontend-api.h>
@@ -24,6 +25,7 @@ obs_data_t *current_profile_config = nullptr;
 
 OBSBasicSettings *configDialog = nullptr;
 OutputDock *output_dock = nullptr;
+StreamInfoDock *stream_info_dock = nullptr;
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -431,9 +433,13 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		obs_frontend_source_list_free(&transitions);
 
 		load_current_profile_config();
+		if (stream_info_dock)
+			stream_info_dock->ReloadAccounts();
 		install_main_canvas_context_bar_fix();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
+		if (stream_info_dock)
+			stream_info_dock->ReloadAccounts();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
@@ -455,6 +461,8 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		output_dock = nullptr;
+		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
+		stream_info_dock = nullptr;
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
@@ -649,6 +657,9 @@ bool obs_module_load(void)
 
 	output_dock = new OutputDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteOutput", obs_module_text("AitumStreamSuiteOutput"), output_dock);
+	stream_info_dock = new StreamInfoDock(main_window);
+	obs_frontend_add_dock_by_id("AitumStreamSuiteStreamInfo", obs_module_text("AitumStreamSuiteStreamInfo"),
+				    stream_info_dock);
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */
 
@@ -690,6 +701,10 @@ void obs_module_unload()
 	if (output_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		output_dock = nullptr;
+	}
+	if (stream_info_dock) {
+		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
+		stream_info_dock = nullptr;
 	}
 }
 

@@ -24,13 +24,13 @@ else()
 endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs)
 
-find_package(Qt6 COMPONENTS Widgets Core)
+find_package(Qt6 COMPONENTS Widgets Core Network)
 if(BUILD_OUT_OF_TREE)
   if(OS_LINUX OR OS_FREEBSD OR OS_OPENBSD)
     find_package(Qt6 REQUIRED Gui)
   endif()
 endif()
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt::Core Qt::Widgets)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt::Core Qt::Widgets Qt::Network)
 
 if((OS_LINUX OR OS_FREEBSD OR OS_OPENBSD) AND Qt6_VERSION VERSION_LESS "6.9.0")
   find_package(Qt6 COMPONENTS GuiPrivate)
@@ -72,6 +72,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/controls-other-options.hpp
   src/docks/output-dock.cpp
   src/docks/output-dock.hpp
+  src/docks/stream-info-dock.cpp
+  src/docks/stream-info-dock.hpp
   src/docks/sources-dock.cpp
   src/docks/sources-dock.hpp)
 
