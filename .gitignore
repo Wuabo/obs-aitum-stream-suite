@@ -15,3 +15,7 @@
 version.h
 cmake/.CMakeBuildNumber
 .ccache.conf
+/installation/obs-plugins
+/installation/data
+/data/locale
+/data
