@@ -25,6 +25,7 @@
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QSizePolicy>
+#include <QTextDocument>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -33,6 +34,7 @@
 
 #include <curl/curl.h>
 #include <curl/websockets.h>
+#include <cmath>
 #include <thread>
 #ifdef _WIN32
 #include <winsock2.h>
@@ -298,11 +300,11 @@ ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 	connect(youtubeTimer, &QTimer::timeout, this, &ChatDock::PollYouTubeChat);
 
 	youtubeDiscoverTimer = new QTimer(this);
-	youtubeDiscoverTimer->setInterval(20000);
+	youtubeDiscoverTimer->setInterval(30000);
 	connect(youtubeDiscoverTimer, &QTimer::timeout, this, [this] {
 		if (!connectionsActive || !availablePlatforms.contains(YouTube))
 			return;
-		if (ytLiveChatId.isEmpty())
+		if (ytLiveChatId.isEmpty() && !youtubeConnectedAnnounced)
 			StartYouTubeChat();
 	});
 
@@ -428,26 +430,21 @@ void ChatDock::showEvent(QShowEvent *event)
 		StartConnections();
 	else
 		RefreshViewers();
+	QTimer::singleShot(0, this, &ChatDock::RelayoutMessageItems);
 }
 
 void ChatDock::hideEvent(QHideEvent *event)
 {
 	QFrame::hideEvent(event);
-	/* Only tear down when the OBS dock itself is closed — not when the
-	 * widget is briefly hidden while tabbed/resized. */
-	QTimer::singleShot(0, this, [this] {
-		if (!DockIsOpen()) {
-			StopConnections();
-			connectionsActive = false;
-		}
-	});
+	/* Keep sockets alive while the dock exists. Stopping on hide caused
+	 * connect/disconnect spam when OBS toggled visibility. */
 }
 
 void ChatDock::ReloadAccounts()
 {
 	for (int i = 0; i < 3; ++i)
 		LoadAccount(Platform(i));
-	if (!DockIsOpen())
+	if (!DockIsOpen() && !connectionsActive)
 		return;
 	StartConnections();
 	RefreshViewers();
@@ -661,17 +658,20 @@ void ChatDock::StartConnections()
 {
 	StopConnections();
 	connectionsActive = true;
+	twitchConnectedAnnounced = false;
+	kickConnectedAnnounced = false;
+	youtubeConnectedAnnounced = false;
 	if (availablePlatforms.contains(Twitch) && !accounts[Twitch].accessToken.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Twitch)));
+		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Twitch)), Twitch);
 		ConnectTwitchIrc();
 	}
 	if (availablePlatforms.contains(YouTube) && !accounts[YouTube].accessToken.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(YouTube)));
+		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(YouTube)), YouTube);
 		StartYouTubeChat();
 		youtubeDiscoverTimer->start();
 	}
 	if (availablePlatforms.contains(Kick) && !accounts[Kick].accessToken.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Kick)));
+		AppendSystemMessage(Tr("ChatDockConnecting").arg(PlatformLabel(Kick)), Kick);
 		ResolveKickChatroom();
 	}
 	viewerTimer->start();
@@ -691,6 +691,9 @@ void ChatDock::StopConnections()
 	ytVideoId.clear();
 	ytNextPage.clear();
 	connectionsActive = false;
+	twitchConnectedAnnounced = false;
+	kickConnectedAnnounced = false;
+	youtubeConnectedAnnounced = false;
 }
 
 void ChatDock::RefreshViewers()
@@ -875,7 +878,7 @@ void ChatDock::ConnectTwitchIrc()
 		return;
 	EnsureToken(Twitch, [this](bool ok) {
 		if (!ok || !connectionsActive) {
-			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)));
+			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)), Twitch);
 			return;
 		}
 		const Account &acc = accounts[Twitch];
@@ -886,9 +889,9 @@ void ChatDock::ConnectTwitchIrc()
 			     if (!connectionsActive)
 				     return;
 			     if (status < 200 || status >= 300) {
-				     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)));
+				     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)), Twitch);
 				     if (!twitchReconnectTimer->isActive())
-					     twitchReconnectTimer->start(5000);
+					     twitchReconnectTimer->start(8000);
 				     return;
 			     }
 			     const QJsonArray data = QJsonDocument::fromJson(body).object().value("data").toArray();
@@ -927,7 +930,7 @@ void ChatDock::ConnectTwitchIrc()
 								     if (!alive || !alive->connectionsActive)
 									     return;
 								     if (!alive->twitchReconnectTimer->isActive())
-									     alive->twitchReconnectTimer->start(4000);
+									     alive->twitchReconnectTimer->start(8000);
 							     },
 							     Qt::QueuedConnection);
 					     }
@@ -998,7 +1001,7 @@ void ChatDock::ConnectTwitchIrc()
 								     return;
 							     alive->twitchJoined = false;
 							     if (!alive->twitchReconnectTimer->isActive())
-								     alive->twitchReconnectTimer->start(3000);
+								     alive->twitchReconnectTimer->start(8000);
 						     },
 						     Qt::QueuedConnection);
 				     }
@@ -1030,7 +1033,7 @@ void ChatDock::HandleTwitchLine(const QString &line)
 	}
 	if (line.contains(QStringLiteral("Login authentication failed"), Qt::CaseInsensitive) ||
 	    line.contains(QStringLiteral("Improperly formatted auth"), Qt::CaseInsensitive)) {
-		AppendSystemMessage(Tr("ChatDockTwitchReauth"));
+		AppendSystemMessage(Tr("ChatDockTwitchReauth"), Twitch);
 		blog(LOG_WARNING, "[Stream Suite] Twitch IRC auth failed — reconnect with chat:read chat:edit");
 		return;
 	}
@@ -1039,8 +1042,11 @@ void ChatDock::HandleTwitchLine(const QString &line)
 		twitchJoined = true;
 		if (twitchWs)
 			twitchWs->enqueue("JOIN #" + twitchLogin.toUtf8() + "\r\n");
-		AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Twitch)));
-		FetchTwitchBadgeSets();
+		if (!twitchConnectedAnnounced) {
+			twitchConnectedAnnounced = true;
+			AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Twitch)), Twitch);
+			FetchTwitchBadgeSets();
+		}
 		return;
 	}
 	if (!line.contains(QStringLiteral("PRIVMSG")))
@@ -1150,14 +1156,23 @@ void ChatDock::StartYouTubeChat()
 														  .toString();
 										  }
 										  if (!ytLiveChatId.isEmpty()) {
-											  AppendSystemMessage(
-												  Tr("ChatDockConnected").arg(PlatformLabel(YouTube)));
+											  if (!youtubeConnectedAnnounced) {
+												  youtubeConnectedAnnounced = true;
+												  AppendSystemMessage(
+													  Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+													  YouTube);
+											  }
 											  PollYouTubeChat();
 										  }
 									  });
 							     });
 						     } else {
-							     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)));
+							     if (!youtubeConnectedAnnounced) {
+								     youtubeConnectedAnnounced = true;
+								     AppendSystemMessage(
+									     Tr("ChatDockConnected").arg(PlatformLabel(YouTube)),
+									     YouTube);
+							     }
 							     PollYouTubeChat();
 						     }
 						     return;
@@ -1168,7 +1183,8 @@ void ChatDock::StartYouTubeChat()
 		};
 		tryStatus(QStringLiteral("active"), [this, tryStatus] {
 			tryStatus(QStringLiteral("upcoming"), [this] {
-				AppendSystemMessage(Tr("ChatDockYouTubeWaiting"));
+				if (!youtubeConnectedAnnounced)
+					AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
 			});
 		});
 	});
@@ -1334,7 +1350,7 @@ void ChatDock::ConnectKickChat()
 						if (!alive || !alive->connectionsActive)
 							return;
 						if (!alive->kickReconnectTimer->isActive())
-							alive->kickReconnectTimer->start(4000);
+							alive->kickReconnectTimer->start(8000);
 					},
 					Qt::QueuedConnection);
 			}
@@ -1354,7 +1370,11 @@ void ChatDock::ConnectKickChat()
 					if (!alive || alive->kickWsGen != gen)
 						return;
 					alive->kickSubscribed = true;
-					alive->AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Kick)));
+					if (!alive->kickConnectedAnnounced) {
+						alive->kickConnectedAnnounced = true;
+						alive->AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(Kick)),
+									   Kick);
+					}
 				},
 				Qt::QueuedConnection);
 		}
@@ -1406,7 +1426,7 @@ void ChatDock::ConnectKickChat()
 						return;
 					alive->kickSubscribed = false;
 					if (!alive->kickReconnectTimer->isActive())
-						alive->kickReconnectTimer->start(4000);
+						alive->kickReconnectTimer->start(8000);
 				},
 				Qt::QueuedConnection);
 		}
@@ -1595,15 +1615,27 @@ void ChatDock::FetchBadgePixmap(const QString &url, QLabel *target)
 	});
 }
 
-void ChatDock::AppendSystemMessage(const QString &text)
+int ChatDock::MessageTextHeight(const QString &html, int width, const QFont &font)
+{
+	QTextDocument doc;
+	doc.setDefaultFont(font);
+	doc.setHtml(html);
+	doc.setTextWidth(qMax(40, width));
+	return qMax(16, int(std::ceil(doc.size().height())));
+}
+
+void ChatDock::AppendSystemMessage(const QString &text, Platform platform, bool withIcon)
 {
 	ChatMessage msg;
 	msg.system = true;
+	msg.showPlatformIcon = withIcon;
+	msg.platform = platform;
 	msg.user = QStringLiteral("System");
 	msg.color = QStringLiteral("#9a9a9a");
 	msg.text = text;
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
-	msg.id = QStringLiteral("sys-%1").arg(msg.ts);
+	/* Stable-ish id avoids duplicates if the same status is emitted twice quickly. */
+	msg.id = QStringLiteral("sys-%1-%2").arg(int(platform)).arg(text);
 	AppendMessage(msg);
 }
 
@@ -1618,15 +1650,15 @@ void ChatDock::RelayoutMessageItems()
 		if (!item || !row)
 			continue;
 		row->setFixedWidth(vw);
-		if (auto *label = row->findChild<QLabel *>(QStringLiteral("chatMsgText"))) {
-			const int textW = qMax(80, vw - 28 - 8);
-			label->setFixedWidth(textW);
-			const int h = qMax(label->heightForWidth(textW), label->sizeHint().height());
-			item->setSizeHint(QSize(vw, h + 10));
-		} else {
-			row->adjustSize();
-			item->setSizeHint(QSize(vw, qMax(24, row->sizeHint().height())));
-		}
+		auto *label = row->findChild<QLabel *>(QStringLiteral("chatMsgText"));
+		if (!label)
+			continue;
+		const int textW = qMax(80, vw - 28);
+		label->setFixedWidth(textW);
+		const int h = MessageTextHeight(label->text(), textW, label->font());
+		label->setMinimumHeight(h);
+		item->setSizeHint(QSize(vw, h + 12));
+		row->updateGeometry();
 	}
 }
 
@@ -1642,82 +1674,69 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 			seenMessageIds.clear();
 	}
 
-	const QString color = msg.system ? QStringLiteral("#9a9a9a")
-					 : (msg.color.isEmpty() ? PlatformAccent(msg.platform).name() : msg.color);
+	const QString nameColor = msg.system ? QStringLiteral("#9a9a9a")
+					     : (msg.color.isEmpty() ? PlatformAccent(msg.platform).name() : msg.color);
+
+	QString badgesHtml;
+	for (const ChatBadge &badge : msg.badges) {
+		if (!badge.label.isEmpty() && badge.url.isEmpty()) {
+			badgesHtml += QStringLiteral(
+					      "<span style='background:#333;color:#ddd;border-radius:3px;padding:0 3px;"
+					      "font-size:9px;font-weight:700;margin-right:3px;'>%1</span>")
+					      .arg(EscapeHtml(badge.label.left(1).toUpper()));
+		}
+	}
+
+	const QString html =
+		QStringLiteral("<span style='color:%1;font-weight:700;'>%2%3</span>"
+			       "<span style='color:#e6e6e6;'>: %4</span>")
+			.arg(nameColor, badgesHtml, EscapeHtml(msg.user), Linkify(EscapeHtml(msg.text)));
+
 	auto *item = new QListWidgetItem(messageList);
 	auto *row = new QWidget(messageList);
 	auto *layout = new QHBoxLayout(row);
-	layout->setContentsMargins(8, 4, 8, 4);
+	layout->setContentsMargins(8, 4, 10, 4);
 	layout->setSpacing(6);
 	layout->setAlignment(Qt::AlignTop);
 
 	auto *icon = new QLabel(row);
 	icon->setFixedSize(18, 18);
 	icon->setScaledContents(true);
-	if (!msg.system)
+	if (msg.showPlatformIcon)
 		icon->setPixmap(PlatformIcon(msg.platform).pixmap(18, 18));
 	layout->addWidget(icon, 0, Qt::AlignTop);
 
-	auto *body = new QWidget(row);
-	auto *bodyLayout = new QVBoxLayout(body);
-	bodyLayout->setContentsMargins(0, 0, 0, 0);
-	bodyLayout->setSpacing(2);
-
-	auto *meta = new QWidget(body);
-	auto *metaLayout = new QHBoxLayout(meta);
-	metaLayout->setContentsMargins(0, 0, 0, 0);
-	metaLayout->setSpacing(4);
-	metaLayout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-
+	/* Image badges sit beside the text label. */
 	for (const ChatBadge &badge : msg.badges) {
-		auto *badgeLabel = new QLabel(meta);
+		if (badge.url.isEmpty())
+			continue;
+		auto *badgeLabel = new QLabel(row);
 		badgeLabel->setFixedSize(14, 14);
 		badgeLabel->setScaledContents(true);
 		badgeLabel->setToolTip(badge.label.isEmpty() ? badge.key : badge.label);
-		if (!badge.url.isEmpty()) {
-			FetchBadgePixmap(badge.url, badgeLabel);
-		} else if (!badge.label.isEmpty()) {
-			badgeLabel->setAlignment(Qt::AlignCenter);
-			badgeLabel->setStyleSheet(
-				QStringLiteral("QLabel { background:#333; color:#ddd; border-radius:3px; padding:0 3px; "
-					       "font-size:9px; font-weight:700; }"));
-			const QString shortLabel = badge.label.left(1).toUpper();
-			badgeLabel->setText(shortLabel);
-			badgeLabel->setFixedHeight(14);
-			badgeLabel->setFixedWidth(qMax(14, badgeLabel->fontMetrics().horizontalAdvance(shortLabel) + 6));
-		}
-		metaLayout->addWidget(badgeLabel, 0, Qt::AlignVCenter);
+		FetchBadgePixmap(badge.url, badgeLabel);
+		layout->addWidget(badgeLabel, 0, Qt::AlignTop);
 	}
 
-	auto *userLabel = new QLabel(meta);
-	userLabel->setTextFormat(Qt::RichText);
-	userLabel->setStyleSheet(QStringLiteral("background: transparent;"));
-	userLabel->setText(QStringLiteral("<span style='color:%1; font-weight:700;'>%2</span>")
-				   .arg(color, EscapeHtml(msg.user)));
-	metaLayout->addWidget(userLabel, 0, Qt::AlignVCenter);
-	metaLayout->addStretch(1);
-	bodyLayout->addWidget(meta);
-
-	auto *label = new QLabel(body);
+	auto *label = new QLabel(row);
 	label->setObjectName(QStringLiteral("chatMsgText"));
 	label->setTextFormat(Qt::RichText);
 	label->setWordWrap(true);
 	label->setOpenExternalLinks(true);
 	label->setTextInteractionFlags(Qt::TextBrowserInteraction);
 	label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+	label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 	label->setStyleSheet(QStringLiteral("background: transparent; color: #e6e6e6;"));
-	label->setText(Linkify(EscapeHtml(msg.text)));
-	bodyLayout->addWidget(label);
-	layout->addWidget(body, 1);
+	label->setText(html);
+	layout->addWidget(label, 1);
 
 	const int vw = qMax(160, messageList->viewport()->width());
-	const int textW = qMax(80, vw - 28 - 8);
+	const int textW = qMax(80, vw - 28 - qMax(0, msg.badges.size()) * 18);
 	row->setFixedWidth(vw);
 	label->setFixedWidth(textW);
-	const int textH = qMax(label->heightForWidth(textW), label->fontMetrics().height());
-	const int metaH = msg.badges.isEmpty() && !msg.system ? userLabel->sizeHint().height() : qMax(16, meta->sizeHint().height());
-	item->setSizeHint(QSize(vw, textH + metaH + 14));
+	const int textH = MessageTextHeight(html, textW, label->font());
+	label->setMinimumHeight(textH);
+	item->setSizeHint(QSize(vw, textH + 12));
 
 	messageList->addItem(item);
 	messageList->setItemWidget(item, row);

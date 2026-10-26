@@ -82,6 +82,7 @@ private:
 		QString text;
 		qint64 ts = 0;
 		bool system = false;
+		bool showPlatformIcon = true;
 		QVector<ChatBadge> badges;
 	};
 
@@ -115,6 +116,9 @@ private:
 	bool twitchJoined = false;
 	bool connectionsActive = false;
 	bool kickSubscribed = false;
+	bool twitchConnectedAnnounced = false;
+	bool kickConnectedAnnounced = false;
+	bool youtubeConnectedAnnounced = false;
 	int twitchWsGen = 0;
 	int kickWsGen = 0;
 
@@ -163,9 +167,10 @@ private:
 	static QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity);
 
 	void AppendMessage(const ChatMessage &msg);
-	void AppendSystemMessage(const QString &text);
+	void AppendSystemMessage(const QString &text, Platform platform, bool withIcon = true);
 	void RelayoutMessageItems();
 	void FetchBadgePixmap(const QString &url, QLabel *target);
+	static int MessageTextHeight(const QString &html, int width, const QFont &font);
 	bool DockIsOpen() const;
 	void SendChatMessage();
 	static const char *PlatformKey(Platform platform);
