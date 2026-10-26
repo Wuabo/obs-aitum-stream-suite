@@ -21,6 +21,9 @@ CanvasCloneDock::CanvasCloneDock(obs_data_t *settings_, QWidget *parent)
 	  settings(settings_)
 {
 	pthread_mutex_init(&replace_sources_mutex, nullptr);
+	setFrameShape(QFrame::NoFrame);
+	setFrameShadow(QFrame::Plain);
+	setLineWidth(0);
 	obs_enter_graphics();
 
 	gs_render_start(true);

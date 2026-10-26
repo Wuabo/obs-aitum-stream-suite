@@ -9,9 +9,11 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStyle>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QWidgetAction>
+#include <obs-frontend-api.h>
 
 static void StyleDockToolbar(QToolBar *toolbar)
 {
@@ -25,6 +27,19 @@ static void StyleDockToolbar(QToolBar *toolbar)
 	toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 }
 
+/* Same path rule as OBSBasicStatusBar::GetIcon — never check availableSizes()
+ * on SVG icons (Qt reports empty sizes even when theme:Dark/*.svg is valid). */
+static QIcon SuiteThemeIcon(const char *fileName, const char *fallbackRes = nullptr)
+{
+	if (obs_frontend_is_theme_dark()) {
+		return QIcon(QStringLiteral("theme:Dark/") + QString::fromUtf8(fileName));
+	}
+	if (fallbackRes && *fallbackRes) {
+		return QIcon(QString::fromUtf8(fallbackRes));
+	}
+	return QIcon(QStringLiteral(":/res/images/") + QString::fromUtf8(fileName));
+}
+
 static void SetToolbarClass(QToolBar *toolbar, QAction *action, const char *cls)
 {
 	if (!action)
@@ -34,6 +49,8 @@ static void SetToolbarClass(QToolBar *toolbar, QAction *action, const char *cls)
 	if (!button)
 		return;
 	button->setProperty("class", QString::fromUtf8(cls));
+	button->style()->unpolish(button);
+	button->style()->polish(button);
 }
 
 SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
@@ -89,20 +106,21 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	sourcesGroupLayout->addWidget(sourceList);
 
 	auto toolbar = new QToolBar();
-	toolbar->setObjectName(QStringLiteral("sourcesToolbar"));
+	/* Unique name — must not collide with OBS sourcesToolbar. */
+	toolbar->setObjectName(QStringLiteral("AitumSourcesToolbar"));
 	toolbar->setIconSize(QSize(16, 16));
 	toolbar->setFloatable(false);
 	toolbar->setMovable(false);
-	auto a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/plus.svg")),
-				    QString::fromUtf8(obs_frontend_get_locale_string("Add")), [this] {
+	auto a = toolbar->addAction(SuiteThemeIcon("plus.svg"), QString::fromUtf8(obs_frontend_get_locale_string("Add")),
+				    [this] {
 					    OBSSourceAutoRelease sceneSource = obs_weak_source_get_source(scene);
 					    OpenSourceSelectDialog(this, obs_scene_from_source(sceneSource));
 				    });
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("AddSource")));
 	SetToolbarClass(toolbar, a, "icon-plus");
 
-	a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/minus.svg")),
-			       QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
+	a = toolbar->addAction(SuiteThemeIcon("trash.svg"), QString::fromUtf8(obs_frontend_get_locale_string("Remove")),
+			       [this] {
 				       OBSSourceAutoRelease scene_source = obs_weak_source_get_source(scene);
 				       CanvasDock::RemoveSelectedSources(obs_scene_from_source(scene_source), this);
 			       });
@@ -117,7 +135,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 #endif
 	sourceList->addAction(a);
 	toolbar->addSeparator();
-	a = toolbar->addAction(QIcon(QString::fromUtf8(":/settings/images/settings/general.svg")),
+	a = toolbar->addAction(SuiteThemeIcon("settings/general.svg", ":/settings/images/settings/general.svg"),
 			       QString::fromUtf8(obs_frontend_get_locale_string("Properties")), [this] {
 				       auto item = GetCurrentSceneItem();
 				       auto source = obs_sceneitem_get_source(item);
@@ -130,47 +148,48 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	propertiesAction = a;
 
 	toolbar->addSeparator();
-	a = toolbar->addAction(
-		QIcon(QString::fromUtf8(":/res/images/up.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveUp")), [this] {
-			auto item = GetCurrentSceneItem();
-			if (!item) {
-				return;
-			}
-			auto scene = obs_sceneitem_get_scene(item);
-			if (!scene) {
-				return;
-			}
-			std::string undo_json = CanvasDock::backup_scene(scene);
-			obs_sceneitem_set_order(item, OBS_ORDER_MOVE_UP);
-			std::string redo_json = CanvasDock::backup_scene(scene);
-			auto undoName = QString::fromUtf8(obs_frontend_get_locale_string("Undo.MoveUp"))
-						.arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item))),
-						     QString::fromUtf8(obs_source_get_name(obs_scene_get_source(scene))));
-			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), CanvasDock::undo_redo_scene,
-							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
-		});
+	a = toolbar->addAction(SuiteThemeIcon("up.svg"), QString::fromUtf8(obs_frontend_get_locale_string("MoveUp")), [this] {
+		auto item = GetCurrentSceneItem();
+		if (!item) {
+			return;
+		}
+		auto scene = obs_sceneitem_get_scene(item);
+		if (!scene) {
+			return;
+		}
+		std::string undo_json = CanvasDock::backup_scene(scene);
+		obs_sceneitem_set_order(item, OBS_ORDER_MOVE_UP);
+		std::string redo_json = CanvasDock::backup_scene(scene);
+		auto undoName = QString::fromUtf8(obs_frontend_get_locale_string("Undo.MoveUp"))
+					.arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item))),
+					     QString::fromUtf8(obs_source_get_name(obs_scene_get_source(scene))));
+		obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), CanvasDock::undo_redo_scene,
+						  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
+	});
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceUp")));
 	SetToolbarClass(toolbar, a, "icon-up");
 	moveUpAction = a;
-	a = toolbar->addAction(
-		QIcon(QString::fromUtf8(":/res/images/down.svg")), QString::fromUtf8(obs_frontend_get_locale_string("MoveDown")), [this] {
-			auto item = GetCurrentSceneItem();
-			if (!item) {
-				return;
-			}
-			auto scene = obs_sceneitem_get_scene(item);
-			if (!scene) {
-				return;
-			}
-			std::string undo_json = CanvasDock::backup_scene(scene);
-			obs_sceneitem_set_order(item, OBS_ORDER_MOVE_DOWN);
-			std::string redo_json = CanvasDock::backup_scene(scene);
-			auto undoName = QString::fromUtf8(obs_frontend_get_locale_string("Undo.MoveDown"))
-						.arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item))),
-						     QString::fromUtf8(obs_source_get_name(obs_scene_get_source(scene))));
-			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), CanvasDock::undo_redo_scene,
-							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
-		});
+	a = toolbar->addAction(SuiteThemeIcon("down.svg"), QString::fromUtf8(obs_frontend_get_locale_string("MoveDown")),
+			       [this] {
+				       auto item = GetCurrentSceneItem();
+				       if (!item) {
+					       return;
+				       }
+				       auto scene = obs_sceneitem_get_scene(item);
+				       if (!scene) {
+					       return;
+				       }
+				       std::string undo_json = CanvasDock::backup_scene(scene);
+				       obs_sceneitem_set_order(item, OBS_ORDER_MOVE_DOWN);
+				       std::string redo_json = CanvasDock::backup_scene(scene);
+				       auto undoName =
+					       QString::fromUtf8(obs_frontend_get_locale_string("Undo.MoveDown"))
+						       .arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item))),
+							    QString::fromUtf8(obs_source_get_name(obs_scene_get_source(scene))));
+				       obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(),
+									 CanvasDock::undo_redo_scene, CanvasDock::undo_redo_scene,
+									 undo_json.c_str(), redo_json.c_str(), false);
+			       });
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("MoveSourceDown")));
 	SetToolbarClass(toolbar, a, "icon-down");
 	moveDownAction = a;

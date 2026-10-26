@@ -6,6 +6,7 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <util/config-file.h>
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
@@ -55,8 +56,75 @@ std::vector<CanvasPages> pages;
 bool syncing = false;
 bool alive = false;
 
-/* Same metrics as OBSBasic.ui scenesToolbar. A local stylesheet drops
- * Yami's max icon size and draws the actions larger than the native bar. */
+/* Same path rule as OBSBasicStatusBar::GetIcon. Do not use availableSizes() —
+ * SVG theme icons report empty sizes and we would load black :/res glyphs. */
+static QIcon ThemeFileIcon(const char *fileName)
+{
+	if (obs_frontend_is_theme_dark()) {
+		return QIcon(QStringLiteral("theme:Dark/") + QString::fromUtf8(fileName));
+	}
+	return QIcon(QStringLiteral(":/res/images/") + QString::fromUtf8(fileName));
+}
+
+static const char *IconFileForClass(const QString &cls)
+{
+	if (cls.contains(QString::fromUtf8("icon-trash"))) {
+		return "trash.svg";
+	}
+	if (cls.contains(QString::fromUtf8("icon-plus"))) {
+		return "plus.svg";
+	}
+	if (cls.contains(QString::fromUtf8("icon-minus"))) {
+		return "minus.svg";
+	}
+	if (cls.contains(QString::fromUtf8("icon-filter"))) {
+		return "filter.svg";
+	}
+	if (cls.contains(QString::fromUtf8("icon-up"))) {
+		return "up.svg";
+	}
+	if (cls.contains(QString::fromUtf8("icon-down"))) {
+		return "down.svg";
+	}
+	if (cls.contains(QString::fromUtf8("icon-gear"))) {
+		return "settings/general.svg";
+	}
+	return nullptr;
+}
+
+/* Keep every toolbar button on the same themed SVG set as native OBS. */
+void RefreshToolbarThemeIcons(QToolBar *toolbar)
+{
+	if (!toolbar) {
+		return;
+	}
+	for (QAction *action : toolbar->actions()) {
+		if (!action) {
+			continue;
+		}
+		const QString cls = action->property("class").toString();
+		if (const char *file = IconFileForClass(cls)) {
+			action->setIcon(ThemeFileIcon(file));
+		}
+		QWidget *button = toolbar->widgetForAction(action);
+		if (!button || !button->style()) {
+			continue;
+		}
+		for (const QByteArray &prop : action->dynamicPropertyNames()) {
+			button->setProperty(prop.constData(), action->property(prop.constData()));
+		}
+		if (const char *file = IconFileForClass(cls)) {
+			if (auto *toolBtn = qobject_cast<QAbstractButton *>(button)) {
+				toolBtn->setIcon(ThemeFileIcon(file));
+			}
+		}
+		button->style()->unpolish(button);
+		button->style()->polish(button);
+	}
+}
+
+/* Copy metrics from the OBS scenes/sources toolbar. Never setStyleSheet here —
+ * an empty widget stylesheet blocks Yami (.icon-trash → themed trash icon). */
 void MatchNativeToolbar(QWidget *pane, const char *name, QWidget *nativeWidget)
 {
 	if (!pane) {
@@ -67,7 +135,6 @@ void MatchNativeToolbar(QWidget *pane, const char *name, QWidget *nativeWidget)
 	if (!toolbar || !native) {
 		return;
 	}
-	toolbar->setStyleSheet(QString());
 	toolbar->setIconSize(native->iconSize());
 	toolbar->setFloatable(native->isFloatable());
 	toolbar->setMovable(native->isMovable());
@@ -79,15 +146,7 @@ void MatchNativeToolbar(QWidget *pane, const char *name, QWidget *nativeWidget)
 	}
 	toolbar->style()->unpolish(toolbar);
 	toolbar->style()->polish(toolbar);
-	const auto buttons = toolbar->findChildren<QWidget *>();
-	for (QWidget *button : buttons) {
-		button->setStyleSheet(QString());
-		if (!button->style()) {
-			continue;
-		}
-		button->style()->unpolish(button);
-		button->style()->polish(button);
-	}
+	RefreshToolbarThemeIcons(toolbar);
 }
 
 /* Toolbars are built inside the suite dock, so the first polish misses
@@ -123,7 +182,7 @@ public:
 		if (pane) {
 			layout->addWidget(pane);
 			PolishDockWidgets(pane);
-			MatchNativeToolbar(pane, "scenesToolbar", nativeScenesToolbar);
+			MatchNativeToolbar(pane, "AitumCanvasScenesToolbar", nativeScenesToolbar);
 		}
 	}
 
@@ -154,7 +213,7 @@ public:
 		sources = new SourcesDock(this);
 		layout->addWidget(sources);
 		PolishDockWidgets(sources);
-		MatchNativeToolbar(sources, "sourcesToolbar", nativeSourcesToolbar);
+		MatchNativeToolbar(sources, "AitumSourcesToolbar", nativeSourcesToolbar);
 
 		if (dock) {
 			connect(dock, &CanvasDock::editingSceneChanged, this, [this] { SyncScene(); });
@@ -283,6 +342,24 @@ void SetNativeRemoveShortcutsEnabled(bool enabled)
 	}
 }
 
+void SyncVisibleToolbarIcons()
+{
+	RefreshToolbarThemeIcons(qobject_cast<QToolBar *>(nativeScenesToolbar));
+	RefreshToolbarThemeIcons(qobject_cast<QToolBar *>(nativeSourcesToolbar));
+	for (auto &page : pages) {
+		if (page.scenes && page.scenes->isVisible()) {
+			if (auto *tb = page.scenes->findChild<QToolBar *>(QString::fromUtf8("AitumCanvasScenesToolbar"))) {
+				RefreshToolbarThemeIcons(tb);
+			}
+		}
+		if (page.sources && page.sources->isVisible()) {
+			if (auto *tb = page.sources->findChild<QToolBar *>(QString::fromUtf8("AitumSourcesToolbar"))) {
+				RefreshToolbarThemeIcons(tb);
+			}
+		}
+	}
+}
+
 void ShowMain(bool main)
 {
 	if (nativeScenes) {
@@ -315,6 +392,10 @@ void ShowMain(bool main)
 		}
 	}
 	SetNativeRemoveShortcutsEnabled(main);
+	/* After show/hide + first reparent into OBSDock, force the same
+	 * theme:Dark (or :/res) glyph set so colors don't drift vs native. */
+	SyncVisibleToolbarIcons();
+	QTimer::singleShot(0, &SyncVisibleToolbarIcons);
 }
 
 bool syncingSoloPreviewSwap = false;
@@ -655,12 +736,14 @@ void BindNative()
 		     sourcesFrame->layout()->metaObject()->className());
 	}
 	if (scenesFrame) {
-		nativeScenes = scenesFrame->findChild<QWidget *>(QString::fromUtf8("scenes"));
-		nativeScenesToolbar = scenesFrame->findChild<QWidget *>(QString::fromUtf8("scenesToolbar"));
+		nativeScenes = scenesFrame->findChild<QWidget *>(QString::fromUtf8("scenes"), Qt::FindDirectChildrenOnly);
+		nativeScenesToolbar =
+			scenesFrame->findChild<QWidget *>(QString::fromUtf8("scenesToolbar"), Qt::FindDirectChildrenOnly);
 	}
 	if (sourcesFrame) {
-		nativeSources = sourcesFrame->findChild<QWidget *>(QString::fromUtf8("sources"));
-		nativeSourcesToolbar = sourcesFrame->findChild<QWidget *>(QString::fromUtf8("sourcesToolbar"));
+		nativeSources = sourcesFrame->findChild<QWidget *>(QString::fromUtf8("sources"), Qt::FindDirectChildrenOnly);
+		nativeSourcesToolbar =
+			sourcesFrame->findChild<QWidget *>(QString::fromUtf8("sourcesToolbar"), Qt::FindDirectChildrenOnly);
 	}
 	auto transitionsDock = main->findChild<QDockWidget *>(QString::fromUtf8("transitionsDock"));
 	auto transitionsFrame =
@@ -681,6 +764,8 @@ void BindNative()
 	EnsureBar(scenesFrame, scenesLayout, scenesTabs, scenesTabHost, "StreamSuiteScenesTabs");
 	EnsureBar(sourcesFrame, sourcesLayout, sourcesTabs, sourcesTabHost, "StreamSuiteSourcesTabs");
 	EnsureBar(transitionsFrame, transitionsLayout, transitionsTabs, transitionsTabHost, "StreamSuiteTransitionsTabs");
+	RefreshToolbarThemeIcons(qobject_cast<QToolBar *>(nativeScenesToolbar));
+	RefreshToolbarThemeIcons(qobject_cast<QToolBar *>(nativeSourcesToolbar));
 	static bool scenesConnected = false;
 	static bool sourcesConnected = false;
 	static bool transitionsConnected = false;
