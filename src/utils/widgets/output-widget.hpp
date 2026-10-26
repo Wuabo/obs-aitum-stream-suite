@@ -61,4 +61,5 @@ public:
 	bool IsFileRecord() const;
 	const char* GetOutputType() const;
 	QString GetDisplayName() const;
+	QString GetStreamServer() const;
 };

@@ -467,10 +467,14 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
 		}
+		if (stream_info_dock)
+			stream_info_dock->UpdateDisconnectState();
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STOPPING || event == OBS_FRONTEND_EVENT_STREAMING_STOPPED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(false);
 		}
+		if (stream_info_dock)
+			stream_info_dock->UpdateDisconnectState();
 	} else if (event == OBS_FRONTEND_EVENT_RECORDING_STARTING || event == OBS_FRONTEND_EVENT_RECORDING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainRecordingStatus(true);

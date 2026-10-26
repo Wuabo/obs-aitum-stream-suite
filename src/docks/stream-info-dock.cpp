@@ -41,8 +41,10 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 #include <src/utils/icon.hpp>
+#include "output-dock.hpp"
 
 extern obs_data_t *current_profile_config;
+extern OutputDock *output_dock;
 void save_current_profile_config(bool save_docks);
 
 static const int kRedirectPort = 17654;
@@ -240,6 +242,9 @@ StreamInfoDock::StreamInfoDock(QWidget *parent) : QFrame(parent)
 	searchTimer->setSingleShot(true);
 	searchTimer->setInterval(350);
 	connect(searchTimer, &QTimer::timeout, this, &StreamInfoDock::SearchCategories);
+	liveLockTimer = new QTimer(this);
+	liveLockTimer->setInterval(1000);
+	connect(liveLockTimer, &QTimer::timeout, this, &StreamInfoDock::UpdateDisconnectState);
 	BuildUi();
 }
 
@@ -735,17 +740,48 @@ void StreamInfoDock::UpdateFieldVisibility()
 		platformIcon->setPixmap(getPlatformIconFromEndpoint(endpoint).pixmap(24, 24));
 }
 
+bool StreamInfoDock::IsCurrentPlatformLive() const
+{
+	auto matches = [this](const QString &endpoint) {
+		const StreamPlatformKind kind = DetectStreamPlatformFromEndpoint(endpoint);
+		if (platform == Twitch)
+			return kind == StreamPlatformKind::Twitch;
+		if (platform == YouTube)
+			return kind == StreamPlatformKind::YouTube;
+		return kind == StreamPlatformKind::Kick;
+	};
+
+	if (obs_frontend_streaming_active()) {
+		if (obs_service_t *service = obs_frontend_get_streaming_service()) {
+			const char *url = obs_service_get_connect_info(service, OBS_SERVICE_CONNECT_INFO_SERVER_URL);
+			if (matches(QString::fromUtf8(url ? url : "")))
+				return true;
+		}
+	}
+	return output_dock && output_dock->HasActiveStreamMatching(matches);
+}
+
+void StreamInfoDock::UpdateDisconnectState()
+{
+	connectButton->setEnabled(!accountConnected);
+	applyButton->setEnabled(accountConnected);
+	disconnectButton->setEnabled(accountConnected && !IsCurrentPlatformLive());
+}
+
 void StreamInfoDock::SetConnected(bool connected)
 {
+	accountConnected = connected;
 	if (connected && !userName.isEmpty())
 		SetStatus(Tr("StreamInfoConnected").arg(userName));
 	else if (connected)
 		SetStatus(Tr("StreamInfoConnectedBare"));
 	else
 		SetStatus(Tr("StreamInfoNotConnected"));
-	connectButton->setEnabled(!connected);
-	disconnectButton->setEnabled(connected);
-	applyButton->setEnabled(connected);
+	UpdateDisconnectState();
+	if (connected)
+		liveLockTimer->start();
+	else
+		liveLockTimer->stop();
 }
 
 bool StreamInfoDock::TokenFresh() const

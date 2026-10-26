@@ -1371,6 +1371,16 @@ bool OutputWidget::IsStream() const
 	return (output_type[0] == '\0' || strcmp(output_type, "stream") == 0);
 }
 
+QString OutputWidget::GetStreamServer() const
+{
+	if (!settings)
+		return {};
+	QString server = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
+	if (server.isEmpty())
+		server = QString::fromUtf8(obs_data_get_string(settings, "server"));
+	return server;
+}
+
 bool OutputWidget::IsRecord() const
 {
 	const auto output_type = obs_data_get_string(settings, "type");

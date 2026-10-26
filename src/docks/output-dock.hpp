@@ -84,6 +84,7 @@ public:
 	bool AddChapterToOutput(const char *output_name, const char *chapter_name);
 	bool HasActiveStreams() const;
 	bool HasActiveRecordings() const;
+	bool HasActiveStreamMatching(const std::function<bool(const QString &server)> &match) const;
 
 public slots:
 	void UpdateMainStreamStatus(bool active);

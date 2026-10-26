@@ -625,6 +625,22 @@ bool OutputDock::HasActiveStreams() const
 	return false;
 }
 
+bool OutputDock::HasActiveStreamMatching(const std::function<bool(const QString &server)> &match) const
+{
+	if (mainStreamEnabled && obs_frontend_streaming_active() && match(mainPlatformUrl))
+		return true;
+	for (const auto &ow : outputWidgets) {
+		if (!ow || !ow->IsStream())
+			continue;
+		obs_output_t *out = ow->GetOutput();
+		if (!out || !obs_output_active(out))
+			continue;
+		if (match(ow->GetStreamServer()))
+			return true;
+	}
+	return false;
+}
+
 bool OutputDock::HasActiveRecordings() const
 {
 	if (mainRecordEnabled && (obs_frontend_recording_active() || CanvasRecordActive())) {

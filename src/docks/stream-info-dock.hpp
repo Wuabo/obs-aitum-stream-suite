@@ -30,6 +30,7 @@ public:
 
 	void ReloadAccounts();
 	void RefreshAvailablePlatforms();
+	void UpdateDisconnectState();
 	void OpenSettings();
 
 protected:
@@ -72,6 +73,8 @@ private:
 	QPushButton *applyButton = nullptr;
 	QLabel *resultLabel = nullptr;
 	QTimer *searchTimer = nullptr;
+	QTimer *liveLockTimer = nullptr;
+	bool accountConnected = false;
 
 	struct CategoryEntry {
 		QString id;
@@ -91,6 +94,7 @@ private:
 	void SetResult(const QString &text);
 	void UpdateFieldVisibility();
 	void SetConnected(bool connected);
+	bool IsCurrentPlatformLive() const;
 	bool TokenFresh() const;
 	void EnsureToken(std::function<void(bool)> done);
 	void BeginConnect();
