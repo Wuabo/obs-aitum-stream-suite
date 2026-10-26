@@ -506,9 +506,9 @@ void CanvasDock::LoadUI()
 			const char *prevName = obs_source_get_name(source);
 			if (text == prevName)
 				return;
-			OBSSourceAutoRelease found = obs_get_source_by_name(text.c_str());
-			if (!found)
-				found = obs_canvas_get_source_by_name(canvas, text.c_str());
+			/* Scenes are per-canvas — do not use obs_get_source_by_name
+			 * (that also finds Main Canvas scenes and blocks reuse). */
+			OBSSourceAutoRelease found = obs_canvas_get_source_by_name(canvas, text.c_str());
 			if (found || text.empty()) {
 				listItem->setText(QString::fromUtf8(prevName));
 				if (found) {
@@ -2925,8 +2925,6 @@ void CanvasDock::AddScene(QString duplicate, bool ask_name)
 		for (;;) {
 			OBSSourceAutoRelease existing = obs_canvas_get_source_by_name(canvas, placeHolder.toUtf8().constData());
 			if (!existing)
-				existing = obs_get_source_by_name(placeHolder.toUtf8().constData());
-			if (!existing)
 				break;
 			placeHolder = format.arg(++i);
 		}
@@ -2943,8 +2941,6 @@ void CanvasDock::AddScene(QString duplicate, bool ask_name)
 				continue;
 			}
 			OBSSourceAutoRelease existing = obs_canvas_get_source_by_name(canvas, name.c_str());
-			if (!existing)
-				existing = obs_get_source_by_name(name.c_str());
 			if (existing) {
 				QMessageBox::warning(this, QString::fromUtf8(obs_frontend_get_locale_string("NameExists.Title")),
 						     QString::fromUtf8(obs_frontend_get_locale_string("NameExists.Text")));

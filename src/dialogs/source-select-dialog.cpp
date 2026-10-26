@@ -701,10 +701,12 @@ QString SourceSelectDialog::UniqueSourceName(const QString &base, bool onCanvas)
 	int suffix = 1;
 	for (;;) {
 		OBSSourceAutoRelease existing = nullptr;
-		if (onCanvas && canvas)
+		if (onCanvas && canvas) {
+			/* Scenes/groups live per-canvas; same name on Main is OK. */
 			existing = obs_canvas_get_source_by_name(canvas, name.toUtf8().constData());
-		if (!existing)
+		} else {
 			existing = obs_get_source_by_name(name.toUtf8().constData());
+		}
 		if (!existing)
 			return name;
 		name = base + QString::fromUtf8(" %1").arg(++suffix);
@@ -976,7 +978,14 @@ void SourceSelectDialog::OnCreateNew()
 		placeholder = selectedTypeId;
 	QString name = UniqueSourceName(placeholder, onCanvas);
 
-	OBSSourceAutoRelease existing = obs_get_source_by_name(name.toUtf8().constData());
+	OBSSource sceneSource = OBSGetStrongRef(sceneWeak.Get());
+	OBSCanvasAutoRelease canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+	OBSSourceAutoRelease existing = nullptr;
+	if (onCanvas && canvas) {
+		existing = obs_canvas_get_source_by_name(canvas, name.toUtf8().constData());
+	} else {
+		existing = obs_get_source_by_name(name.toUtf8().constData());
+	}
 	if (existing) {
 		QMessageBox::information(this, Locale("NameExists.Title"), Locale("NameExists.Text"));
 		return;
@@ -984,8 +993,6 @@ void SourceSelectDialog::OnCreateNew()
 
 	obs_source_t *created = nullptr;
 	if (onCanvas) {
-		OBSSource sceneSource = OBSGetStrongRef(sceneWeak.Get());
-		OBSCanvasAutoRelease canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
 		if (!canvas)
 			return;
 		created = obs_scene_get_source(obs_canvas_scene_create(canvas, name.toUtf8().constData()));

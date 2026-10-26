@@ -892,8 +892,16 @@ QString SourceTreeModel::GetNewGroupName()
 {
 	QString name = QString::fromUtf8(obs_frontend_get_locale_string("Group"));
 	int i = 2;
+	obs_scene_t *scene = st ? st->getScene(st->getSceneParam) : nullptr;
+	obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+	OBSCanvasAutoRelease canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
 	for (;;) {
-		OBSSourceAutoRelease group = obs_get_source_by_name(name.toUtf8().constData());
+		OBSSourceAutoRelease group = nullptr;
+		if (canvas) {
+			group = obs_canvas_get_source_by_name(canvas, name.toUtf8().constData());
+		} else {
+			group = obs_get_source_by_name(name.toUtf8().constData());
+		}
 		if (!group)
 			break;
 		name = QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.Group")).arg(QString::number(i++));
