@@ -317,23 +317,16 @@ void ShowMain(bool main)
 	SetNativeRemoveShortcutsEnabled(main);
 }
 
-/* When exactly one preview dock is visible, align it with the Scenes tab.
- * 0 or ≥2 visible → do nothing (multi-preview layout stays user-controlled). */
-void SyncSoloPreviewDockToTab(int index)
+bool syncingSoloPreviewSwap = false;
+
+QList<QDockWidget *> CollectPreviewDocks(QMainWindow *mainWin)
 {
-	if (nativeTabsStopped) {
-		return;
-	}
-	auto *mainWin = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!mainWin) {
-		return;
-	}
-
-	auto *mainCanvasDock =
-		mainWin->findChild<QDockWidget *>(QString::fromUtf8("AitumStreamSuiteMainCanvas"));
-
 	QList<QDockWidget *> previewDocks;
-	if (mainCanvasDock) {
+	if (!mainWin) {
+		return previewDocks;
+	}
+	if (auto *mainCanvasDock =
+		    mainWin->findChild<QDockWidget *>(QString::fromUtf8("AitumStreamSuiteMainCanvas"))) {
 		previewDocks.append(mainCanvasDock);
 	}
 	for (const auto &it : canvas_docks) {
@@ -350,6 +343,102 @@ void SyncSoloPreviewDockToTab(int index)
 			}
 		}
 	}
+	return previewDocks;
+}
+
+/* Break preview↔preview tab groups so docks stay independently movable.
+ * Does not touch Controls or force Top (that scrambled the layout before). */
+void UntabifyPreviewDocksFromEachOther(QMainWindow *main, const QList<QDockWidget *> &previews)
+{
+	if (!main) {
+		return;
+	}
+	for (QDockWidget *dock : previews) {
+		if (!dock) {
+			continue;
+		}
+		bool withPeer = false;
+		for (QDockWidget *peer : main->tabifiedDockWidgets(dock)) {
+			if (previews.contains(peer)) {
+				withPeer = true;
+				break;
+			}
+		}
+		if (!withPeer) {
+			continue;
+		}
+
+		const bool floating = dock->isFloating();
+		Qt::DockWidgetArea area = main->dockWidgetArea(dock);
+		if (area == Qt::NoDockWidgetArea) {
+			area = Qt::RightDockWidgetArea;
+		}
+		const bool visible = dock->isVisible();
+		const QSize sz = dock->size();
+		const QRect geo = dock->geometry();
+
+		main->removeDockWidget(dock);
+		main->addDockWidget(area, dock);
+		if (floating) {
+			dock->setFloating(true);
+			dock->setGeometry(geo);
+		} else {
+			dock->resize(sz);
+		}
+		dock->setVisible(visible);
+	}
+}
+
+void EnsurePreviewDocksFreeWhenMulti(QMainWindow *mainWin)
+{
+	if (syncingSoloPreviewSwap || nativeTabsStopped || !mainWin) {
+		return;
+	}
+	const QList<QDockWidget *> previews = CollectPreviewDocks(mainWin);
+	int visibleCount = 0;
+	for (QDockWidget *dock : previews) {
+		if (dock && dock->isVisible()) {
+			visibleCount++;
+		}
+	}
+	if (visibleCount >= 2) {
+		UntabifyPreviewDocksFromEachOther(mainWin, previews);
+	}
+}
+
+void BindPreviewDockVisibilityWatchers(QMainWindow *mainWin)
+{
+	if (!mainWin) {
+		return;
+	}
+	for (QDockWidget *dock : CollectPreviewDocks(mainWin)) {
+		if (!dock || dock->property("aitumPreviewWatch").toBool()) {
+			continue;
+		}
+		dock->setProperty("aitumPreviewWatch", true);
+		QObject::connect(dock, &QDockWidget::visibilityChanged, dock, [mainWin](bool) {
+			EnsurePreviewDocksFreeWhenMulti(mainWin);
+		});
+	}
+}
+
+/* When exactly one preview dock is visible, align it with the Scenes tab.
+ * 0 or ≥2 visible → leave layout alone (and untabify if multi so docks stay free). */
+void SyncSoloPreviewDockToTab(int index)
+{
+	if (nativeTabsStopped) {
+		return;
+	}
+	auto *mainWin = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!mainWin) {
+		return;
+	}
+
+	BindPreviewDockVisibilityWatchers(mainWin);
+
+	auto *mainCanvasDock =
+		mainWin->findChild<QDockWidget *>(QString::fromUtf8("AitumStreamSuiteMainCanvas"));
+	const QList<QDockWidget *> previewDocks = CollectPreviewDocks(mainWin);
 
 	QDockWidget *visibleOne = nullptr;
 	int visibleCount = 0;
@@ -360,6 +449,9 @@ void SyncSoloPreviewDockToTab(int index)
 		}
 	}
 	if (visibleCount != 1 || !visibleOne) {
+		if (visibleCount >= 2) {
+			UntabifyPreviewDocksFromEachOther(mainWin, previewDocks);
+		}
 		return;
 	}
 
@@ -379,12 +471,14 @@ void SyncSoloPreviewDockToTab(int index)
 	/* Replace in-place so Controls / other docks keep their side and size.
 	 * Do NOT addDockWidget(area) or ensure_preview_docks_independent here —
 	 * those relocate to Top and scramble the layout. */
+	syncingSoloPreviewSwap = true;
 	if (visibleOne->isFloating()) {
 		const QRect geo = visibleOne->geometry();
 		visibleOne->hide();
 		target->setFloating(true);
 		target->show();
 		target->setGeometry(geo);
+		syncingSoloPreviewSwap = false;
 		return;
 	}
 
@@ -395,6 +489,7 @@ void SyncSoloPreviewDockToTab(int index)
 	visibleOne->hide();
 	target->show();
 	target->raise();
+	syncingSoloPreviewSwap = false;
 }
 
 void ApplyIndex(int index)
