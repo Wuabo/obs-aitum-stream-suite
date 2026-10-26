@@ -53,6 +53,15 @@ static const int kRedirectPort = 17654;
 static const char *kTwitchScopes = "channel:manage:broadcast chat:read chat:edit";
 static const QSize kCategoryIconSize(24, 32);
 
+/* liveBroadcasts.snippet.liveChatId — NOT activeLiveChatId (that is videos.liveStreamingDetails). */
+static QString YouTubeBroadcastChatId(const QJsonObject &snippet)
+{
+	QString id = snippet.value(QStringLiteral("liveChatId")).toString();
+	if (id.isEmpty())
+		id = snippet.value(QStringLiteral("activeLiveChatId")).toString();
+	return id;
+}
+
 class CategoryComboBox : public QComboBox {
 public:
 	using QComboBox::QComboBox;
@@ -1193,7 +1202,7 @@ void StreamInfoDock::RefreshYouTubeForChat()
 			if (!items.isEmpty()) {
 				const QJsonObject item = items.at(0).toObject();
 				id = item.value("id").toString();
-				chatId = item.value("snippet").toObject().value("activeLiveChatId").toString();
+				chatId = YouTubeBroadcastChatId(item.value("snippet").toObject());
 			}
 		}
 		if (!chatId.isEmpty()) {
@@ -1286,7 +1295,7 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	ytScheduledStart = snippet.value("scheduledStartTime").toString();
 	SetResult(QString());
 	/* Pass broadcast id + liveChatId (when already live) straight to Unified Chat. */
-	const QString snippetChatId = snippet.value("activeLiveChatId").toString();
+	const QString snippetChatId = YouTubeBroadcastChatId(snippet);
 	if (!ytBroadcastId.isEmpty() && chat_dock)
 		chat_dock->NotifyYouTubeVideo(ytBroadcastId, snippetChatId);
 	const int gen = authGeneration;
