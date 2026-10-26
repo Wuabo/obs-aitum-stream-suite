@@ -293,6 +293,8 @@ private:
 	static void transition_override_stop(void *data, calldata_t *);
 	static bool add_sources_of_type_to_menu(void *param, obs_source_t *source);
 	static bool selected_items(obs_scene_t *scene, obs_sceneitem_t *item, void *param);
+	/* Match OBSBasic::on_actionRemoveSource_triggered (multi-select + groups). */
+	static void RemoveSelectedSources(obs_scene_t *scene, QWidget *parent);
 	static bool RotateSelectedSources(obs_scene_t *scene, obs_sceneitem_t *item, void *param);
 	static vec3 GetItemTL(obs_sceneitem_t *item);
 	static void SetItemTL(obs_sceneitem_t *item, const vec3 &tl);

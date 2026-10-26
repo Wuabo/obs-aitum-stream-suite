@@ -953,12 +953,24 @@ void ScenesDock::RemoveCurrentScene()
 		return;
 	}
 
-	QMessageBox mb(QMessageBox::Question, QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")),
-		       QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
-			       .arg(QString::fromUtf8(obs_source_get_name(s))),
-		       QMessageBox::StandardButtons(QMessageBox::Yes | QMessageBox::No));
-	mb.setDefaultButton(QMessageBox::NoButton);
-	if (mb.exec() == QMessageBox::Yes) {
+	if (sceneList && sceneList->count() <= 1) {
+		QMessageBox::information(this, QString::fromUtf8(obs_frontend_get_locale_string("FinalScene.Title")),
+					 QString::fromUtf8(obs_frontend_get_locale_string("FinalScene.Text")));
+		obs_source_release(s);
+		return;
+	}
+
+	QMessageBox remove_source(this);
+	remove_source.setText(QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
+				      .arg(QString::fromUtf8(obs_source_get_name(s))));
+	QPushButton *Yes =
+		remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Yes")), QMessageBox::YesRole);
+	remove_source.setDefaultButton(Yes);
+	remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")), QMessageBox::NoRole);
+	remove_source.setIcon(QMessageBox::Question);
+	remove_source.setWindowTitle(QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
+	remove_source.exec();
+	if (Yes == remove_source.clickedButton()) {
 		auto c = obs_source_get_canvas(s);
 		std::string canvas_name = c ? obs_canvas_get_name(c) : "";
 		obs_canvas_release(c);

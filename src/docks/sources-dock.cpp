@@ -103,89 +103,11 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("AddSource")));
 	SetToolbarClass(toolbar, a, "icon-plus");
 
-	a = toolbar->addAction(
-		QIcon(QString::fromUtf8(":/res/images/minus.svg")),
-		QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
-			auto scene_source = obs_weak_source_get_source(scene);
-			auto s = obs_scene_from_source(scene_source);
-			obs_source_release(scene_source);
-			std::vector<OBSSceneItem> items;
-			obs_scene_enum_items(s, CanvasDock::selected_items, &items);
-			if (!items.size()) {
-				return;
-			}
-			/* ------------------------------------- */
-			/* confirm action with user              */
-
-			bool confirmed = false;
-
-			if (items.size() > 1) {
-				QString text = QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.TextMultiple"))
-						       .arg(QString::number(items.size()));
-
-				QMessageBox remove_items(this);
-				remove_items.setText(text);
-				QPushButton *Yes = remove_items.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Yes")),
-									  QMessageBox::YesRole);
-				remove_items.setDefaultButton(Yes);
-				remove_items.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")),
-						       QMessageBox::NoRole);
-				remove_items.setIcon(QMessageBox::Question);
-				remove_items.setWindowTitle(
-					QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
-				remove_items.exec();
-
-				confirmed = Yes == remove_items.clickedButton();
-			} else {
-				OBSSceneItem &item = items[0];
-				obs_source_t *source = obs_sceneitem_get_source(item);
-				if (source) {
-					const char *name = obs_source_get_name(source);
-
-					QString text = QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
-							       .arg(QString::fromUtf8(name));
-
-					QMessageBox remove_source(this);
-					remove_source.setText(text);
-					QPushButton *Yes = remove_source.addButton(
-						QString::fromUtf8(obs_frontend_get_locale_string("Yes")), QMessageBox::YesRole);
-					remove_source.setDefaultButton(Yes);
-					remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")),
-								QMessageBox::NoRole);
-					remove_source.setIcon(QMessageBox::Question);
-					remove_source.setWindowTitle(
-						QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
-					remove_source.exec();
-					confirmed = Yes == remove_source.clickedButton();
-				}
-			}
-			if (!confirmed) {
-				return;
-			}
-
-			std::string undo_json = CanvasDock::backup_scene(s);
-
-			/* ----------------------------------------------- */
-			/* remove items                                    */
-
-			for (auto &item : items) {
-				obs_sceneitem_remove(item);
-			}
-
-			std::string redo_json = CanvasDock::backup_scene(s);
-
-			QString action_name;
-			if (items.size() > 1) {
-				action_name = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Sources.Multi"))
-						      .arg(QString::number(items.size()));
-			} else {
-				QString str = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Delete"));
-				action_name = str.arg(obs_source_get_name(obs_sceneitem_get_source(items[0])));
-			}
-
-			obs_frontend_add_undo_redo_action(action_name.toUtf8().constData(), CanvasDock::undo_redo_scene,
-							  CanvasDock::undo_redo_scene, undo_json.c_str(), redo_json.c_str(), false);
-		});
+	a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/minus.svg")),
+			       QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
+				       OBSSourceAutoRelease scene_source = obs_weak_source_get_source(scene);
+				       CanvasDock::RemoveSelectedSources(obs_scene_from_source(scene_source), this);
+			       });
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")));
 	SetToolbarClass(toolbar, a, "icon-trash");
 	removeAction = a;

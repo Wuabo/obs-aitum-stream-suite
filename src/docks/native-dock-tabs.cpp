@@ -6,10 +6,12 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <util/config-file.h>
+#include <QAction>
 #include <QApplication>
 #include <QByteArray>
 #include <QHBoxLayout>
 #include <QDockWidget>
+#include <QKeySequence>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QPointer>
@@ -254,6 +256,31 @@ private:
 	QPointer<QWidget> pane;
 };
 
+void SetNativeRemoveShortcutsEnabled(bool enabled)
+{
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main) {
+		return;
+	}
+	/* OBSBasic owns actionRemoveSource/Scene with WidgetWithChildrenShortcut
+	 * on the main window — Del always hits the Main canvas scene. Disable
+	 * them on Youtube/Vertical tabs so our docks handle multi-delete. */
+	if (auto *removeSource = main->findChild<QAction *>(QStringLiteral("actionRemoveSource"))) {
+		if (enabled) {
+			removeSource->setShortcut(QKeySequence(QStringLiteral("Del")));
+		} else {
+			removeSource->setShortcut(QKeySequence());
+		}
+	}
+	if (auto *removeScene = main->findChild<QAction *>(QStringLiteral("actionRemoveScene"))) {
+		if (enabled) {
+			removeScene->setShortcut(QKeySequence(QStringLiteral("Del")));
+		} else {
+			removeScene->setShortcut(QKeySequence());
+		}
+	}
+}
+
 void ShowMain(bool main)
 {
 	if (nativeScenes) {
@@ -285,6 +312,7 @@ void ShowMain(bool main)
 			pages[i].transitions->setVisible(on);
 		}
 	}
+	SetNativeRemoveShortcutsEnabled(main);
 }
 
 void ApplyIndex(int index)

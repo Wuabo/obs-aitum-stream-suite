@@ -423,30 +423,7 @@ void CanvasDock::LoadUI()
 	addNudge(Qt::SHIFT | Qt::Key_Right, MoveDir::Right, 10);
 
 	QAction *deleteAction = new QAction(preview);
-	connect(deleteAction, &QAction::triggered, [this]() {
-		obs_sceneitem_t *sceneItem = GetSelectedItem(scene);
-		if (!sceneItem) {
-			return;
-		}
-		auto scene = obs_sceneitem_get_scene(sceneItem);
-		if (!scene) {
-			return;
-		}
-		QMessageBox mb(QMessageBox::Question, QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")),
-			       QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
-				       .arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(sceneItem)))),
-			       QMessageBox::StandardButtons(QMessageBox::Yes | QMessageBox::No));
-		mb.setDefaultButton(QMessageBox::NoButton);
-		if (mb.exec() == QMessageBox::Yes) {
-			std::string undo_json = backup_scene(scene);
-			obs_sceneitem_remove(sceneItem);
-			std::string redo_json = backup_scene(scene);
-			auto undoName = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Delete"))
-						.arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(sceneItem))));
-			obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
-							  undo_json.c_str(), redo_json.c_str(), false);
-		}
-	});
+	connect(deleteAction, &QAction::triggered, [this]() { RemoveSelectedSources(scene, this); });
 #ifdef __APPLE__
 	deleteAction->setShortcut({Qt::Key_Backspace});
 #else
@@ -656,86 +633,9 @@ void CanvasDock::LoadUI()
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("AddSource")));
 	SetToolbarClass(toolbar, a, "icon-plus");
 
-	a = toolbar->addAction(
-		QIcon(QString::fromUtf8(":/res/images/minus.svg")),
-		QString::fromUtf8(obs_frontend_get_locale_string("Remove")), [this] {
-			std::vector<OBSSceneItem> items;
-			obs_scene_enum_items(scene, selected_items, &items);
-			if (!items.size()) {
-				return;
-			}
-			/* ------------------------------------- */
-			/* confirm action with user              */
-
-			bool confirmed = false;
-
-			if (items.size() > 1) {
-				QString text = QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.TextMultiple"))
-						       .arg(QString::number(items.size()));
-
-				QMessageBox remove_items(this);
-				remove_items.setText(text);
-				QPushButton *Yes = remove_items.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Yes")),
-									  QMessageBox::YesRole);
-				remove_items.setDefaultButton(Yes);
-				remove_items.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")),
-						       QMessageBox::NoRole);
-				remove_items.setIcon(QMessageBox::Question);
-				remove_items.setWindowTitle(
-					QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
-				remove_items.exec();
-
-				confirmed = Yes == remove_items.clickedButton();
-			} else {
-				OBSSceneItem &item = items[0];
-				obs_source_t *source = obs_sceneitem_get_source(item);
-				if (source) {
-					const char *name = obs_source_get_name(source);
-
-					QString text = QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
-							       .arg(QString::fromUtf8(name));
-
-					QMessageBox remove_source(this);
-					remove_source.setText(text);
-					QPushButton *Yes = remove_source.addButton(
-						QString::fromUtf8(obs_frontend_get_locale_string("Yes")), QMessageBox::YesRole);
-					remove_source.setDefaultButton(Yes);
-					remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")),
-								QMessageBox::NoRole);
-					remove_source.setIcon(QMessageBox::Question);
-					remove_source.setWindowTitle(
-						QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
-					remove_source.exec();
-					confirmed = Yes == remove_source.clickedButton();
-				}
-			}
-			if (!confirmed) {
-				return;
-			}
-
-			std::string undo_json = backup_scene(scene);
-
-			/* ----------------------------------------------- */
-			/* remove items                                    */
-
-			for (auto &item : items) {
-				obs_sceneitem_remove(item);
-			}
-
-			std::string redo_json = backup_scene(scene);
-
-			QString action_name;
-			if (items.size() > 1) {
-				action_name = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Sources.Multi"))
-						      .arg(QString::number(items.size()));
-			} else {
-				QString str = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Delete"));
-				action_name = str.arg(obs_source_get_name(obs_sceneitem_get_source(items[0])));
-			}
-
-			obs_frontend_add_undo_redo_action(action_name.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
-							  undo_json.c_str(), redo_json.c_str(), false);
-		});
+	a = toolbar->addAction(QIcon(QString::fromUtf8(":/res/images/minus.svg")),
+			       QString::fromUtf8(obs_frontend_get_locale_string("Remove")),
+			       [this] { RemoveSelectedSources(scene, this); });
 	a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("RemoveSource")));
 	SetToolbarClass(toolbar, a, "icon-trash");
 	a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
@@ -3026,12 +2926,24 @@ void CanvasDock::RemoveScene(const QString &sceneName)
 		return;
 	}
 
-	QMessageBox mb(QMessageBox::Question, QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")),
-		       QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
-			       .arg(QString::fromUtf8(obs_source_get_name(s))),
-		       QMessageBox::StandardButtons(QMessageBox::Yes | QMessageBox::No));
-	mb.setDefaultButton(QMessageBox::NoButton);
-	if (mb.exec() == QMessageBox::Yes) {
+	if (sceneList && sceneList->count() <= 1) {
+		QMessageBox::information(this, QString::fromUtf8(obs_frontend_get_locale_string("FinalScene.Title")),
+					 QString::fromUtf8(obs_frontend_get_locale_string("FinalScene.Text")));
+		obs_source_release(s);
+		return;
+	}
+
+	QMessageBox remove_source(this);
+	remove_source.setText(QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
+				      .arg(QString::fromUtf8(obs_source_get_name(s))));
+	QPushButton *Yes =
+		remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Yes")), QMessageBox::YesRole);
+	remove_source.setDefaultButton(Yes);
+	remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")), QMessageBox::NoRole);
+	remove_source.setIcon(QMessageBox::Question);
+	remove_source.setWindowTitle(QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
+	remove_source.exec();
+	if (Yes == remove_source.clickedButton()) {
 		obs_source_remove(s);
 		if (vendor) {
 			const auto d = obs_data_create();
@@ -3518,6 +3430,75 @@ bool CanvasDock::selected_items(obs_scene_t *, obs_sceneitem_t *item, void *para
 	return true;
 }
 
+void CanvasDock::RemoveSelectedSources(obs_scene_t *scene, QWidget *parent)
+{
+	if (!scene) {
+		return;
+	}
+
+	std::vector<OBSSceneItem> items;
+	obs_scene_enum_items(scene, selected_items, &items);
+	if (items.empty()) {
+		return;
+	}
+
+	bool confirmed = false;
+	if (items.size() > 1) {
+		QString text = QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.TextMultiple"))
+				       .arg(QString::number(items.size()));
+		QMessageBox remove_items(parent);
+		remove_items.setText(text);
+		QPushButton *Yes = remove_items.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Yes")),
+							  QMessageBox::YesRole);
+		remove_items.setDefaultButton(Yes);
+		remove_items.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")), QMessageBox::NoRole);
+		remove_items.setIcon(QMessageBox::Question);
+		remove_items.setWindowTitle(QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
+		remove_items.exec();
+		confirmed = Yes == remove_items.clickedButton();
+	} else {
+		obs_source_t *source = obs_sceneitem_get_source(items[0]);
+		if (source) {
+			QString text = QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
+					       .arg(QString::fromUtf8(obs_source_get_name(source)));
+			QMessageBox remove_source(parent);
+			remove_source.setText(text);
+			QPushButton *Yes = remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Yes")),
+								   QMessageBox::YesRole);
+			remove_source.setDefaultButton(Yes);
+			remove_source.addButton(QString::fromUtf8(obs_frontend_get_locale_string("No")), QMessageBox::NoRole);
+			remove_source.setIcon(QMessageBox::Question);
+			remove_source.setWindowTitle(QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")));
+			remove_source.exec();
+			confirmed = Yes == remove_source.clickedButton();
+		}
+	}
+	if (!confirmed) {
+		return;
+	}
+
+	std::string undo_json = backup_scene(scene);
+	for (auto &item : items) {
+		obs_sceneitem_t *group = obs_sceneitem_get_group(scene, item);
+		if (group) {
+			obs_sceneitem_group_remove_item(group, item);
+		}
+		obs_sceneitem_remove(item);
+	}
+	std::string redo_json = backup_scene(scene);
+
+	QString action_name;
+	if (items.size() > 1) {
+		action_name = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Sources.Multi"))
+				      .arg(QString::number(items.size()));
+	} else {
+		action_name = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Delete"))
+				      .arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(items[0]))));
+	}
+	obs_frontend_add_undo_redo_action(action_name.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
+					  undo_json.c_str(), redo_json.c_str(), false);
+}
+
 void CanvasDock::ShowScenesContextMenu(QListWidgetItem *widget_item)
 {
 	auto menu = QMenu(this);
@@ -3846,30 +3827,23 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		if (sourcesDock && sourcesDock->sourceList)
 			sourcesDock->sourceList->Edit(sourcesDock->GetTopSelectedSourceItem());
 	});
-	popup->addAction(
-		//removeButton->icon(),
-		QString::fromUtf8(obs_frontend_get_locale_string("Remove")), parent, [sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
-			if (!scene) {
-				return;
-			}
-			QMessageBox mb(QMessageBox::Question,
-				       QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Title")),
-				       QString::fromUtf8(obs_frontend_get_locale_string("ConfirmRemove.Text"))
-					       .arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(sceneItem)))),
-				       QMessageBox::StandardButtons(QMessageBox::Yes | QMessageBox::No));
-			mb.setDefaultButton(QMessageBox::NoButton);
-			if (mb.exec() == QMessageBox::Yes) {
-				std::string undo_json = backup_scene(scene);
-				obs_sceneitem_remove(sceneItem);
-				std::string redo_json = backup_scene(scene);
-				auto undoName =
-					QString::fromUtf8(obs_frontend_get_locale_string("Undo.Delete"))
-						.arg(QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(sceneItem))));
-				obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), undo_redo_scene, undo_redo_scene,
-								  undo_json.c_str(), redo_json.c_str(), false);
-			}
-		});
+	popup->addAction(QString::fromUtf8(obs_frontend_get_locale_string("Remove")), parent, [sceneItem, parent] {
+		obs_scene_t *root = nullptr;
+		QWidget *host = qobject_cast<QWidget *>(parent);
+		if (auto *cd = qobject_cast<CanvasDock *>(parent)) {
+			root = cd->scene;
+		} else if (auto *sd = qobject_cast<SourcesDock *>(parent)) {
+			OBSSourceAutoRelease ss = obs_weak_source_get_source(sd->scene);
+			root = obs_scene_from_source(ss);
+		}
+		if (!root) {
+			root = obs_sceneitem_get_scene(sceneItem);
+		}
+		if (sceneItem) {
+			obs_sceneitem_select(sceneItem, true);
+		}
+		RemoveSelectedSources(root, host);
+	});
 
 	popup->addSeparator();
 	auto orderMenu = popup->addMenu(QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Order")));
