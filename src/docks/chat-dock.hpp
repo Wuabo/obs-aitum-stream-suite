@@ -2,6 +2,8 @@
 
 #include <QFrame>
 #include <QHash>
+#include <QList>
+#include <QPointer>
 #include <QSet>
 #include <QString>
 #include <QVector>
@@ -138,6 +140,8 @@ private:
 	int maxMessages = 400;
 	QHash<QString, QString> twitchBadgeUrls;
 	QHash<QString, QPixmap> badgePixmaps;
+	QHash<QString, QByteArray> badgeRawBytes;
+	QHash<QString, QList<QPointer<QLabel>>> badgeWaiters;
 	QSet<QString> badgeFetchPending;
 
 	void BuildUi();
@@ -183,10 +187,13 @@ private:
 	void OnKickStreamOffline();
 	void SendKickMessage(const QString &text);
 	static QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity);
+	static QString KickRoleBadgeKey(const QString &type, int count = 0);
+	static QPixmap KickRoleBadgePixmap(const QString &role, int size = 14);
 	static QString KickEmoteImageUrl(const QString &emoteId);
 	QString FormatKickContentHtml(const QString &raw) const;
 	void PrefetchKickEmotes(const QString &raw, QLabel *label);
 	void RefreshKickMessageLabel(QLabel *label);
+	void ApplyBadgeToLabel(const ChatBadge &badge, QLabel *target);
 
 	void AppendMessage(const ChatMessage &msg);
 	void AppendSystemMessage(const QString &text, Platform platform, bool withIcon = true);
