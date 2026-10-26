@@ -537,13 +537,146 @@ void EnsurePreviewDocksNotTabbed()
 	UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), false);
 }
 
+static bool swappingSoloPreview = false;
+
+/* With exactly one preview visible, Scenes tab switches which canvas preview
+ * occupies that slot. Tabify only as a move-into-same-slot trick, then float
+ * the old dock out so the tab bar disappears — target keeps the place/size. */
+void SyncSoloPreviewToScenesTab(int index)
+{
+	if (nativeTabsStopped || swappingSoloPreview || untabifyingPreviews) {
+		return;
+	}
+	auto *mainWin = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!mainWin) {
+		return;
+	}
+
+	auto *mainCanvasDock =
+		mainWin->findChild<QDockWidget *>(QString::fromUtf8("AitumStreamSuiteMainCanvas"));
+	const QList<QDockWidget *> previewDocks = CollectPreviewDocks(mainWin);
+
+	QDockWidget *visibleOne = nullptr;
+	int visibleCount = 0;
+	for (QDockWidget *dock : previewDocks) {
+		if (dock && dock->isVisible()) {
+			visibleCount++;
+			visibleOne = dock;
+		}
+	}
+	/* Multi-preview: leave docks alone — user manages them. */
+	if (visibleCount != 1 || !visibleOne) {
+		return;
+	}
+
+	QDockWidget *target = nullptr;
+	if (index <= 0) {
+		target = mainCanvasDock;
+	} else if (index >= 1 && index <= (int)pages.size()) {
+		CanvasDock *canvasDock = pages[size_t(index - 1)].dock;
+		if (canvasDock) {
+			target = qobject_cast<QDockWidget *>(canvasDock->parentWidget());
+		}
+	}
+	if (!target || target == visibleOne) {
+		return;
+	}
+
+	swappingSoloPreview = true;
+	auto *controls = mainWin->findChild<QDockWidget *>(QString::fromUtf8("controlsDock"));
+	const Qt::DockWidgetArea controlsArea = controls ? mainWin->dockWidgetArea(controls) : Qt::NoDockWidgetArea;
+	const bool controlsVis = controls && controls->isVisible();
+
+	/* Capture before layout mutation — size/geometry collapse after remove. */
+	const bool wasFloating = visibleOne->isFloating();
+	const QSize keepSize = visibleOne->size();
+	const QRect keepGeo = wasFloating ? visibleOne->geometry()
+					  : QRect(visibleOne->mapToGlobal(QPoint()), keepSize);
+	Qt::DockWidgetArea area = mainWin->dockWidgetArea(visibleOne);
+	if (area == Qt::NoDockWidgetArea) {
+		area = Qt::RightDockWidgetArea;
+	}
+
+	if (wasFloating) {
+		visibleOne->hide();
+		target->setFloating(true);
+		target->setGeometry(keepGeo);
+		target->show();
+	} else {
+		/* Ensure target is a docked peer in the same slot, then drop the
+		 * previous dock from the layout (not setFloating — that left
+		 * Youtube as a free-floating window). */
+		if (target->isFloating()) {
+			target->setFloating(false);
+		}
+		mainWin->addDockWidget(area, target);
+		if (!mainWin->tabifiedDockWidgets(visibleOne).contains(target)) {
+			mainWin->tabifyDockWidget(visibleOne, target);
+		}
+		target->setFloating(false);
+		target->show();
+		target->raise();
+
+		mainWin->removeDockWidget(visibleOne);
+
+		/* removeDockWidget can leave the survivor floating on some Qt builds. */
+		if (target->isFloating() || mainWin->dockWidgetArea(target) == Qt::NoDockWidgetArea) {
+			mainWin->addDockWidget(area, target);
+			target->setFloating(false);
+			target->show();
+		}
+
+		if (keepSize.width() > 0) {
+			mainWin->resizeDocks({target}, {keepSize.width()}, Qt::Horizontal);
+		}
+		if (keepSize.height() > 0) {
+			mainWin->resizeDocks({target}, {keepSize.height()}, Qt::Vertical);
+		}
+	}
+
+	RestoreControlsArea(mainWin, controls, controlsArea, controlsVis);
+
+	QPointer<QMainWindow> mainPtr = mainWin;
+	QPointer<QDockWidget> targetPtr = target;
+	const QSize sz = keepSize;
+	const QRect geo = keepGeo;
+	const bool floating = wasFloating;
+	const Qt::DockWidgetArea keepArea = area;
+	QTimer::singleShot(0, mainWin, [mainPtr, targetPtr, sz, geo, floating, keepArea]() {
+		if (!targetPtr) {
+			return;
+		}
+		if (floating) {
+			targetPtr->setGeometry(geo);
+			targetPtr->resize(sz);
+			return;
+		}
+		if (!mainPtr) {
+			return;
+		}
+		if (targetPtr->isFloating() || mainPtr->dockWidgetArea(targetPtr) == Qt::NoDockWidgetArea) {
+			mainPtr->addDockWidget(keepArea, targetPtr);
+			targetPtr->setFloating(false);
+			targetPtr->show();
+		}
+		if (sz.width() > 0) {
+			mainPtr->resizeDocks({targetPtr.data()}, {sz.width()}, Qt::Horizontal);
+		}
+		if (sz.height() > 0) {
+			mainPtr->resizeDocks({targetPtr.data()}, {sz.height()}, Qt::Vertical);
+		}
+	});
+
+	swappingSoloPreview = false;
+}
+
 void ApplyIndex(int index)
 {
 	if (index < 0) {
 		index = 0;
 	}
-	/* Only swap Scenes/Sources/Transitions panes — never touch preview docks. */
 	ShowMain(index == 0);
+	SyncSoloPreviewToScenesTab(index);
 }
 
 void OnScenesTab(int index)
