@@ -307,6 +307,13 @@ void CanvasDock::LoadUI()
 	setLineWidth(0);
 	setMidLineWidth(0);
 	setContentsMargins(0, 0, 0, 0);
+	/* Yami's "OBSDock > QWidget" draws a grey4 box around dock content —
+	 * that bottom stroke sits under the context bar. Main Canvas reads
+	 * flush; kill only the border on this root (not a broad stylesheet). */
+	setStyleSheet(QStringLiteral("QFrame#CanvasDock {"
+				     "  border: none;"
+				     "  border-radius: 0px;"
+				     "}"));
 
 	/* Match OBSBasic.ui centralwidget verticalLayout: margins 4,0,4,0. */
 	auto *outer = new QVBoxLayout(this);
@@ -1200,6 +1207,8 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	/* Mirror OBSBasic.ui: contextContainer is sibling of canvasEditor. */
 	contextContainer = new QFrame(this);
 	contextContainer->setObjectName(QStringLiteral("contextContainer"));
+	contextContainer->setFrameShape(QFrame::NoFrame);
+	contextContainer->setFrameShadow(QFrame::Plain);
 	contextContainer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 	auto *hl = new QHBoxLayout(contextContainer);
 	hl->setContentsMargins(6, 4, 6, 4);
@@ -1207,6 +1216,8 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 
 	auto *contextSub = new QFrame(contextContainer);
 	contextSub->setObjectName(QStringLiteral("contextSubContainer"));
+	contextSub->setFrameShape(QFrame::NoFrame);
+	contextSub->setFrameShadow(QFrame::Plain);
 	auto *sub = new QHBoxLayout(contextSub);
 	sub->setContentsMargins(0, 0, 0, 0);
 	sub->setSpacing(6);
@@ -1240,7 +1251,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	sourcePropertiesButton->setToolTip(
 		QString::fromUtf8(obs_frontend_get_locale_string("SourceProperties")));
 	sourcePropertiesButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Properties")));
-	sourcePropertiesButton->setIcon(QIcon(QStringLiteral(":/settings/images/settings/general.svg")));
+	sourcePropertiesButton->setIcon(SuiteThemeIcon("settings/general.svg", ":/settings/images/settings/general.svg"));
 	sourcePropertiesButton->setFlat(false);
 	sourcePropertiesButton->setEnabled(false);
 	connect(sourcePropertiesButton, &QPushButton::clicked, this, [this] {
@@ -1263,7 +1274,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	sourceFiltersButton->setMinimumHeight(22);
 	sourceFiltersButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SourceFilters")));
 	sourceFiltersButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Filters")));
-	sourceFiltersButton->setIcon(QIcon(QStringLiteral(":/res/images/filter.svg")));
+	sourceFiltersButton->setIcon(SuiteThemeIcon("filter.svg"));
 	sourceFiltersButton->setFlat(false);
 	sourceFiltersButton->setEnabled(false);
 	connect(sourceFiltersButton, &QPushButton::clicked, this, [this] {
@@ -1285,7 +1296,7 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 	sourceInteractButton->setMinimumHeight(22);
 	sourceInteractButton->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("Interact")));
 	sourceInteractButton->setText(QString::fromUtf8(obs_frontend_get_locale_string("Interact")));
-	sourceInteractButton->setIcon(QIcon(QStringLiteral(":/res/images/interact.svg")));
+	sourceInteractButton->setIcon(SuiteThemeIcon("interact.svg"));
 	sourceInteractButton->setProperty("class", QStringLiteral("icon-touch"));
 	sourceInteractButton->setFlat(false);
 	sourceInteractButton->hide();
@@ -1320,6 +1331,8 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 
 	emptySpace = new QFrame(contextContainer);
 	emptySpace->setObjectName(QStringLiteral("emptySpace"));
+	emptySpace->setFrameShape(QFrame::NoFrame);
+	emptySpace->setFrameShadow(QFrame::Plain);
 	emptySpace->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 	emptySpace->setMinimumHeight(22);
 	auto *emptyLayout = new QHBoxLayout(emptySpace);
