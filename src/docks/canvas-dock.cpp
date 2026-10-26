@@ -1086,6 +1086,10 @@ void CanvasDock::BuildPreviewChrome(QBoxLayout *previewContainerLayout, QBoxLayo
 
 	auto *scaleRow = new QWidget(gridHost);
 	scaleRow->setObjectName(QStringLiteral("previewXContainer"));
+	/* Yami draws a full border on #previewXContainer; the top edge becomes a
+	 * line under the preview that the native Main Canvas does not show flush.
+	 * Drop only the top so the preview sits against the scale row like OBS. */
+	scaleRow->setStyleSheet(QStringLiteral("#previewXContainer { border-top: none; }"));
 	auto *scaleLayout = new QHBoxLayout(scaleRow);
 	scaleLayout->setContentsMargins(0, 0, 0, 0);
 	scaleLayout->setSpacing(0);
