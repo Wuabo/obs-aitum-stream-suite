@@ -240,6 +240,7 @@ private:
 	static void AddSourceTypeToMenu(QMenu *popup, const char *source_type, const char *name);
 	void ShowScenesContextMenu(QListWidgetItem *widget_item);
 	void EditSceneName();
+	void OpenSelectedSceneFilters();
 	void SetGridMode(bool checked);
 	bool IsGridMode();
 

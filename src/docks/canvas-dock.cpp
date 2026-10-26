@@ -36,6 +36,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStyle>
+#include <QTimer>
 #include <QToolBar>
 #include <QUrlQuery>
 #include <QWidgetAction>
@@ -587,18 +588,8 @@ void CanvasDock::LoadUI()
 		sceneList->addAction(a);
 		toolbar->addSeparator();
 		a = toolbar->addAction(SuiteThemeIcon("filter.svg"),
-				       QString::fromUtf8(obs_frontend_get_locale_string("SceneFilters")), [this] {
-					       auto item = sceneList->currentItem();
-					       if (!item) {
-						       return;
-					       }
-					       auto s = obs_canvas_get_source_by_name(canvas, item->text().toUtf8().constData());
-					       if (!s) {
-						       return;
-					       }
-					       obs_frontend_open_source_filters(s);
-					       obs_source_release(s);
-				       });
+				       QString::fromUtf8(obs_frontend_get_locale_string("SceneFilters")),
+				       this, &CanvasDock::OpenSelectedSceneFilters);
 		a->setToolTip(QString::fromUtf8(obs_frontend_get_locale_string("SceneFilters")));
 		SetToolbarClass(toolbar, a, "icon-filter");
 		toolbar->addSeparator();
@@ -2913,6 +2904,32 @@ void CanvasDock::EditSceneName()
 	item->setFlags(flags);
 }
 
+void CanvasDock::OpenSelectedSceneFilters()
+{
+	OBSSourceAutoRelease source;
+	if (scene) {
+		source = obs_source_get_ref(obs_scene_get_source(scene));
+	}
+	if (!source && sceneList) {
+		if (QListWidgetItem *item = sceneList->currentItem()) {
+			source = obs_canvas_get_source_by_name(canvas, item->text().toUtf8().constData());
+		}
+	}
+	if (!source && !currentSceneName.isEmpty()) {
+		source = obs_canvas_get_source_by_name(canvas, currentSceneName.toUtf8().constData());
+	}
+	if (!source) {
+		blog(LOG_WARNING, "[Stream Suite] Scene filters: no scene selected on canvas '%s'",
+		     canvas ? obs_canvas_get_name(canvas) : "?");
+		return;
+	}
+
+	/* Hold OBSSource across the event-loop hop. Opening during the toolbar
+	 * click can race with ref release when OpenFilters is queued. */
+	OBSSource keep(source.Get());
+	QTimer::singleShot(0, this, [keep]() { obs_frontend_open_source_filters(keep); });
+}
+
 void CanvasDock::AddScene(QString duplicate, bool ask_name)
 {
 	std::string name;
@@ -3695,17 +3712,8 @@ void CanvasDock::ShowScenesContextMenu(QListWidgetItem *widget_item)
 		}
 	});
 	menu.addSeparator();
-	menu.addAction(QString::fromUtf8(obs_frontend_get_locale_string("Filters")), [this] {
-		auto item = sceneList->currentItem();
-		if (!item) {
-			return;
-		}
-		auto s = obs_canvas_get_source_by_name(canvas, item->text().toUtf8().constData());
-		if (s) {
-			obs_frontend_open_source_filters(s);
-			obs_source_release(s);
-		}
-	});
+	menu.addAction(QString::fromUtf8(obs_frontend_get_locale_string("Filters")), this,
+		       &CanvasDock::OpenSelectedSceneFilters);
 	menu.addSeparator();
 
 	auto tom = menu.addMenu(QString::fromUtf8(obs_frontend_get_locale_string("TransitionOverride")));
