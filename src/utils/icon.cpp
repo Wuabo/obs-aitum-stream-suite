@@ -121,16 +121,34 @@ QIcon GetIconFromType(enum obs_icon_type icon_type, const char *id)
 
 extern bool isTwitchServer(QString outputServer);
 
+StreamPlatformKind DetectStreamPlatformFromEndpoint(const QString &endpoint)
+{
+	if (endpoint.isEmpty())
+		return StreamPlatformKind::Unknown;
+	if (isTwitchServer(endpoint))
+		return StreamPlatformKind::Twitch;
+	if (endpoint.contains(QString::fromUtf8(".youtube.com")) ||
+	    endpoint.contains(QString::fromUtf8("youtubei.googleapis.com")))
+		return StreamPlatformKind::YouTube;
+	if (endpoint.contains(QString::fromUtf8("fa723fc1b171.global-contribute.live-video.net")) ||
+	    endpoint.contains(QString::fromUtf8("kick.com")))
+		return StreamPlatformKind::Kick;
+	return StreamPlatformKind::Unknown;
+}
+
 QIcon getPlatformIconFromEndpoint(QString endpoint)
 {
-
-	if (isTwitchServer(endpoint)) { // twitch
+	switch (DetectStreamPlatformFromEndpoint(endpoint)) {
+	case StreamPlatformKind::Twitch:
 		return QIcon(":/aitum/media/twitch.png");
-	} else if (endpoint.contains(QString::fromUtf8(".youtube.com"))) { // youtube
+	case StreamPlatformKind::YouTube:
 		return QIcon(":/aitum/media/youtube.png");
-	} else if (endpoint.contains(QString::fromUtf8("fa723fc1b171.global-contribute.live-video.net"))) { // kick
+	case StreamPlatformKind::Kick:
 		return QIcon(":/aitum/media/kick.png");
-	} else if (endpoint.contains(QString::fromUtf8(".tiktokcdn"))) { // tiktok
+	case StreamPlatformKind::Unknown:
+		break;
+	}
+	if (endpoint.contains(QString::fromUtf8(".tiktokcdn"))) { // tiktok
 		return QIcon(":/aitum/media/tiktok.png");
 	} else if (endpoint.contains(QString::fromUtf8(".pscp.tv"))) { // twitter
 		return QIcon(":/aitum/media/twitter.png");
@@ -139,9 +157,8 @@ QIcon getPlatformIconFromEndpoint(QString endpoint)
 	} else if (endpoint.contains(QString::fromUtf8(".facebook.com")) ||
 		   endpoint.contains(QString::fromUtf8(".fbcdn.net"))) { // facebook
 		return QIcon(":/aitum/media/facebook.png");
-	} else { // unknown
-		return QIcon(":/aitum/media/unknown.png");
 	}
+	return QIcon(":/aitum/media/unknown.png");
 }
 
 QIcon create2StateIcon(QString fileOn, QString fileOff)

@@ -620,6 +620,8 @@ void open_config_dialog(int tab, const char *create_type)
 
 		if (outputs_changed) {
 			load_outputs();
+			if (stream_info_dock)
+				stream_info_dock->RefreshAvailablePlatforms();
 			if (vendor) {
 				obs_websocket_vendor_emit_event(vendor, "outputs_changed", nullptr);
 			}

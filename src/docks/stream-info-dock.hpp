@@ -2,9 +2,13 @@
 
 #include <QByteArray>
 #include <QFrame>
+#include <QHash>
+#include <QIcon>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkRequest>
 #include <QString>
+#include <QVector>
 #include <functional>
 
 class QComboBox;
@@ -25,7 +29,11 @@ public:
 	~StreamInfoDock() override;
 
 	void ReloadAccounts();
+	void RefreshAvailablePlatforms();
 	void OpenSettings();
+
+protected:
+	void showEvent(QShowEvent *event) override;
 
 private:
 	enum Platform { Twitch, YouTube, Kick };
@@ -65,8 +73,17 @@ private:
 	QLabel *resultLabel = nullptr;
 	QTimer *searchTimer = nullptr;
 
+	struct CategoryEntry {
+		QString id;
+		QString name;
+		QString boxArt;
+	};
+	QVector<CategoryEntry> categoryCatalog;
+	QHash<QString, QIcon> categoryIcons;
+
 	static const char *PlatformKey(Platform platform);
 	void BuildUi();
+	void RefreshPlatformList();
 	void SwitchPlatform(int index);
 	void LoadPlatform();
 	void SavePlatform();
@@ -88,6 +105,11 @@ private:
 	void LoadYouTubeBroadcast();
 	void ApplyYouTubeBroadcast(const QJsonObject &item);
 	void LoadKickChannel();
+	void LoadCategoryCatalog();
+	void AppendCategoriesFromJson(const QJsonArray &rows, const char *idKey, const char *nameKey, const char *artKey);
+	void EnsureCategoryInCatalog(const QString &id, const QString &name, const QString &boxArt = QString());
+	void PopulateCategoryCombo();
+	void FetchCategoryIcon(const QString &id, const QString &boxArt);
 	void SearchCategories();
 	void Apply();
 	void ApplyTwitch();
