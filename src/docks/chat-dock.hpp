@@ -3,6 +3,7 @@
 #include <QFrame>
 #include <QHash>
 #include <QList>
+#include <QStringList>
 #include <QPointer>
 #include <QSet>
 #include <QString>
@@ -155,6 +156,9 @@ private:
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
 	qint64 youtubeLastTransitionMs = 0;
+	qint64 youtubeLastDeleteSyncMs = 0;
+	QStringList ytReplayTokens;
+	int ytReplayIndex = 0;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
@@ -214,6 +218,9 @@ private:
 	void TickYouTubeWaitLive();
 	void PollYouTubeChat();
 	void SendYouTubeMessage(const QString &text);
+	bool AdoptYouTubeMessage(const ChatMessage &msg);
+	bool HandleYouTubeControlItem(const QJsonObject &obj);
+	void ReplayYouTubeDeletes();
 	void ReportYouTubeHttpError(int status, const QByteArray &body);
 
 	void ConnectKickChat();

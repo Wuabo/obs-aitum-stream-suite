@@ -73,6 +73,24 @@ public:
 		return lab;
 	}
 
+	QLabel *addPlain(const QString &text)
+	{
+		auto *lab = new QLabel(this);
+		lab->setTextFormat(Qt::PlainText);
+		lab->setWordWrap(false);
+		QFont font(QStringLiteral("Segoe UI"));
+		font.setPixelSize(13);
+		lab->setFont(font);
+		lab->setStyleSheet(QStringLiteral(
+			"background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
+		lab->setText(text);
+		const int w = qMax(lab->fontMetrics().horizontalAdvance(text) + 1, 4);
+		const int h = qMax(lab->fontMetrics().height(), 16);
+		lab->setFixedSize(w, h);
+		segs.append({lab, w, h});
+		return lab;
+	}
+
 	QLabel *addEmoteSlot(int size = 18)
 	{
 		auto *lab = new QLabel(this);
@@ -154,6 +172,88 @@ private:
 		}
 	}
 };
+
+struct EmojiRun {
+	QString text;
+	bool emoji = false;
+	QString url;
+};
+
+bool EmojiStartCp(char32_t cp)
+{
+	return (cp >= 0x231A && cp <= 0x231B) || (cp >= 0x23E9 && cp <= 0x23FA) || (cp >= 0x25AA && cp <= 0x27BF) ||
+	       (cp >= 0x2B05 && cp <= 0x2B55) || (cp >= 0x1F1E6 && cp <= 0x1F1FF) || (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+	       cp == 0x2764 || cp == 0x2763 || cp == 0x3030 || cp == 0x303D || cp == 0x3297 || cp == 0x3299 ||
+	       cp == 0x00A9 || cp == 0x00AE || cp == 0x203C || cp == 0x2049 || cp == 0x2122 || cp == 0x2139 ||
+	       (cp >= 0x2194 && cp <= 0x21AA) || (cp >= 0x2934 && cp <= 0x2935) || (cp >= 0x2B05 && cp <= 0x2B07);
+}
+
+bool EmojiContinueCp(char32_t cp)
+{
+	return cp == 0xFE0F || cp == 0x200D || cp == 0x20E3 || (cp >= 0x1F3FB && cp <= 0x1F3FF) || EmojiStartCp(cp);
+}
+
+char32_t ReadCp(const QString &text, int i, int *step)
+{
+	if (text.at(i).isHighSurrogate() && i + 1 < text.size() && text.at(i + 1).isLowSurrogate()) {
+		*step = 2;
+		return QChar::surrogateToUcs4(text.at(i), text.at(i + 1));
+	}
+	*step = 1;
+	return text.at(i).unicode();
+}
+
+QVector<EmojiRun> SplitEmojiRuns(const QString &text)
+{
+	QVector<EmojiRun> runs;
+	QString plain;
+	auto flush = [&] {
+		if (plain.isEmpty())
+			return;
+		runs.append({plain, false, {}});
+		plain.clear();
+	};
+	int i = 0;
+	while (i < text.size()) {
+		int step = 1;
+		const char32_t cp = ReadCp(text, i, &step);
+		if (!EmojiStartCp(cp)) {
+			plain += text.mid(i, step);
+			i += step;
+			continue;
+		}
+		flush();
+		QVector<uint> cluster;
+		cluster.append(cp);
+		int j = i + step;
+		while (j < text.size()) {
+			int nstep = 1;
+			const char32_t ncp = ReadCp(text, j, &nstep);
+			const bool zwj = !cluster.isEmpty() && cluster.last() == 0x200D;
+			if (!EmojiContinueCp(ncp) && !zwj)
+				break;
+			if (zwj && !EmojiStartCp(ncp) && ncp != 0xFE0F)
+				break;
+			cluster.append(ncp);
+			j += nstep;
+		}
+		QStringList parts;
+		for (uint c : cluster) {
+			if (c == 0xFE0F)
+				continue;
+			parts.append(QString::number(c, 16));
+		}
+		EmojiRun run;
+		run.emoji = true;
+		run.text = text.mid(i, j - i);
+		run.url = QStringLiteral("https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/%1.png")
+				  .arg(parts.join(QLatin1Char('-')));
+		runs.append(run);
+		i = j;
+	}
+	flush();
+	return runs;
+}
 
 } // namespace
 #include <util/base.h>
@@ -2227,6 +2327,82 @@ void ChatDock::TryYouTubeGoLive()
 	});
 }
 
+bool ChatDock::HandleYouTubeControlItem(const QJsonObject &obj)
+{
+	const QJsonObject snip = obj.value(QStringLiteral("snippet")).toObject();
+	const QString type = snip.value(QStringLiteral("type")).toString();
+	const bool deleted = type == QLatin1String("tombstone") || type == QLatin1String("messageDeletedEvent") ||
+			     type == QLatin1String("messageRetractedEvent") ||
+			     type.contains(QLatin1String("eleted"), Qt::CaseInsensitive) ||
+			     type.contains(QLatin1String("etract"), Qt::CaseInsensitive);
+	if (type == QLatin1String("userBannedEvent")) {
+		const QJsonObject banned = snip.value(QStringLiteral("userBannedDetails"))
+						 .toObject()
+						 .value(QStringLiteral("bannedUserDetails"))
+						 .toObject();
+		const QString channelId = banned.value(QStringLiteral("channelId")).toString();
+		const QString name = banned.value(QStringLiteral("displayName")).toString();
+		const QString tip = Tr("ChatDockMessageRemovedUser").arg(name.isEmpty() ? channelId : name);
+		if (!channelId.isEmpty())
+			MarkMessagesDeletedByUser(YouTube, channelId, tip);
+		if (!name.isEmpty())
+			MarkMessagesDeletedByUser(YouTube, name, tip);
+		return true;
+	}
+	if (!deleted)
+		return false;
+	QStringList ids;
+	ids << obj.value(QStringLiteral("id")).toString();
+	const QJsonObject del = snip.value(QStringLiteral("messageDeletedDetails")).toObject();
+	const QJsonObject ret = snip.value(QStringLiteral("messageRetractedDetails")).toObject();
+	ids << del.value(QStringLiteral("deletedMessageId")).toString();
+	ids << ret.value(QStringLiteral("retractedMessageId")).toString();
+	ids << snip.value(QStringLiteral("deletedMessageId")).toString();
+	bool any = false;
+	for (const QString &id : ids) {
+		if (id.isEmpty())
+			continue;
+		MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
+		any = true;
+	}
+	return true;
+}
+
+void ChatDock::ReplayYouTubeDeletes()
+{
+	if (ytLiveChatId.isEmpty() || ytReplayTokens.isEmpty())
+		return;
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if (now - youtubeLastDeleteSyncMs < 8000)
+		return;
+	youtubeLastDeleteSyncMs = now;
+	const QString token = ytReplayTokens.at(ytReplayIndex % ytReplayTokens.size());
+	++ytReplayIndex;
+	EnsureToken(YouTube, [this, token](bool ok) {
+		if (!ok || ytLiveChatId.isEmpty())
+			return;
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("liveChatId"), ytLiveChatId);
+		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
+		query.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("50"));
+		if (token != QLatin1String("*") && !token.isEmpty())
+			query.addQueryItem(QStringLiteral("pageToken"), token);
+		url.setQuery(query);
+		const QString requestUrl = QString::fromUtf8(url.toEncoded());
+		Http(requestUrl,
+		     {{QByteArrayLiteral("Authorization"),
+		       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}},
+		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+			     if (status < 200 || status >= 300)
+				     return;
+			     const QJsonArray items = QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
+			     for (const QJsonValue &row : items)
+				     HandleYouTubeControlItem(row.toObject());
+		     });
+	});
+}
+
 void ChatDock::PollYouTubeChat()
 {
 	if (ytLiveChatId.isEmpty() || youtubePollInFlight)
@@ -2256,9 +2432,10 @@ void ChatDock::PollYouTubeChat()
 			query.addQueryItem("pageToken", ytNextPage);
 		url.setQuery(query);
 		const QString requestUrl = QString::fromUtf8(url.toEncoded());
+		const QString usedToken = ytNextPage;
 		Http(requestUrl,
 		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
-		     [this](int status, const QByteArray &body, const QString &error) {
+		     [this, usedToken](int status, const QByteArray &body, const QString &error) {
 			     youtubePollInFlight = false;
 			     int interval = 5000;
 			     if (status >= 200 && status < 300) {
@@ -2292,29 +2469,19 @@ void ChatDock::PollYouTubeChat()
 					     DebugYouTube(QStringLiteral("poll HTTP 200 → Connected"));
 					     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
 				     }
+				     const QString pageKey = usedToken.isEmpty() ? QStringLiteral("*") : usedToken;
+				     if (!ytReplayTokens.contains(pageKey))
+					     ytReplayTokens.append(pageKey);
+				     while (ytReplayTokens.size() > 4)
+					     ytReplayTokens.removeFirst();
+				     ReplayYouTubeDeletes();
 				     const QJsonArray items = root.value("items").toArray();
 				     for (const QJsonValue &row : items) {
 					     const QJsonObject obj = row.toObject();
+					     if (HandleYouTubeControlItem(obj))
+						     continue;
 					     const QJsonObject snip = obj.value("snippet").toObject();
 					     const QString type = snip.value("type").toString();
-					     if (type == QLatin1String("tombstone")) {
-						     const QString tombId = obj.value(QStringLiteral("id")).toString();
-						     if (!tombId.isEmpty())
-							     MarkMessageDeleted(tombId, Tr("ChatDockMessageRemoved"));
-						     continue;
-					     }
-					     if (type == QLatin1String("messageDeletedEvent")) {
-						     QString deletedId =
-							     snip.value(QStringLiteral("messageDeletedDetails"))
-								     .toObject()
-								     .value(QStringLiteral("deletedMessageId"))
-								     .toString();
-						     if (deletedId.isEmpty())
-							     deletedId = obj.value(QStringLiteral("id")).toString();
-						     if (!deletedId.isEmpty())
-							     MarkMessageDeleted(deletedId, Tr("ChatDockMessageRemoved"));
-						     continue;
-					     }
 					     /* Prefer typed text, then displayMessage (covers Super Chat / stickers / etc.). */
 					     QString text =
 						     snip.value("textMessageDetails").toObject().value("messageText").toString();
@@ -2361,7 +2528,10 @@ void ChatDock::PollYouTubeChat()
 						     msg.badges.append({QStringLiteral("verified"),
 									QStringLiteral("yt-role:verified"),
 									QStringLiteral("Verified")});
-					     AppendMessage(msg);
+					     /* Reuse the local echo so a later tombstone hits the same row.
+					      * Insert id and list id are often different. */
+					     if (!AdoptYouTubeMessage(msg))
+						     AppendMessage(msg);
 				     }
 			     } else {
 				     const QString errMsg = QJsonDocument::fromJson(body)
@@ -2436,6 +2606,9 @@ void ChatDock::PollYouTubeChat()
 	});
 }
 
+static bool ItemHasChatId(const QListWidgetItem *item, const QString &want);
+static void AddChatIdAlias(QListWidgetItem *item, const QString &id);
+
 void ChatDock::SendYouTubeMessage(const QString &text)
 {
 	if (ytLiveChatId.isEmpty()) {
@@ -2483,8 +2656,8 @@ void ChatDock::SendYouTubeMessage(const QString &text)
 				     if (!realId.isEmpty() && messageList) {
 					     for (int i = 0; i < messageList->count(); ++i) {
 						     QListWidgetItem *item = messageList->item(i);
-						     if (item && item->data(Qt::UserRole + 1).toString() == localId) {
-							     item->setData(Qt::UserRole + 1, realId);
+						     if (item && ItemHasChatId(item, localId)) {
+							     AddChatIdAlias(item, realId);
 							     seenMessageIds.insert(realId);
 							     break;
 						     }
@@ -4082,10 +4255,16 @@ void ChatDock::ApplyDeletedStyleToRow(QWidget *row, QListWidgetItem *item, const
 		auto *fade = new QGraphicsOpacityEffect(body);
 		fade->setOpacity(0.55);
 		body->setGraphicsEffect(fade);
-		if (auto *lab = qobject_cast<QLabel *>(body)) {
+		const auto labels = body->findChildren<QLabel *>();
+		QList<QLabel *> strike = labels;
+		if (auto *lab = qobject_cast<QLabel *>(body))
+			strike.append(lab);
+		for (QLabel *lab : strike) {
 			QFont f = lab->font();
 			f.setStrikeOut(true);
 			lab->setFont(f);
+			lab->setStyleSheet(QStringLiteral(
+				"background: transparent; color: #7a7a7a; border: none; padding: 0; margin: 0;"));
 		}
 	}
 
@@ -4106,22 +4285,86 @@ void ChatDock::ApplyDeletedStyleToRow(QWidget *row, QListWidgetItem *item, const
 		LayoutMessageRow(row, item, messageList->viewport()->width());
 }
 
+static bool ItemHasChatId(const QListWidgetItem *item, const QString &want)
+{
+	if (!item || want.isEmpty())
+		return false;
+	const QString primary = item->data(Qt::UserRole + 1).toString();
+	if (primary == want || primary.compare(want, Qt::CaseInsensitive) == 0)
+		return true;
+	for (const QString &id : item->data(Qt::UserRole + 6).toStringList()) {
+		if (id == want || id.compare(want, Qt::CaseInsensitive) == 0)
+			return true;
+	}
+	return false;
+}
+
+static void AddChatIdAlias(QListWidgetItem *item, const QString &id)
+{
+	if (!item || id.isEmpty())
+		return;
+	QStringList ids = item->data(Qt::UserRole + 6).toStringList();
+	const QString primary = item->data(Qt::UserRole + 1).toString();
+	if (!primary.isEmpty() && !ids.contains(primary))
+		ids.append(primary);
+	if (!ids.contains(id))
+		ids.append(id);
+	item->setData(Qt::UserRole + 6, ids);
+	item->setData(Qt::UserRole + 1, id);
+}
+
+bool ChatDock::AdoptYouTubeMessage(const ChatMessage &msg)
+{
+	if (!messageList || msg.id.isEmpty())
+		return false;
+	for (int i = 0; i < messageList->count(); ++i) {
+		if (ItemHasChatId(messageList->item(i), msg.id))
+			return true;
+	}
+	for (int i = messageList->count() - 1; i >= 0; --i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || item->data(Qt::UserRole).toBool())
+			continue;
+		if (item->data(Qt::UserRole + 4).toInt() != int(YouTube))
+			continue;
+		if (item->data(Qt::UserRole + 7).toBool())
+			continue;
+		bool echo = item->data(Qt::UserRole + 1).toString().startsWith(QLatin1String("local-yt-"));
+		if (!echo) {
+			for (const QString &id : item->data(Qt::UserRole + 6).toStringList()) {
+				if (id.startsWith(QLatin1String("local-yt-"))) {
+					echo = true;
+					break;
+				}
+			}
+		}
+		if (!echo)
+			continue;
+		if (item->data(Qt::UserRole + 5).toString() != msg.text)
+			continue;
+		AddChatIdAlias(item, msg.id);
+		item->setData(Qt::UserRole + 7, true);
+		seenMessageIds.insert(msg.id);
+		return true;
+	}
+	return false;
+}
+
 void ChatDock::MarkMessageDeleted(const QString &messageId, const QString &tooltip)
 {
 	if (messageId.isEmpty() || !messageList)
 		return;
 	const QString want = messageId.trimmed();
+	bool found = false;
 	for (int i = 0; i < messageList->count(); ++i) {
 		QListWidgetItem *item = messageList->item(i);
-		if (!item)
-			continue;
-		const QString have = item->data(Qt::UserRole + 1).toString().trimmed();
-		if (have != want && have.compare(want, Qt::CaseInsensitive) != 0)
+		if (!ItemHasChatId(item, want))
 			continue;
 		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tooltip);
-		return;
+		found = true;
 	}
-	blog(LOG_INFO, "[Stream Suite] Deleted message id not in chat list yet: %s", want.toUtf8().constData());
+	if (!found)
+		blog(LOG_INFO, "[Stream Suite] Deleted message id not in chat list yet: %s", want.toUtf8().constData());
 }
 
 void ChatDock::MarkMessagesDeletedByUser(Platform platform, const QString &userLogin, const QString &tooltip)
@@ -4187,6 +4430,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	item->setData(Qt::UserRole + 3,
 		      msg.userLogin.isEmpty() ? msg.user.toLower() : msg.userLogin.toLower());
 	item->setData(Qt::UserRole + 4, int(msg.platform));
+	item->setData(Qt::UserRole + 5, msg.text);
 
 	auto *row = new QFrame(messageList);
 	row->setObjectName(QStringLiteral("chatMsgRow"));
@@ -4227,18 +4471,27 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		/* Same path for Kick — HTML <img> only showed the first GIF frame. */
 		body = BuildKickEmoteBody(msg, prefixHtml, row);
 	} else {
-		auto *label = new QLabel(row);
-		label->setObjectName(QStringLiteral("chatMsgBody"));
-		label->setTextFormat(Qt::RichText);
-		label->setWordWrap(true);
-		label->setOpenExternalLinks(true);
-		label->setTextInteractionFlags(Qt::TextBrowserInteraction);
-		label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-		label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-		label->setStyleSheet(
-			QStringLiteral("background: transparent; color: #e6e6e6; border: none; padding: 0; margin: 0;"));
-		label->setText(prefixHtml + Linkify(EscapeHtml(msg.text)));
-		body = label;
+		/* Emoji are images (Twemoji). Qt text + the OBS theme color drops color emoji. */
+		auto *flow = new ChatFlowBody(row);
+		flow->addHtml(prefixHtml);
+		for (const EmojiRun &run : SplitEmojiRuns(msg.text)) {
+			if (run.emoji) {
+				QLabel *slot = flow->addEmoteSlot(18);
+				slot->setToolTip(run.text);
+				FetchImageToLabel(run.url, slot, 18, run.url);
+				continue;
+			}
+			const QStringList parts = run.text.split(QRegularExpression(QStringLiteral("(\\s+)")));
+			for (const QString &part : parts) {
+				if (part.isEmpty())
+					continue;
+				if (part.startsWith(QLatin1String("http://")) || part.startsWith(QLatin1String("https://")))
+					flow->addHtml(Linkify(EscapeHtml(part)));
+				else
+					flow->addPlain(part);
+			}
+		}
+		body = flow;
 	}
 	layout->addWidget(body, 1, Qt::AlignTop);
 
