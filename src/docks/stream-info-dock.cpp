@@ -52,7 +52,8 @@ extern ChatDock *chat_dock;
 void save_current_profile_config(bool save_docks);
 
 static const int kRedirectPort = 17654;
-static const char *kTwitchScopes = "channel:manage:broadcast chat:read chat:edit";
+static const char *kTwitchScopes =
+	"channel:manage:broadcast chat:read chat:edit moderator:manage:chat_messages moderator:manage:banned_users";
 static const QSize kCategoryIconSize(24, 32);
 
 /* liveBroadcasts.snippet.liveChatId — NOT activeLiveChatId (that is videos.liveStreamingDetails). */
@@ -998,6 +999,18 @@ void StreamInfoDock::EnsureToken(std::function<void(bool)> done)
 	});
 }
 
+void StreamInfoDock::RequestModerationAuth(int platformId)
+{
+	const int idx = platformCombo->findData(platformId);
+	if (idx < 0) {
+		SetStatus(Tr("StreamInfoUnavailable"));
+		return;
+	}
+	if (platformCombo->currentIndex() != idx)
+		platformCombo->setCurrentIndex(idx);
+	BeginConnect();
+}
+
 void StreamInfoDock::BeginConnect()
 {
 	SavePlatform();
@@ -1131,7 +1144,8 @@ void StreamInfoDock::BeginAuthCode()
 		query.addQueryItem("prompt", "consent");
 	} else {
 		url = QUrl(QStringLiteral("https://id.kick.com/oauth/authorize"));
-		query.addQueryItem("scope", "user:read channel:read channel:write chat:write");
+		query.addQueryItem("scope",
+				   "user:read channel:read channel:write chat:write moderation:ban moderation:chat_message:manage");
 	}
 	url.setQuery(query);
 	QDesktopServices::openUrl(url);
@@ -1184,6 +1198,16 @@ void StreamInfoDock::AcceptToken(const QJsonObject &json)
 	accessToken = json.value("access_token").toString();
 	if (json.contains("refresh_token"))
 		refreshToken = json.value("refresh_token").toString();
+	QStringList granted;
+	const QJsonValue scopeValue = json.value(QStringLiteral("scope"));
+	if (scopeValue.isArray()) {
+		for (const QJsonValue &part : scopeValue.toArray())
+			granted.append(part.toString());
+	} else if (scopeValue.isString()) {
+		granted = scopeValue.toString().split(' ', Qt::SkipEmptyParts);
+	}
+	if (!granted.isEmpty())
+		blog(LOG_INFO, "[Stream Suite] OAuth scopes: %s", granted.join(' ').toUtf8().constData());
 	const int expiresIn = json.value("expires_in").toInt(0);
 	expiresAt = expiresIn > 0 ? QDateTime::currentSecsSinceEpoch() + expiresIn : 0;
 	SavePlatform();

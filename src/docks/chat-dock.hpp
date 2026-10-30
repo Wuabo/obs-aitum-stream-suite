@@ -102,6 +102,7 @@ private:
 		QString id;
 		QString user;
 		QString userLogin; /* Twitch login / Kick slug for delete-by-user matching */
+		QString actorId; /* Kick numeric user id. YouTube channel id stays in userLogin. */
 		QString color;
 		QString text;
 		qint64 ts = 0;
@@ -234,6 +235,12 @@ private:
 	void IngestYouTubeLiveAction(const QJsonObject &action);
 	void SendYouTubeMessage(const QString &text);
 	void ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor);
+	void ShowMessageActions(QListWidgetItem *item, QWidget *anchor);
+	void AskModerationReconnect(Platform platform);
+	void DeleteTwitchMessage(const QString &messageId);
+	void ModerateTwitchUser(const QString &userId, const QString &login, const QString &displayName, int timeoutSeconds);
+	void DeleteKickMessage(const QString &messageId, const QString &uiId);
+	void ModerateKickUser(const QString &userId, const QString &displayName, const QString &matchLogin, int timeoutMinutes);
 	void DeleteYouTubeMessage(const QStringList &ids, int index, const QString &uiId, const QString &channelId,
 				  const QString &text, qint64 publishedMs);
 	void FindYouTubeMessageToDelete(const QString &uiId, const QString &channelId, const QString &text, qint64 publishedMs,

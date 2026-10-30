@@ -1,4 +1,5 @@
 #include "chat-dock.hpp"
+#include "stream-info-dock.hpp"
 #include <src/utils/icon.hpp>
 
 #include <obs-frontend-api.h>
@@ -28,6 +29,8 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QMessageBox>
+#include <QEnterEvent>
+#include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
 #include <QPainterPath>
@@ -42,7 +45,6 @@
 #include <QSizePolicy>
 #include <QSvgRenderer>
 #include <QTextDocument>
-#include <QToolButton>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -177,6 +179,57 @@ private:
 			x += sw + 2;
 			rowH = qMax(rowH, sh);
 		}
+	}
+};
+
+/* Painted control. A QToolButton picked up the OBS theme and drew an empty circle. */
+class ChatActionsButton final : public QWidget {
+public:
+	std::function<void()> onClick;
+
+	explicit ChatActionsButton(QWidget *parent = nullptr) : QWidget(parent)
+	{
+		setObjectName(QStringLiteral("chatMsgActions"));
+		setFixedSize(18, 18);
+		setCursor(Qt::PointingHandCursor);
+		setAttribute(Qt::WA_Hover, true);
+		setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override
+	{
+		QPainter painter(this);
+		painter.setRenderHint(QPainter::Antialiasing, true);
+		if (underMouse()) {
+			painter.setPen(Qt::NoPen);
+			painter.setBrush(QColor(46, 56, 74));
+			painter.drawRoundedRect(rect(), 4, 4);
+		}
+		painter.setPen(Qt::NoPen);
+		painter.setBrush(QColor(230, 235, 242));
+		const qreal cx = width() / 2.0;
+		painter.drawEllipse(QPointF(cx, 3.5), 1.25, 1.25);
+		painter.drawEllipse(QPointF(cx, 9.0), 1.25, 1.25);
+		painter.drawEllipse(QPointF(cx, 14.5), 1.25, 1.25);
+	}
+
+	void mouseReleaseEvent(QMouseEvent *event) override
+	{
+		if (event->button() == Qt::LeftButton && rect().contains(event->pos()) && onClick)
+			onClick();
+	}
+
+	void enterEvent(QEnterEvent *event) override
+	{
+		QWidget::enterEvent(event);
+		update();
+	}
+
+	void leaveEvent(QEvent *event) override
+	{
+		QWidget::leaveEvent(event);
+		update();
 	}
 };
 
@@ -1805,6 +1858,8 @@ void ChatDock::HandleTwitchLine(const QString &line)
 			msg.color = val;
 		else if (key == QLatin1String("id"))
 			msg.id = val;
+		else if (key == QLatin1String("user-id") && !val.isEmpty())
+			msg.actorId = val;
 		else if (key == QLatin1String("badges"))
 			badgesTag = val;
 		else if (key == QLatin1String("emotes"))
@@ -3383,20 +3438,6 @@ static QString YouTubeListedText(const QJsonObject &snippet)
 	return text;
 }
 
-static QIcon YouTubeActionsIcon()
-{
-	QPixmap pix(16, 16);
-	pix.fill(Qt::transparent);
-	QPainter painter(&pix);
-	painter.setRenderHint(QPainter::Antialiasing, true);
-	painter.setPen(Qt::NoPen);
-	painter.setBrush(QColor(QStringLiteral("#e6ebf2")));
-	painter.drawEllipse(QPointF(8, 2.5), 1.6, 1.6);
-	painter.drawEllipse(QPointF(8, 8), 1.6, 1.6);
-	painter.drawEllipse(QPointF(8, 13.5), 1.6, 1.6);
-	return QIcon(pix);
-}
-
 void ChatDock::ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor)
 {
 	if (!item || !messageList)
@@ -3449,6 +3490,362 @@ void ChatDock::ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor)
 			return;
 		UnbanYouTubeUser(channelId, name);
 	}
+}
+
+void ChatDock::ShowMessageActions(QListWidgetItem *item, QWidget *anchor)
+{
+	if (!item)
+		return;
+	const auto platform = static_cast<Platform>(item->data(Qt::UserRole + 4).toInt());
+	if (platform == YouTube) {
+		ShowYouTubeMessageMenu(item, anchor);
+		return;
+	}
+
+	const QString actorId = item->data(Qt::UserRole + 8).toString();
+	const QString login = item->data(Qt::UserRole + 3).toString();
+	QString name = item->data(Qt::UserRole + 9).toString();
+	if (name.isEmpty())
+		name = login.isEmpty() ? actorId : login;
+	const QString messageId = item->data(Qt::UserRole + 1).toString();
+	const bool alreadyDeleted = item->data(Qt::UserRole + 2).toBool();
+	const bool ownTwitch = platform == Twitch && !login.isEmpty() &&
+			       login.compare(twitchLogin, Qt::CaseInsensitive) == 0;
+	const bool ownKick = platform == Kick && !actorId.isEmpty() && actorId == accounts[Kick].userId;
+	const bool canModerate = platform == Twitch ? (!login.isEmpty() && !ownTwitch) : (!actorId.isEmpty() && !ownKick);
+
+	QMenu menu(this);
+	QAction *removeAction = nullptr;
+	if (!alreadyDeleted)
+		removeAction = menu.addAction(Tr("ChatDockDeleteMessage"));
+	QAction *timeoutAction = nullptr;
+	QAction *banAction = nullptr;
+	QAction *unbanAction = nullptr;
+	if (canModerate) {
+		timeoutAction = menu.addAction(Tr("ChatDockTimeout"));
+		banAction = menu.addAction(Tr("ChatDockBanUser"));
+		unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
+	}
+	if (menu.actions().isEmpty())
+		return;
+	const QPoint pos = anchor ? anchor->mapToGlobal(QPoint(0, anchor->height())) : QCursor::pos();
+	QAction *chosen = menu.exec(pos);
+	if (!chosen)
+		return;
+
+	if (chosen == removeAction) {
+		if (platform == Twitch) {
+			if (messageId.startsWith(QLatin1String("local-tw-")) || messageId.startsWith(QLatin1String("tw-"))) {
+				AppendSystemMessage(Tr("ChatDockDeleteNoId"), Twitch);
+				return;
+			}
+			DeleteTwitchMessage(messageId);
+			return;
+		}
+		if (messageId.startsWith(QLatin1String("local-kick-"))) {
+			AppendSystemMessage(Tr("ChatDockDeleteNoId"), Kick);
+			return;
+		}
+		DeleteKickMessage(messageId, messageId);
+		return;
+	}
+	if (chosen == timeoutAction) {
+		if (platform == Twitch) {
+			ModerateTwitchUser(actorId, login, name, 600);
+		} else {
+			ModerateKickUser(actorId, name, login, 10);
+		}
+		return;
+	}
+	if (chosen == banAction) {
+		if (QMessageBox::question(this, Tr("ChatDockBanUser"), Tr("ChatDockBanConfirm").arg(name)) != QMessageBox::Yes)
+			return;
+		if (platform == Twitch) {
+			ModerateTwitchUser(actorId, login, name, 0);
+		} else {
+			ModerateKickUser(actorId, name, login, 0);
+		}
+		return;
+	}
+	if (chosen == unbanAction) {
+		if (QMessageBox::question(this, Tr("ChatDockUnbanUser"), Tr("ChatDockUnbanConfirm").arg(name)) !=
+		    QMessageBox::Yes)
+			return;
+		if (platform == Twitch) {
+			ModerateTwitchUser(actorId, login, name, -1);
+		} else {
+			ModerateKickUser(actorId, name, login, -1);
+		}
+	}
+}
+
+extern StreamInfoDock *stream_info_dock;
+
+static QString TwitchApiError(const QByteArray &body, int status)
+{
+	const QString message = QJsonDocument::fromJson(body).object().value(QStringLiteral("message")).toString();
+	return message.isEmpty() ? QString::number(status) : message;
+}
+
+void ChatDock::AskModerationReconnect(Platform platform)
+{
+	AppendSystemMessage(Tr("ChatDockModReconnect").arg(PlatformLabel(platform)), platform);
+	if (stream_info_dock)
+		stream_info_dock->RequestModerationAuth(int(platform));
+}
+
+void ChatDock::DeleteTwitchMessage(const QString &messageId)
+{
+	const QString userId = accounts[Twitch].userId;
+	if (messageId.isEmpty() || userId.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), QStringLiteral("id")), Twitch);
+		return;
+	}
+	EnsureToken(Twitch, [this, messageId, userId](bool ok) {
+		if (!ok) {
+			AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), QStringLiteral("auth")), Twitch);
+			return;
+		}
+		QUrl url(QStringLiteral("https://api.twitch.tv/helix/moderation/chat"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("broadcaster_id"), userId);
+		query.addQueryItem(QStringLiteral("moderator_id"), userId);
+		query.addQueryItem(QStringLiteral("message_id"), messageId);
+		url.setQuery(query);
+		const Account &acc = accounts[Twitch];
+		Http(QString::fromUtf8(url.toEncoded()),
+		     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
+		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
+		     {}, "DELETE", [this, messageId](int status, const QByteArray &body, const QString &error) {
+			     if (status == 204 || (status >= 200 && status < 300)) {
+				     blog(LOG_INFO, "[Stream Suite] Twitch message deleted");
+				     MarkMessageDeleted(messageId, Tr("ChatDockMessageRemoved"));
+				     return;
+			     }
+			     if (status == 401 || status == 403) {
+				     blog(LOG_WARNING, "[Stream Suite] Twitch delete HTTP %d: %s", status, body.left(180).constData());
+				     AskModerationReconnect(Twitch);
+				     return;
+			     }
+			     const QString reason = error.isEmpty() ? TwitchApiError(body, status) : error;
+			     blog(LOG_WARNING, "[Stream Suite] Twitch delete HTTP %d: %s", status, reason.toUtf8().constData());
+			     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), reason), Twitch);
+		     });
+	});
+}
+
+void ChatDock::ModerateTwitchUser(const QString &userId, const QString &login, const QString &displayName,
+				  int timeoutSeconds)
+{
+	const bool numericId = !userId.isEmpty() &&
+			       std::all_of(userId.cbegin(), userId.cend(), [](QChar ch) { return ch.isDigit(); });
+	if (!numericId) {
+		if (login.isEmpty()) {
+			AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QStringLiteral("id")), Twitch);
+			return;
+		}
+		EnsureToken(Twitch, [this, login, displayName, timeoutSeconds](bool ok) {
+			if (!ok) {
+				AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QStringLiteral("auth")),
+						    Twitch);
+				return;
+			}
+			QUrl url(QStringLiteral("https://api.twitch.tv/helix/users"));
+			QUrlQuery query;
+			query.addQueryItem(QStringLiteral("login"), login);
+			url.setQuery(query);
+			const Account &acc = accounts[Twitch];
+			Http(QString::fromUtf8(url.toEncoded()),
+			     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
+			      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
+			     {}, "GET", [this, login, displayName, timeoutSeconds](int status, const QByteArray &body, const QString &) {
+				     const QJsonArray data = QJsonDocument::fromJson(body).object().value(QStringLiteral("data")).toArray();
+				     if (status < 200 || status >= 300 || data.isEmpty()) {
+					     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QString::number(status)),
+								 Twitch);
+					     return;
+				     }
+				     const QString id = data.at(0).toObject().value(QStringLiteral("id")).toString();
+				     ModerateTwitchUser(id, login, displayName, timeoutSeconds);
+			     });
+		});
+		return;
+	}
+
+	const QString moderatorId = accounts[Twitch].userId;
+	if (moderatorId.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QStringLiteral("id")), Twitch);
+		return;
+	}
+	const bool unban = timeoutSeconds < 0;
+	const QString actionLabel = unban ? Tr("ChatDockUnbanUser")
+					  : (timeoutSeconds > 0 ? Tr("ChatDockTimeout") : Tr("ChatDockBanUser"));
+	EnsureToken(Twitch, [this, userId, login, displayName, timeoutSeconds, moderatorId, unban, actionLabel](bool ok) {
+		if (!ok) {
+			AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, QStringLiteral("auth")), Twitch);
+			return;
+		}
+		QUrl url(QStringLiteral("https://api.twitch.tv/helix/moderation/bans"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("broadcaster_id"), moderatorId);
+		query.addQueryItem(QStringLiteral("moderator_id"), moderatorId);
+		QByteArray payload;
+		const char *verb = "POST";
+		if (unban) {
+			query.addQueryItem(QStringLiteral("user_id"), userId);
+			verb = "DELETE";
+		} else {
+			QJsonObject data;
+			data.insert(QStringLiteral("user_id"), userId);
+			if (timeoutSeconds > 0)
+				data.insert(QStringLiteral("duration"), timeoutSeconds);
+			data.insert(QStringLiteral("reason"), timeoutSeconds > 0 ? QStringLiteral("Timeout") : QStringLiteral("Ban"));
+			QJsonObject body;
+			body.insert(QStringLiteral("data"), data);
+			payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
+		}
+		url.setQuery(query);
+		const Account &acc = accounts[Twitch];
+		QList<QPair<QByteArray, QByteArray>> headers = {
+			{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
+			{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}};
+		if (!payload.isEmpty())
+			headers.append({QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")});
+		Http(QString::fromUtf8(url.toEncoded()), headers, payload, verb,
+		     [this, login, displayName, timeoutSeconds, unban, actionLabel](int status, const QByteArray &body,
+										    const QString &error) {
+			     if (status == 401 || status == 403) {
+				     blog(LOG_WARNING, "[Stream Suite] Twitch moderation HTTP %d: %s", status, body.left(180).constData());
+				     AskModerationReconnect(Twitch);
+				     return;
+			     }
+			     if (status < 200 || status >= 300) {
+				     const QString reason = error.isEmpty() ? TwitchApiError(body, status) : error;
+				     blog(LOG_WARNING, "[Stream Suite] Twitch moderation HTTP %d: %s", status,
+					  reason.toUtf8().constData());
+				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, reason), Twitch);
+				     return;
+			     }
+			     blog(LOG_INFO, "[Stream Suite] Twitch moderation ok");
+			     if (unban) {
+				     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), Twitch);
+				     return;
+			     }
+			     const QString tip = timeoutSeconds > 0 ? Tr("ChatDockUserTimedOut").arg(displayName)
+								    : Tr("ChatDockMessageRemovedUser").arg(displayName);
+			     MarkMessagesDeletedByUser(Twitch, login, tip);
+			     AppendSystemMessage(timeoutSeconds > 0 ? Tr("ChatDockUserTimedOut").arg(displayName)
+								    : Tr("ChatDockUserBanned").arg(displayName),
+						 Twitch);
+		     });
+	});
+}
+
+void ChatDock::DeleteKickMessage(const QString &messageId, const QString &uiId)
+{
+	if (messageId.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockDeleteNoId"), Kick);
+		return;
+	}
+	EnsureToken(Kick, [this, messageId, uiId](bool ok) {
+		if (!ok) {
+			AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), QStringLiteral("auth")),
+					    Kick);
+			return;
+		}
+		const QString url = QStringLiteral("https://api.kick.com/public/v1/chat/") +
+				    QString::fromUtf8(QUrl::toPercentEncoding(messageId));
+		Http(url,
+		     {{QByteArrayLiteral("Authorization"),
+		       QByteArrayLiteral("Bearer ") + accounts[Kick].accessToken.toUtf8()},
+		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
+		     {}, "DELETE", [this, uiId](int status, const QByteArray &body, const QString &error) {
+			     if (status == 204 || (status >= 200 && status < 300)) {
+				     blog(LOG_INFO, "[Stream Suite] Kick message deleted");
+				     MarkMessageDeleted(uiId, Tr("ChatDockMessageRemoved"));
+				     return;
+			     }
+			     if (status == 401 || status == 403) {
+				     blog(LOG_WARNING, "[Stream Suite] Kick delete HTTP %d: %s", status, body.left(180).constData());
+				     AskModerationReconnect(Kick);
+				     return;
+			     }
+			     const QString reason = error.isEmpty()
+							    ? QJsonDocument::fromJson(body).object().value(QStringLiteral("message")).toString()
+							    : error;
+			     blog(LOG_WARNING, "[Stream Suite] Kick delete HTTP %d: %s", status,
+				  reason.isEmpty() ? body.left(160).constData() : reason.toUtf8().constData());
+			     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"),
+										reason.isEmpty() ? QString::number(status) : reason),
+						 Kick);
+		     });
+	});
+}
+
+void ChatDock::ModerateKickUser(const QString &userId, const QString &displayName, const QString &matchLogin,
+				int timeoutMinutes)
+{
+	const QString broadcaster = kickChannelId.isEmpty() ? accounts[Kick].userId : kickChannelId;
+	if (userId.isEmpty() || broadcaster.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QStringLiteral("id")), Kick);
+		return;
+	}
+	const bool unban = timeoutMinutes < 0;
+	const QString actionLabel = unban ? Tr("ChatDockUnbanUser")
+					  : (timeoutMinutes > 0 ? Tr("ChatDockTimeout") : Tr("ChatDockBanUser"));
+	EnsureToken(Kick, [this, userId, displayName, matchLogin, timeoutMinutes, broadcaster, unban, actionLabel](bool ok) {
+		if (!ok) {
+			AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, QStringLiteral("auth")), Kick);
+			return;
+		}
+		QJsonObject payload;
+		payload.insert(QStringLiteral("broadcaster_user_id"), broadcaster.toLongLong());
+		payload.insert(QStringLiteral("user_id"), userId.toLongLong());
+		if (!unban && timeoutMinutes > 0) {
+			payload.insert(QStringLiteral("duration"), timeoutMinutes);
+			payload.insert(QStringLiteral("reason"), QStringLiteral("Timeout"));
+		} else if (!unban) {
+			payload.insert(QStringLiteral("reason"), QStringLiteral("Ban"));
+		}
+		Http(QStringLiteral("https://api.kick.com/public/v1/moderation/bans"),
+		     {{QByteArrayLiteral("Authorization"),
+		       QByteArrayLiteral("Bearer ") + accounts[Kick].accessToken.toUtf8()},
+		      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")},
+		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
+		     QJsonDocument(payload).toJson(QJsonDocument::Compact), unban ? "DELETE" : "POST",
+		     [this, userId, displayName, matchLogin, timeoutMinutes, unban, actionLabel](int status, const QByteArray &body,
+										      const QString &error) {
+			     if (status == 401 || status == 403) {
+				     blog(LOG_WARNING, "[Stream Suite] Kick moderation HTTP %d: %s", status, body.left(180).constData());
+				     AskModerationReconnect(Kick);
+				     return;
+			     }
+			     if (status < 200 || status >= 300) {
+				     const QString reason =
+					     error.isEmpty() ? QJsonDocument::fromJson(body).object().value(QStringLiteral("message")).toString()
+							     : error;
+				     blog(LOG_WARNING, "[Stream Suite] Kick moderation HTTP %d: %s", status,
+					  reason.isEmpty() ? body.left(160).constData() : reason.toUtf8().constData());
+				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, reason.isEmpty() ? QString::number(status)
+												       : reason),
+							 Kick);
+				     return;
+			     }
+			     blog(LOG_INFO, "[Stream Suite] Kick moderation ok for %s", userId.toUtf8().constData());
+			     if (unban) {
+				     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), Kick);
+				     return;
+			     }
+			     const QString tip = timeoutMinutes > 0 ? Tr("ChatDockUserTimedOut").arg(displayName)
+								    : Tr("ChatDockMessageRemovedUser").arg(displayName);
+			     if (!matchLogin.isEmpty())
+				     MarkMessagesDeletedByUser(Kick, matchLogin, tip);
+			     MarkMessagesDeletedByUser(Kick, userId, tip);
+			     AppendSystemMessage(timeoutMinutes > 0 ? Tr("ChatDockUserTimedOut").arg(displayName)
+								    : Tr("ChatDockUserBanned").arg(displayName),
+						 Kick);
+		     });
+	});
 }
 
 void ChatDock::DeleteYouTubeMessage(const QStringList &ids, int index, const QString &uiId, const QString &channelId,
@@ -4299,6 +4696,9 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 		msg.id = JsonId(payload.value(QStringLiteral("message_id")));
 	msg.user = sender.value(QStringLiteral("username")).toString(sender.value(QStringLiteral("slug")).toString());
 	msg.userLogin = sender.value(QStringLiteral("slug")).toString(msg.user).toLower();
+	msg.actorId = JsonId(sender.value(QStringLiteral("id")));
+	if (msg.actorId.isEmpty())
+		msg.actorId = JsonId(sender.value(QStringLiteral("user_id")));
 	if (msg.user.isEmpty())
 		msg.user = QStringLiteral("Kick");
 	msg.color = identity.value(QStringLiteral("color")).toString(QStringLiteral("#53FC18"));
@@ -5055,7 +5455,9 @@ int ChatDock::LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewport
 			QWidget *w = lay->itemAt(i) ? lay->itemAt(i)->widget() : nullptr;
 			if (!w || w == body)
 				continue;
-			side += w->objectName() == QLatin1String("chatMsgIcon") ? 18 : 14;
+			const int fixed = (w->minimumWidth() > 0 && w->minimumWidth() == w->maximumWidth()) ? w->minimumWidth()
+													  : 14;
+			side += fixed;
 			++sideCount;
 		}
 	}
@@ -5076,7 +5478,19 @@ int ChatDock::LayoutMessageRow(QWidget *row, QListWidgetItem *item, int viewport
 	}
 	body->setFixedHeight(textH);
 
-	const int contentH = qMax(18, textH);
+	int sideH = 18;
+	if (lay) {
+		for (int i = 0; i < lay->count(); ++i) {
+			QWidget *w = lay->itemAt(i) ? lay->itemAt(i)->widget() : nullptr;
+			if (!w || w == body)
+				continue;
+			const int fixedH = (w->minimumHeight() > 0 && w->minimumHeight() == w->maximumHeight())
+						   ? w->minimumHeight()
+						   : w->height();
+			sideH = qMax(sideH, fixedH);
+		}
+	}
+	const int contentH = qMax(sideH, textH);
 	const int rowH = contentH + marginT + marginB;
 	row->setFixedHeight(rowH);
 	item->setSizeHint(QSize(rowW, rowH));
@@ -5158,7 +5572,15 @@ void ChatDock::ApplyDeletedStyleToRow(QWidget *row, QListWidgetItem *item, const
 		delIcon->setPixmap(DeletedMessageIconPixmap(14));
 		delIcon->setToolTip(tooltip.isEmpty() ? Tr("ChatDockMessageRemoved") : tooltip);
 		delIcon->setCursor(Qt::WhatsThisCursor);
-		lay->addWidget(delIcon, 0, Qt::AlignTop);
+		int insertAt = lay->count();
+		for (int i = 0; i < lay->count(); ++i) {
+			QWidget *w = lay->itemAt(i) ? lay->itemAt(i)->widget() : nullptr;
+			if (w && w->objectName() == QLatin1String("chatMsgActions")) {
+				insertAt = i;
+				break;
+			}
+		}
+		lay->insertWidget(insertAt, delIcon, 0, Qt::AlignVCenter);
 	}
 
 	if (messageList)
@@ -5326,7 +5748,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		      msg.userLogin.isEmpty() ? msg.user.toLower() : msg.userLogin.toLower());
 	item->setData(Qt::UserRole + 4, int(msg.platform));
 	item->setData(Qt::UserRole + 5, msg.text);
-	item->setData(Qt::UserRole + 8, msg.userLogin);
+	item->setData(Qt::UserRole + 8, msg.actorId.isEmpty() ? msg.userLogin : msg.actorId);
 	item->setData(Qt::UserRole + 9, msg.user);
 	item->setData(Qt::UserRole + 10, msg.ts);
 
@@ -5439,32 +5861,21 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	}
 	layout->addWidget(body, 1, Qt::AlignTop);
 
-	if (!msg.system && msg.platform == YouTube) {
-		auto *actions = new QToolButton(row);
-		actions->setObjectName(QStringLiteral("chatMsgActions"));
-		actions->setIcon(YouTubeActionsIcon());
-		actions->setIconSize(QSize(16, 16));
-		actions->setFixedSize(28, 28);
-		actions->setAutoRaise(true);
-		actions->setFocusPolicy(Qt::NoFocus);
-		actions->setCursor(Qt::PointingHandCursor);
+	if (!msg.system) {
+		auto *actions = new ChatActionsButton(row);
 		actions->setToolTip(Tr("ChatDockActions"));
-		actions->setStyleSheet(QStringLiteral(
-			"QToolButton#chatMsgActions { background: transparent; border: 1px solid transparent; border-radius: 6px;"
-			" padding: 0; margin: 0; min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; }"
-			"QToolButton#chatMsgActions:hover { background: #2e384a; border-color: #445068; }"));
 		layout->setAlignment(body, Qt::AlignVCenter);
 		layout->addWidget(actions, 0, Qt::AlignVCenter);
-		connect(actions, &QToolButton::clicked, this, [this, item, actions] {
+		actions->onClick = [this, item, actions] {
 			if (!messageList)
 				return;
 			for (int i = 0; i < messageList->count(); ++i) {
 				if (messageList->item(i) == item) {
-					ShowYouTubeMessageMenu(item, actions);
+					ShowMessageActions(item, actions);
 					return;
 				}
 			}
-		});
+		};
 	}
 
 	messageList->addItem(item);

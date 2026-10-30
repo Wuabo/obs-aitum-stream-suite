@@ -32,6 +32,8 @@ public:
 
 	void ReloadAccounts();
 	void RefreshAvailablePlatforms();
+	/* Start OAuth again for moderation scopes. Keeps the current token until the new one arrives. */
+	void RequestModerationAuth(int platformId);
 	void UpdateDisconnectState();
 	void OpenSettings();
 	/* Reload YouTube broadcast (if YouTube account linked) and push liveChatId to chat. */
