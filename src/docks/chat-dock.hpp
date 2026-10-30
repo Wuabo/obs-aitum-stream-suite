@@ -91,6 +91,12 @@ private:
 		int end = 0; /* inclusive char index in message text */
 	};
 
+	/* YouTube website chat splits a line into text and emoji images. */
+	struct ChatRun {
+		QString text;
+		QString imageUrl;
+	};
+
 	struct ChatMessage {
 		Platform platform = Twitch;
 		QString id;
@@ -103,6 +109,7 @@ private:
 		bool showPlatformIcon = true;
 		QVector<ChatBadge> badges;
 		QVector<ChatEmoteSpan> emotes;
+		QVector<ChatRun> runs;
 	};
 
 	QSet<int> availablePlatforms;
@@ -111,6 +118,10 @@ private:
 	QString ytLiveChatId;
 	QString ytVideoId;
 	QString ytNextPage;
+	QString ytContinuation;
+	QString ytInnertubeClientVersion;
+	QString ytInnertubeApiKey;
+	QString ytInnertubeVisitor;
 	QString kickSlug;
 	QString kickChatroomId;
 	QString kickChannelId;
@@ -154,6 +165,9 @@ private:
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
 	qint64 youtubeLastTransitionMs = 0;
+	qint64 youtubeLastDeleteSyncMs = 0;
+	/* Page tokens that actually produced lines on screen. Re-read them to see tombstones. */
+	QStringList ytDeletePageTokens;
 	/* Messages published before this are history from a previous poll/live — never render them. */
 	qint64 youtubeIgnoreBeforeMs = 0;
 	bool youtubeCatchingUp = true;
@@ -214,9 +228,12 @@ private:
 	void EnsureYouTubeWaitLiveTimer();
 	void TickYouTubeWaitLive();
 	void PollYouTubeChat();
+	void PollYouTubeInnertube();
+	void IngestYouTubeLiveAction(const QJsonObject &action);
 	void SendYouTubeMessage(const QString &text);
 	bool AdoptYouTubeMessage(const ChatMessage &msg);
 	bool HandleYouTubeControlItem(const QJsonObject &obj);
+	void RefreshYouTubeDeletes();
 	bool BindYouTubeChat(const QString &chatId, const QString &videoId);
 	void ClearYouTubeMessages();
 	void ReportYouTubeHttpError(int status, const QByteArray &body);

@@ -257,32 +257,7 @@ QVector<EmojiRun> SplitEmojiRuns(const QString &text)
 	return runs;
 }
 
-/* OBS theme forces QLabel { color }, which strips color emoji. Draw them into a pixmap instead. */
-QPixmap RenderEmojiPixmap(const QString &grapheme, int size)
-{
-	static QHash<QString, QPixmap> cache;
-	const QString key = QString::number(size) + QLatin1Char('|') + grapheme;
-	if (cache.contains(key))
-		return cache.value(key);
-	const int px = qMax(size * 2, 36);
-	QImage img(px, px, QImage::Format_ARGB32_Premultiplied);
-	img.fill(Qt::transparent);
-	QPainter painter(&img);
-	painter.setRenderHint(QPainter::Antialiasing, true);
-	painter.setRenderHint(QPainter::TextAntialiasing, true);
-	QFont font(QStringLiteral("Segoe UI Emoji"));
-	font.setPixelSize(px - 6);
-	font.setStyleStrategy(QFont::PreferDefault);
-	painter.setFont(font);
-	painter.drawText(QRect(0, 0, px, px), Qt::AlignCenter, grapheme);
-	painter.end();
-	const QPixmap pix =
-		QPixmap::fromImage(img).scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-	if (cache.size() > 400)
-		cache.clear();
-	cache.insert(key, pix);
-	return pix;
-}
+QPixmap RenderEmojiPixmap(const QString &grapheme, int size);
 
 } // namespace
 #include <util/base.h>
@@ -293,7 +268,115 @@ QPixmap RenderEmojiPixmap(const QString &grapheme, int size)
 #include <thread>
 #ifdef _WIN32
 #include <winsock2.h>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wincodec.h>
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "windowscodecs.lib")
 #endif
+
+namespace {
+
+/* Qt's raster painter drops color emoji, so the slot was an empty box. DirectWrite
+ * with ENABLE_COLOR_FONT paints Segoe UI Emoji into a real image. */
+QPixmap RenderEmojiPixmap(const QString &grapheme, int size)
+{
+	if (grapheme.isEmpty() || size <= 0)
+		return {};
+	static QHash<QString, QPixmap> cache;
+	const QString key = QString::number(size) + QLatin1Char('|') + grapheme;
+	if (cache.contains(key))
+		return cache.value(key);
+#ifndef _WIN32
+	Q_UNUSED(cache);
+	return {};
+#else
+	const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+	const bool balanceCom = (com == S_OK || com == S_FALSE);
+	QPixmap result;
+	ID2D1Factory *factory = nullptr;
+	IDWriteFactory *write = nullptr;
+	IWICImagingFactory *wic = nullptr;
+	IWICBitmap *bmp = nullptr;
+	ID2D1RenderTarget *rt = nullptr;
+	IDWriteTextFormat *format = nullptr;
+	ID2D1SolidColorBrush *brush = nullptr;
+	IWICBitmapLock *lock = nullptr;
+	const UINT px = UINT(qMax(size * 2, 32));
+	if (SUCCEEDED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory)) &&
+	    SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+					  reinterpret_cast<IUnknown **>(&write))) &&
+	    SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+	    SUCCEEDED(wic->CreateBitmap(px, px, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &bmp)) &&
+	    SUCCEEDED(factory->CreateWicBitmapRenderTarget(
+		    bmp,
+		    D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+						 D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)),
+		    &rt)) &&
+	    SUCCEEDED(write->CreateTextFormat(L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_REGULAR,
+					      DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(px) * 0.72f,
+					      L"en-us", &format))) {
+		format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+		format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+		rt->BeginDraw();
+		rt->Clear(D2D1::ColorF(0, 0, 0, 0));
+		if (SUCCEEDED(rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &brush))) {
+			const D2D1_RECT_F layout = D2D1::RectF(0, 0, float(px), float(px));
+			rt->DrawText(reinterpret_cast<const wchar_t *>(grapheme.utf16()), UINT32(grapheme.size()), format,
+				     layout, brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+		}
+		rt->EndDraw();
+		WICRect rect{0, 0, INT(px), INT(px)};
+		if (SUCCEEDED(bmp->Lock(&rect, WICBitmapLockRead, &lock)) && lock) {
+			UINT stride = 0;
+			BYTE *data = nullptr;
+			UINT bytes = 0;
+			lock->GetStride(&stride);
+			lock->GetDataPointer(&bytes, &data);
+			if (data && stride >= px * 4) {
+				QImage img(int(px), int(px), QImage::Format_ARGB32_Premultiplied);
+				bool any = false;
+				for (UINT y = 0; y < px; ++y) {
+					memcpy(img.scanLine(int(y)), data + y * stride, px * 4);
+					const auto *row = reinterpret_cast<const QRgb *>(img.scanLine(int(y)));
+					for (UINT x = 0; x < px && !any; ++x)
+						any = qAlpha(row[x]) > 16;
+				}
+				if (any)
+					result = QPixmap::fromImage(img).scaled(size, size, Qt::KeepAspectRatio,
+										 Qt::SmoothTransformation);
+			}
+		}
+	}
+	if (lock)
+		lock->Release();
+	if (brush)
+		brush->Release();
+	if (format)
+		format->Release();
+	if (rt)
+		rt->Release();
+	if (bmp)
+		bmp->Release();
+	if (wic)
+		wic->Release();
+	if (write)
+		write->Release();
+	if (factory)
+		factory->Release();
+	if (balanceCom)
+		CoUninitialize();
+	if (!result.isNull()) {
+		if (cache.size() > 400)
+			cache.clear();
+		cache.insert(key, result);
+	}
+	return result;
+#endif
+}
+
+} // namespace
 
 extern obs_data_t *current_profile_config;
 
@@ -1030,6 +1113,12 @@ void ChatDock::Http(const QString &url, const QList<QPair<QByteArray, QByteArray
 			}
 			curl_easy_setopt(curl, CURLOPT_URL, urlBytes.constData());
 			curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+			/* Emoji CDNs (jsDelivr) answer with a redirect. Without this the image is dropped
+			 * and the chat shows an empty slot. */
+			if (verbBytes == "GET") {
+				curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+				curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+			}
 			if (verbBytes != "GET") {
 				curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verbBytes.constData());
 				curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.constData());
@@ -1118,6 +1207,11 @@ void ChatDock::StopConnections()
 	ytLiveChatId.clear();
 	ytVideoId.clear();
 	ytNextPage.clear();
+	ytContinuation.clear();
+	ytInnertubeClientVersion.clear();
+	ytInnertubeApiKey.clear();
+	ytInnertubeVisitor.clear();
+	ytDeletePageTokens.clear();
 	youtubeIgnoreBeforeMs = 0;
 	youtubeCatchingUp = true;
 	youtubeCatchupPages = 0;
@@ -1815,6 +1909,11 @@ void ChatDock::OnStreamingStarted()
 	ytLiveChatId.clear();
 	ytVideoId.clear();
 	ytNextPage.clear();
+	ytContinuation.clear();
+	ytInnertubeClientVersion.clear();
+	ytInnertubeApiKey.clear();
+	ytInnertubeVisitor.clear();
+	ytDeletePageTokens.clear();
 	youtubeCatchingUp = true;
 	youtubeCatchupPages = 0;
 	ytPendingDeletes.clear();
@@ -1829,13 +1928,28 @@ void ChatDock::OnStreamingStarted()
 
 bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
 {
+	const QString previousVideo = ytVideoId;
 	if (!videoId.isEmpty())
 		ytVideoId = videoId;
 	if (chatId.isEmpty() || chatId == ytLiveChatId)
 		return false;
+	/* Stream Info sends snippet.liveChatId and then activeLiveChatId for one video.
+	 * Treating that as a new chat wiped the lines and the live cursor. */
+	const bool sameVideo = !ytLiveChatId.isEmpty() && !previousVideo.isEmpty() &&
+			       (videoId.isEmpty() || videoId == previousVideo);
+	if (sameVideo) {
+		ytLiveChatId = chatId;
+		blog(LOG_INFO, "[Stream Suite] YouTube chat id updated for the same video (%d chars)", chatId.size());
+		return false;
+	}
 	const bool switching = !ytLiveChatId.isEmpty();
 	ytLiveChatId = chatId;
 	ytNextPage.clear();
+	ytContinuation.clear();
+	ytInnertubeClientVersion.clear();
+	ytInnertubeApiKey.clear();
+	ytInnertubeVisitor.clear();
+	ytDeletePageTokens.clear();
 	youtubePageTokenFails = 0;
 	youtubeCatchingUp = true;
 	youtubeCatchupPages = 0;
@@ -2426,9 +2540,482 @@ bool ChatDock::HandleYouTubeControlItem(const QJsonObject &obj)
 	return true;
 }
 
+void ChatDock::RefreshYouTubeDeletes()
+{
+	/* The live cursor only returns new lines. A deleted message stays on the page that
+	 * first delivered it, rewritten as a tombstone. Re-read that page and do not append. */
+	if (ytLiveChatId.isEmpty() || ytDeletePageTokens.isEmpty() || !connectionsActive)
+		return;
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if (youtubeLastDeleteSyncMs > 0 && now - youtubeLastDeleteSyncMs < 8000)
+		return;
+	youtubeLastDeleteSyncMs = now;
+	const QString token = ytDeletePageTokens.last();
+	const QString chatId = ytLiveChatId;
+	EnsureToken(YouTube, [this, token, chatId](bool ok) {
+		if (!ok || ytLiveChatId != chatId)
+			return;
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("liveChatId"), chatId);
+		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
+		query.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("200"));
+		if (token != QLatin1String("*"))
+			query.addQueryItem(QStringLiteral("pageToken"), token);
+		url.setQuery(query);
+		Http(QString::fromUtf8(url.toEncoded()),
+		     {{QByteArrayLiteral("Authorization"),
+		       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}},
+		     {}, "GET", [this, chatId](int status, const QByteArray &body, const QString &) {
+			     if (ytLiveChatId != chatId || status < 200 || status >= 300)
+				     return;
+			     const QJsonArray items =
+				     QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
+			     for (const QJsonValue &row : items)
+				     HandleYouTubeControlItem(row.toObject());
+		     });
+	});
+}
+
+static QString YouTubeCaptureNear(const QByteArray &html, const char *marker, const QRegularExpression &re)
+{
+	const int at = html.indexOf(marker);
+	if (at < 0)
+		return {};
+	const auto match = re.match(QString::fromUtf8(html.mid(at, 280)));
+	return match.hasMatch() ? match.captured(1) : QString();
+}
+
+static QString YouTubeContinuationNear(const QByteArray &html, const char *marker)
+{
+	const int at = html.indexOf(marker);
+	if (at < 0)
+		return {};
+	const QString window = QString::fromUtf8(html.mid(at, 16000));
+	const QRegularExpression re(QStringLiteral("\"continuation\"\\s*:\\s*\"([^\"]{20,})\""));
+	const auto match = re.match(window);
+	if (!match.hasMatch())
+		return {};
+	QString token = match.captured(1);
+	token.replace(QStringLiteral("\\u003d"), QStringLiteral("="));
+	token.replace(QStringLiteral("\\u0026"), QStringLiteral("&"));
+	token.replace(QStringLiteral("\\/"), QStringLiteral("/"));
+	return token;
+}
+
+static QString YouTubePageContinuation(const QByteArray &html, QString *clientVersion, QString *apiKey, QString *visitor)
+{
+	if (clientVersion) {
+		*clientVersion = YouTubeCaptureNear(html, "INNERTUBE_CLIENT_VERSION",
+						    QRegularExpression(QStringLiteral(":\\s*\"([0-9][0-9.]*)\"")));
+	}
+	if (apiKey) {
+		*apiKey = YouTubeCaptureNear(html, "INNERTUBE_API_KEY",
+					     QRegularExpression(QStringLiteral(":\\s*\"(AIza[^\"\\\\]+)\"")));
+	}
+	if (visitor) {
+		*visitor = YouTubeCaptureNear(html, "VISITOR_DATA",
+					      QRegularExpression(QStringLiteral(":\\s*\"([^\"\\\\]+)\"")));
+	}
+	const int liveAt = html.indexOf("liveChatRenderer");
+	const QByteArray slice = liveAt >= 0 ? html.mid(liveAt, 60000) : html;
+	QString token = YouTubeContinuationNear(slice, "invalidationContinuationData");
+	if (token.isEmpty())
+		token = YouTubeContinuationNear(slice, "timedContinuationData");
+	if (token.isEmpty())
+		token = YouTubeContinuationNear(slice, "reloadContinuationData");
+	return token;
+}
+
+static QJsonObject YouTubeNextContinuation(const QJsonArray &continuations, int *timeoutMs)
+{
+	const QStringList keys = {QStringLiteral("invalidationContinuationData"), QStringLiteral("timedContinuationData"),
+				  QStringLiteral("reloadContinuationData")};
+	for (const QString &key : keys) {
+		for (const QJsonValue &value : continuations) {
+			const QJsonObject data = value.toObject().value(key).toObject();
+			if (data.value(QStringLiteral("continuation")).toString().isEmpty())
+				continue;
+			if (timeoutMs)
+				*timeoutMs = data.value(QStringLiteral("timeoutMs")).toInt(1000);
+			return data;
+		}
+	}
+	return {};
+}
+
+static QString YouTubeRichText(const QJsonObject &node)
+{
+	const QString simple = node.value(QStringLiteral("simpleText")).toString();
+	if (!simple.isEmpty())
+		return simple;
+	QString text;
+	const QJsonArray runs = node.value(QStringLiteral("runs")).toArray();
+	for (const QJsonValue &run : runs)
+		text += run.toObject().value(QStringLiteral("text")).toString();
+	return text;
+}
+
+static QString YouTubeThumbUrl(const QJsonObject &image)
+{
+	const QJsonArray thumbs = image.value(QStringLiteral("thumbnails")).toArray();
+	auto pick = [&](bool allowSvg) {
+		QString best;
+		int bestDist = 100000;
+		for (const QJsonValue &value : thumbs) {
+			const QJsonObject thumb = value.toObject();
+			QString url = thumb.value(QStringLiteral("url")).toString();
+			if (url.startsWith(QLatin1String("//")))
+				url.prepend(QLatin1String("https:"));
+			if (url.isEmpty())
+				continue;
+			if (!allowSvg && url.contains(QLatin1String(".svg"), Qt::CaseInsensitive))
+				continue;
+			const int width = thumb.value(QStringLiteral("width")).toInt(64);
+			const int dist = qAbs(width - 64);
+			if (best.isEmpty() || dist < bestDist) {
+				best = url;
+				bestDist = dist;
+			}
+		}
+		return best;
+	};
+	const QString raster = pick(false);
+	return raster.isEmpty() ? pick(true) : raster;
+}
+
+void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
+{
+	if (action.contains(QStringLiteral("replayChatItemAction"))) {
+		const QJsonArray nested = action.value(QStringLiteral("replayChatItemAction"))
+						  .toObject()
+						  .value(QStringLiteral("actions"))
+						  .toArray();
+		for (const QJsonValue &value : nested)
+			IngestYouTubeLiveAction(value.toObject());
+		return;
+	}
+	if (action.contains(QStringLiteral("markChatItemsByAuthorAsDeletedAction"))) {
+		const QString channel = action.value(QStringLiteral("markChatItemsByAuthorAsDeletedAction"))
+						.toObject()
+						.value(QStringLiteral("externalChannelId"))
+						.toString();
+		if (!channel.isEmpty()) {
+			blog(LOG_INFO, "[Stream Suite] YouTube delete author=%s", channel.toUtf8().constData());
+			MarkMessagesDeletedByUser(YouTube, channel, Tr("ChatDockMessageRemoved"));
+		}
+		return;
+	}
+	if (action.contains(QStringLiteral("replaceChatItemAction"))) {
+		const QJsonObject replaced = action.value(QStringLiteral("replaceChatItemAction")).toObject();
+		const QString id = replaced.value(QStringLiteral("targetItemId")).toString();
+		const QJsonObject item = replaced.value(QStringLiteral("replacementItem")).toObject();
+		QString text = YouTubeRichText(item.value(QStringLiteral("liveChatTextMessageRenderer"))
+						       .toObject()
+						       .value(QStringLiteral("message"))
+						       .toObject());
+		if (text.isEmpty()) {
+			text = YouTubeRichText(item.value(QStringLiteral("liveChatPaidMessageRenderer"))
+						       .toObject()
+						       .value(QStringLiteral("message"))
+						       .toObject());
+		}
+		const QString low = text.toLower();
+		if (!id.isEmpty() && (low.contains(QLatin1String("delet")) || low.contains(QLatin1String("remov")) ||
+				      low.contains(QLatin1String("elimin")) || low.contains(QLatin1String("retract")))) {
+			blog(LOG_INFO, "[Stream Suite] YouTube delete type=replace id=%s", id.left(48).toUtf8().constData());
+			MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
+		}
+		return;
+	}
+	const QStringList keys = action.keys();
+	for (const QString &key : keys) {
+		if (!key.contains(QLatin1String("eleted")) && key != QLatin1String("removeChatItemAction"))
+			continue;
+		const QString id = action.value(key).toObject().value(QStringLiteral("targetItemId")).toString();
+		if (id.isEmpty())
+			continue;
+		blog(LOG_INFO, "[Stream Suite] YouTube delete type=%s id=%s", key.toUtf8().constData(),
+		     id.left(48).toUtf8().constData());
+		MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
+		return;
+	}
+
+	const QJsonObject item = action.value(QStringLiteral("addChatItemAction")).toObject().value(QStringLiteral("item")).toObject();
+	if (item.isEmpty())
+		return;
+	QJsonObject renderer = item.value(QStringLiteral("liveChatTextMessageRenderer")).toObject();
+	if (renderer.isEmpty())
+		renderer = item.value(QStringLiteral("liveChatPaidMessageRenderer")).toObject();
+	if (renderer.isEmpty())
+		return;
+
+	qint64 usec = 0;
+	const QJsonValue stamp = renderer.value(QStringLiteral("timestampUsec"));
+	if (stamp.isString())
+		usec = stamp.toString().toLongLong();
+	else
+		usec = static_cast<qint64>(stamp.toDouble());
+	qint64 published = usec;
+	if (usec > 100000000000000LL)
+		published = usec / 1000;
+	if (published > 0 && youtubeIgnoreBeforeMs > 0 && published < youtubeIgnoreBeforeMs)
+		return;
+
+	ChatMessage msg;
+	msg.platform = YouTube;
+	msg.id = renderer.value(QStringLiteral("id")).toString();
+	if (msg.id.isEmpty())
+		return;
+	msg.user = YouTubeRichText(renderer.value(QStringLiteral("authorName")).toObject());
+	if (msg.user.isEmpty())
+		msg.user = QStringLiteral("YouTube");
+	msg.color = QStringLiteral("#FF5555");
+	msg.ts = published > 0 ? published : QDateTime::currentMSecsSinceEpoch();
+	msg.userLogin = renderer.value(QStringLiteral("authorExternalChannelId")).toString();
+
+	auto appendText = [&](const QString &text) {
+		if (text.isEmpty())
+			return;
+		msg.text += text;
+		if (!msg.runs.isEmpty() && msg.runs.last().imageUrl.isEmpty()) {
+			msg.runs.last().text += text;
+			return;
+		}
+		ChatRun run;
+		run.text = text;
+		msg.runs.append(run);
+	};
+	const QString amount = YouTubeRichText(renderer.value(QStringLiteral("purchaseAmountText")).toObject());
+	if (!amount.isEmpty())
+		appendText(amount + QStringLiteral(" "));
+	const QJsonArray runs = renderer.value(QStringLiteral("message")).toObject().value(QStringLiteral("runs")).toArray();
+	for (const QJsonValue &value : runs) {
+		const QJsonObject run = value.toObject();
+		if (run.contains(QStringLiteral("text"))) {
+			appendText(run.value(QStringLiteral("text")).toString());
+			continue;
+		}
+		const QJsonObject emoji = run.value(QStringLiteral("emoji")).toObject();
+		if (emoji.isEmpty())
+			continue;
+		QString alt = emoji.value(QStringLiteral("emojiId")).toString();
+		const bool custom = emoji.value(QStringLiteral("isCustomEmoji")).toBool() ||
+				    alt.startsWith(QLatin1String("UC")) || alt.size() > 12;
+		if (custom) {
+			const QJsonArray shortcuts = emoji.value(QStringLiteral("shortcuts")).toArray();
+			alt = shortcuts.isEmpty() ? QString() : shortcuts.at(0).toString();
+		}
+		const QString url = YouTubeThumbUrl(emoji.value(QStringLiteral("image")).toObject());
+		if (url.isEmpty()) {
+			appendText(alt);
+			continue;
+		}
+		static bool loggedEmoji = false;
+		if (!loggedEmoji) {
+			loggedEmoji = true;
+			blog(LOG_INFO, "[Stream Suite] YouTube emoji image %s", url.left(140).toUtf8().constData());
+		}
+		msg.text += alt;
+		ChatRun image;
+		image.text = alt;
+		image.imageUrl = url;
+		msg.runs.append(image);
+	}
+	if (msg.text.isEmpty() && msg.runs.isEmpty())
+		return;
+
+	const QJsonArray badges = renderer.value(QStringLiteral("authorBadges")).toArray();
+	for (const QJsonValue &value : badges) {
+		const QJsonObject badge = value.toObject().value(QStringLiteral("liveChatAuthorBadgeRenderer")).toObject();
+		const QString icon = badge.value(QStringLiteral("icon")).toObject().value(QStringLiteral("iconType")).toString();
+		const QString tip = badge.value(QStringLiteral("tooltip")).toString();
+		if (icon == QLatin1String("OWNER"))
+			msg.badges.append({QStringLiteral("owner"), QStringLiteral("yt-role:owner"),
+					   tip.isEmpty() ? QStringLiteral("Owner") : tip});
+		else if (icon == QLatin1String("MODERATOR"))
+			msg.badges.append({QStringLiteral("mod"), QStringLiteral("yt-role:moderator"),
+					   tip.isEmpty() ? QStringLiteral("Moderator") : tip});
+		else if (icon == QLatin1String("VERIFIED"))
+			msg.badges.append({QStringLiteral("verified"), QStringLiteral("yt-role:verified"),
+					   tip.isEmpty() ? QStringLiteral("Verified") : tip});
+		else {
+			const QString custom = YouTubeThumbUrl(badge.value(QStringLiteral("customThumbnail")).toObject());
+			if (!custom.isEmpty())
+				msg.badges.append({QStringLiteral("member"), custom, tip.isEmpty() ? QStringLiteral("Member") : tip});
+			else if (icon == QLatin1String("MEMBER") || tip.contains(QLatin1String("member"), Qt::CaseInsensitive))
+				msg.badges.append({QStringLiteral("member"), QStringLiteral("yt-role:member"),
+						   tip.isEmpty() ? QStringLiteral("Member") : tip});
+		}
+	}
+	if (!AdoptYouTubeMessage(msg))
+		AppendMessage(msg);
+}
+
+void ChatDock::PollYouTubeInnertube()
+{
+	if (ytVideoId.isEmpty() || youtubePollInFlight)
+		return;
+	youtubePollInFlight = true;
+	const QString videoId = ytVideoId;
+	const QByteArray userAgent = QByteArrayLiteral(
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+		"Chrome/131.0.0.0 Safari/537.36");
+	const QByteArray cookie = QByteArrayLiteral("SOCS=CAI; CONSENT=YES+cb");
+
+	auto schedule = [this](int ms) {
+		if (connectionsActive && !ytVideoId.isEmpty() && youtubeTimer)
+			youtubeTimer->start(qBound(250, ms, 4000));
+	};
+
+	std::function<void(const QString &)> post;
+	post = [this, videoId, userAgent, cookie, schedule](const QString &continuation) {
+		QString version = ytInnertubeClientVersion;
+		if (version.isEmpty())
+			version = QStringLiteral("2.20261030.01.00");
+		QString key = ytInnertubeApiKey;
+		if (key.isEmpty())
+			key = QStringLiteral("AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8");
+		QJsonObject client;
+		client.insert(QStringLiteral("clientName"), QStringLiteral("WEB"));
+		client.insert(QStringLiteral("clientVersion"), version);
+		client.insert(QStringLiteral("hl"), QStringLiteral("en"));
+		client.insert(QStringLiteral("gl"), QStringLiteral("US"));
+		if (!ytInnertubeVisitor.isEmpty())
+			client.insert(QStringLiteral("visitorData"), ytInnertubeVisitor);
+		QJsonObject context;
+		context.insert(QStringLiteral("client"), client);
+		QJsonObject payload;
+		payload.insert(QStringLiteral("context"), context);
+		payload.insert(QStringLiteral("continuation"), continuation);
+		const QString url = QStringLiteral("https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?prettyPrint=false&key=") +
+				    key;
+		const QByteArray referer =
+			QByteArrayLiteral("https://www.youtube.com/live_chat?is_popout=1&v=") + videoId.toUtf8();
+		const qint64 started = QDateTime::currentMSecsSinceEpoch();
+		Http(url,
+		     {{QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")},
+		      {QByteArrayLiteral("User-Agent"), userAgent},
+		      {QByteArrayLiteral("Origin"), QByteArrayLiteral("https://www.youtube.com")},
+		      {QByteArrayLiteral("Referer"), referer},
+		      {QByteArrayLiteral("Cookie"), cookie},
+		      {QByteArrayLiteral("X-YouTube-Client-Name"), QByteArrayLiteral("1")},
+		      {QByteArrayLiteral("X-YouTube-Client-Version"), version.toUtf8()}},
+		     QJsonDocument(payload).toJson(QJsonDocument::Compact), "POST",
+		     [this, videoId, started, schedule](int status, const QByteArray &body, const QString &error) {
+			     youtubePollInFlight = false;
+			     if (videoId != ytVideoId)
+				     return;
+			     if (status < 200 || status >= 300) {
+				     ytContinuation.clear();
+				     DebugYouTube(QStringLiteral("innertube HTTP %1 (%2 bytes)")
+							  .arg(status)
+							  .arg(body.size()));
+				     blog(LOG_WARNING, "[Stream Suite] YouTube site chat HTTP %d: %s", status,
+					  error.isEmpty() ? body.left(180).constData() : error.toUtf8().constData());
+				     schedule(4000);
+				     return;
+			     }
+			     const QJsonObject live = QJsonDocument::fromJson(body)
+							       .object()
+							       .value(QStringLiteral("continuationContents"))
+							       .toObject()
+							       .value(QStringLiteral("liveChatContinuation"))
+							       .toObject();
+			     if (live.isEmpty()) {
+				     ytContinuation.clear();
+				     DebugYouTube(QStringLiteral("innertube sem liveChatContinuation (%1 bytes) %2")
+							  .arg(body.size())
+							  .arg(QString::fromUtf8(body.left(140))));
+				     schedule(4000);
+				     return;
+			     }
+			     int timeoutMs = 1000;
+			     const QString token = YouTubeNextContinuation(live.value(QStringLiteral("continuations")).toArray(),
+									    &timeoutMs)
+							    .value(QStringLiteral("continuation"))
+							    .toString();
+			     if (!token.isEmpty())
+				     ytContinuation = token;
+			     else
+				     ytContinuation.clear();
+			     if (!youtubeConnectedAnnounced) {
+				     youtubeConnectedAnnounced = true;
+				     youtubeWaitingAnnounced = false;
+				     const int actions = live.value(QStringLiteral("actions")).toArray().size();
+				     blog(LOG_INFO, "[Stream Suite] YouTube site chat HTTP 200 (%d actions)", actions);
+				     DebugYouTube(QStringLiteral("innertube HTTP 200 → Connected"));
+				     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
+			     }
+			     if (youtubeIgnoreBeforeMs <= 0)
+				     youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
+			     const QJsonArray actions = live.value(QStringLiteral("actions")).toArray();
+			     for (const QJsonValue &value : actions)
+				     IngestYouTubeLiveAction(value.toObject());
+			     const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - started;
+			     /* Invalidation requests stay open until a new line arrives. Do not wait again. */
+			     const int wait = elapsed >= 1500 ? 250 : qBound(800, timeoutMs > 0 ? timeoutMs : 1000, 3000);
+			     if (ytContinuation.isEmpty())
+				     schedule(3000);
+			     else
+				     schedule(wait);
+		     });
+	};
+
+	if (!ytContinuation.isEmpty() && !ytInnertubeClientVersion.isEmpty()) {
+		post(ytContinuation);
+		return;
+	}
+
+	const QString page = QStringLiteral("https://www.youtube.com/live_chat?is_popout=1&v=") + videoId;
+	Http(page,
+	     {{QByteArrayLiteral("User-Agent"), userAgent},
+	      {QByteArrayLiteral("Accept-Language"), QByteArrayLiteral("en-US,en;q=0.9")},
+	      {QByteArrayLiteral("Cookie"), cookie}},
+	     {}, "GET", [this, videoId, post, schedule](int status, const QByteArray &body, const QString &) {
+		     if (videoId != ytVideoId) {
+			     youtubePollInFlight = false;
+			     return;
+		     }
+		     QString version;
+		     QString key;
+		     QString visitor;
+		     const QString token = YouTubePageContinuation(body, &version, &key, &visitor);
+		     if (!version.isEmpty())
+			     ytInnertubeClientVersion = version;
+		     if (!key.isEmpty())
+			     ytInnertubeApiKey = key;
+		     if (!visitor.isEmpty())
+			     ytInnertubeVisitor = visitor;
+		     if (ytInnertubeClientVersion.isEmpty())
+			     ytInnertubeClientVersion = QStringLiteral("2.20261030.01.00");
+		     if (token.isEmpty()) {
+			     youtubePollInFlight = false;
+			     DebugYouTube(QStringLiteral("live_chat sem continuation HTTP %1 (%2 bytes)")
+						  .arg(status)
+						  .arg(body.size()));
+			     blog(LOG_WARNING, "[Stream Suite] YouTube live_chat page HTTP %d, no continuation (%d bytes)",
+				  status, int(body.size()));
+			     TryYouTubeGoLive();
+			     schedule(5000);
+			     return;
+		     }
+		     ytContinuation = token;
+		     post(token);
+	     });
+}
+
 void ChatDock::PollYouTubeChat()
 {
-	if (ytLiveChatId.isEmpty() || youtubePollInFlight)
+	if (youtubePollInFlight)
+		return;
+	/* liveChat/messages has neither emoji images nor a delete event.
+	 * The site feed (get_live_chat) is what the YouTube chat window reads. */
+	if (!ytVideoId.isEmpty()) {
+		PollYouTubeInnertube();
+		return;
+	}
+	if (ytLiveChatId.isEmpty())
 		return;
 	youtubePollInFlight = true;
 	if (!youtubeConnectedAnnounced)
@@ -2505,6 +3092,7 @@ void ChatDock::PollYouTubeChat()
 					     youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
 				     const QJsonArray items = root.value("items").toArray();
 				     qint64 newestPub = 0;
+				     bool keptMessage = false;
 				     for (const QJsonValue &row : items) {
 					     const QJsonObject obj = row.toObject();
 					     if (HandleYouTubeControlItem(obj))
@@ -2567,7 +3155,16 @@ void ChatDock::PollYouTubeChat()
 					      * Insert id and list id are often different. */
 					     if (!AdoptYouTubeMessage(msg))
 						     AppendMessage(msg);
+					     keptMessage = true;
 				     }
+				     if (keptMessage) {
+					     const QString pageKey = usedToken.isEmpty() ? QStringLiteral("*") : usedToken;
+					     ytDeletePageTokens.removeAll(pageKey);
+					     ytDeletePageTokens.append(pageKey);
+					     while (ytDeletePageTokens.size() > 2)
+						     ytDeletePageTokens.removeFirst();
+				     }
+				     RefreshYouTubeDeletes();
 				     /* A full old page means we are still walking the previous live.
 				      * Skip ahead quickly, then sit on YouTube's own poll interval. */
 				     const bool moreHistory = youtubeCatchingUp && !next.isEmpty() && next != usedToken &&
@@ -3845,6 +4442,21 @@ void ChatDock::ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int 
 	if (!label || body.isEmpty() || size <= 0)
 		return;
 
+	/* YouTube standard emoji often arrives as SVG. QPixmap does not load that. */
+	if (body.startsWith("<svg") || body.startsWith("<?xml") || body.left(256).contains("<svg")) {
+		QSvgRenderer renderer(body);
+		if (renderer.isValid()) {
+			QPixmap pix(size, size);
+			pix.fill(Qt::transparent);
+			QPainter painter(&pix);
+			renderer.render(&painter);
+			label->setMovie(nullptr);
+			label->setScaledContents(true);
+			label->setPixmap(pix);
+			return;
+		}
+	}
+
 	auto useStatic = [&]() {
 		QPixmap pix;
 		if (!pix.loadFromData(body))
@@ -3928,9 +4540,13 @@ void ChatDock::FetchImageToLabel(const QString &url, QLabel *target, int size, c
 
 	const QByteArray referer = url.contains(QLatin1String("kick.com"), Qt::CaseInsensitive)
 					   ? QByteArrayLiteral("https://kick.com/")
-					   : url.contains(QLatin1String("jsdelivr.net"), Qt::CaseInsensitive)
-						     ? QByteArrayLiteral("https://cdn.jsdelivr.net/")
-						     : QByteArrayLiteral("https://www.twitch.tv/");
+					   : (url.contains(QLatin1String("ggpht.com"), Qt::CaseInsensitive) ||
+					      url.contains(QLatin1String("ytimg.com"), Qt::CaseInsensitive) ||
+					      url.contains(QLatin1String("gstatic.com"), Qt::CaseInsensitive))
+						     ? QByteArrayLiteral("https://www.youtube.com/")
+						     : url.contains(QLatin1String("jsdelivr.net"), Qt::CaseInsensitive)
+							   ? QByteArrayLiteral("https://cdn.jsdelivr.net/")
+							   : QByteArrayLiteral("https://www.twitch.tv/");
 	const QList<QPair<QByteArray, QByteArray>> headers = {
 		{QByteArrayLiteral("User-Agent"),
 		 QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -4197,7 +4813,13 @@ bool ChatDock::AdoptYouTubeMessage(const ChatMessage &msg)
 		}
 		if (!echo)
 			continue;
-		if (item->data(Qt::UserRole + 5).toString() != msg.text)
+		auto sameText = [](QString a, const QString &b) {
+			a.remove(QChar(0xFE0F));
+			QString right = b;
+			right.remove(QChar(0xFE0F));
+			return a.trimmed() == right.trimmed();
+		};
+		if (!sameText(item->data(Qt::UserRole + 5).toString(), msg.text))
 			continue;
 		AddChatIdAlias(item, msg.id);
 		item->setData(Qt::UserRole + 7, true);
@@ -4336,6 +4958,48 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	} else if (kickEmotes) {
 		/* Same path for Kick — HTML <img> only showed the first GIF frame. */
 		body = BuildKickEmoteBody(msg, prefixHtml, row);
+	} else if (!msg.runs.isEmpty()) {
+		/* YouTube site feed: text runs plus the real emoji image URL. */
+		auto *flow = new ChatFlowBody(row);
+		flow->addHtml(prefixHtml);
+		auto addText = [&](const QString &text) {
+			for (const EmojiRun &run : SplitEmojiRuns(text)) {
+				if (run.emoji) {
+					QLabel *slot = flow->addEmoteSlot(22);
+					slot->setToolTip(run.text);
+					const QPixmap local = RenderEmojiPixmap(run.text, 22);
+					if (!local.isNull())
+						slot->setPixmap(local);
+					if (!run.url.isEmpty())
+						FetchImageToLabel(run.url, slot, 22, run.url);
+					continue;
+				}
+				const QStringList parts = run.text.split(QRegularExpression(QStringLiteral("(\\s+)")));
+				for (const QString &part : parts) {
+					if (part.isEmpty())
+						continue;
+					if (part.startsWith(QLatin1String("http://")) ||
+					    part.startsWith(QLatin1String("https://")))
+						flow->addHtml(Linkify(EscapeHtml(part)));
+					else
+						flow->addPlain(part);
+				}
+			}
+		};
+		for (const ChatRun &run : msg.runs) {
+			if (!run.imageUrl.isEmpty()) {
+				QLabel *slot = flow->addEmoteSlot(22);
+				if (!run.text.isEmpty())
+					slot->setToolTip(run.text);
+				const QPixmap local = RenderEmojiPixmap(run.text, 22);
+				if (!local.isNull())
+					slot->setPixmap(local);
+				FetchImageToLabel(run.imageUrl, slot, 22, run.imageUrl);
+				continue;
+			}
+			addText(run.text);
+		}
+		body = flow;
 	} else {
 		/* Emoji are images (Twemoji). Qt text + the OBS theme color drops color emoji. */
 		auto *flow = new ChatFlowBody(row);
@@ -4344,7 +5008,9 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 			if (run.emoji) {
 				QLabel *slot = flow->addEmoteSlot(22);
 				slot->setToolTip(run.text);
-				slot->setPixmap(RenderEmojiPixmap(run.text, 22));
+				const QPixmap local = RenderEmojiPixmap(run.text, 22);
+				if (!local.isNull())
+					slot->setPixmap(local);
 				if (!run.url.isEmpty())
 					FetchImageToLabel(run.url, slot, 22, run.url);
 				continue;
