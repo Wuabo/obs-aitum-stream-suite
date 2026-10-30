@@ -4710,6 +4710,7 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 		return;
 	if (msg.id.isEmpty())
 		msg.id = QStringLiteral("kick-%1-%2").arg(msg.ts).arg(msg.user);
+	DropKickEcho(msg);
 	AppendMessage(msg);
 }
 
@@ -4717,6 +4718,8 @@ void ChatDock::OnKickStreamOffline()
 {
 	SetViewerCount(Kick, 0, false);
 }
+
+static bool ItemHasChatId(const QListWidgetItem *item, const QString &want);
 
 void ChatDock::SendKickMessage(const QString &text)
 {
@@ -4734,19 +4737,95 @@ void ChatDock::SendKickMessage(const QString &text)
 		      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")},
 		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
 		     QJsonDocument(body).toJson(QJsonDocument::Compact), "POST",
-		     [this, text](int status, const QByteArray &, const QString &) {
+		     [this, text](int status, const QByteArray &reply, const QString &) {
 			     if (status < 200 || status >= 300)
 				     return;
+			     const QJsonObject root = QJsonDocument::fromJson(reply).object();
+			     const QJsonValue data = root.value(QStringLiteral("data"));
+			     QJsonObject sent;
+			     if (data.isArray()) {
+				     const QJsonArray rows = data.toArray();
+				     if (!rows.isEmpty())
+					     sent = rows.at(0).toObject();
+			     } else {
+				     sent = data.toObject();
+			     }
+			     const QString messageId = JsonId(sent.value(QStringLiteral("message_id")));
+			     if (!messageId.isEmpty() && seenMessageIds.contains(messageId))
+				     return;
+			     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+			     const QString self = accounts[Kick].userName;
+			     if (messageList) {
+				     for (int i = messageList->count() - 1; i >= 0; --i) {
+					     QListWidgetItem *item = messageList->item(i);
+					     if (!item || item->data(Qt::UserRole).toBool() || item->data(Qt::UserRole + 7).toBool())
+						     continue;
+					     if (item->data(Qt::UserRole + 4).toInt() != int(Kick))
+						     continue;
+					     if (!messageId.isEmpty() && ItemHasChatId(item, messageId))
+						     return;
+					     const qint64 ts = item->data(Qt::UserRole + 10).toLongLong();
+					     if (ts > 0 && now - ts > 20000)
+						     break;
+					     if (item->data(Qt::UserRole + 5).toString().trimmed() != text.trimmed())
+						     continue;
+					     const QString name = item->data(Qt::UserRole + 9).toString();
+					     if (!self.isEmpty() && name.compare(self, Qt::CaseInsensitive) != 0)
+						     continue;
+					     return;
+				     }
+			     }
 			     ChatMessage msg;
 			     msg.platform = Kick;
-			     msg.user = accounts[Kick].userName.isEmpty() ? QStringLiteral("You") : accounts[Kick].userName;
+			     msg.echo = true;
+			     msg.user = self.isEmpty() ? QStringLiteral("You") : self;
+			     msg.userLogin = accounts[Kick].login;
+			     msg.actorId = accounts[Kick].userId;
 			     msg.color = QStringLiteral("#53FC18");
 			     msg.text = text;
-			     msg.ts = QDateTime::currentMSecsSinceEpoch();
-			     msg.id = QStringLiteral("local-kick-%1").arg(msg.ts);
+			     msg.ts = now;
+			     msg.id = messageId.isEmpty() ? QStringLiteral("local-kick-%1").arg(msg.ts) : messageId;
 			     AppendMessage(msg);
 		     });
 	});
+}
+
+void ChatDock::DropKickEcho(const ChatMessage &msg)
+{
+	if (!messageList || msg.text.isEmpty())
+		return;
+	int match = -1;
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || !item->data(Qt::UserRole + 7).toBool())
+			continue;
+		if (item->data(Qt::UserRole + 4).toInt() != int(Kick))
+			continue;
+		if (!msg.id.isEmpty() && ItemHasChatId(item, msg.id)) {
+			match = i;
+			break;
+		}
+		if (match >= 0)
+			continue;
+		const qint64 ts = item->data(Qt::UserRole + 10).toLongLong();
+		const qint64 delta = msg.ts - ts;
+		if (ts > 0 && msg.ts > 0 && (delta > 20000 || delta < -20000))
+			continue;
+		if (item->data(Qt::UserRole + 5).toString().trimmed() != msg.text.trimmed())
+			continue;
+		match = i;
+	}
+	if (match < 0)
+		return;
+	QListWidgetItem *item = messageList->takeItem(match);
+	if (!item)
+		return;
+	const QString id = item->data(Qt::UserRole + 1).toString();
+	if (!id.isEmpty())
+		seenMessageIds.remove(id);
+	for (const QString &alias : item->data(Qt::UserRole + 6).toStringList())
+		seenMessageIds.remove(alias);
+	delete item;
 }
 
 void ChatDock::FetchTwitchBadgeSets()
@@ -5748,6 +5827,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		      msg.userLogin.isEmpty() ? msg.user.toLower() : msg.userLogin.toLower());
 	item->setData(Qt::UserRole + 4, int(msg.platform));
 	item->setData(Qt::UserRole + 5, msg.text);
+	item->setData(Qt::UserRole + 7, msg.echo);
 	item->setData(Qt::UserRole + 8, msg.actorId.isEmpty() ? msg.userLogin : msg.actorId);
 	item->setData(Qt::UserRole + 9, msg.user);
 	item->setData(Qt::UserRole + 10, msg.ts);

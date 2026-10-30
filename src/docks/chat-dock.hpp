@@ -107,6 +107,7 @@ private:
 		QString text;
 		qint64 ts = 0;
 		bool system = false;
+		bool echo = false; /* Local copy of a message we just sent. The live event replaces it. */
 		bool showPlatformIcon = true;
 		QVector<ChatBadge> badges;
 		QVector<ChatEmoteSpan> emotes;
@@ -264,6 +265,7 @@ private:
 	void HandleKickChatPayload(const QJsonObject &data, const QString &eventName = QString());
 	void OnKickStreamOffline();
 	void SendKickMessage(const QString &text);
+	void DropKickEcho(const ChatMessage &msg);
 	QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity) const;
 	static QString KickRoleBadgeKey(const QString &type, int count = 0);
 	static QPixmap KickRoleBadgePixmap(const QString &role, int size = 14);
