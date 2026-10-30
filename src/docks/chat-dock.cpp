@@ -3485,9 +3485,15 @@ void ChatDock::PollYouTubeInnertube()
 		QString version = ytInnertubeClientVersion;
 		if (version.isEmpty())
 			version = QStringLiteral("2.20261030.01.00");
-		QString key = ytInnertubeApiKey;
-		if (key.isEmpty())
-			key = QStringLiteral("AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8");
+		/* Key comes from the live_chat HTML (INNERTUBE_API_KEY). Never ship a hardcoded AIza… —
+		 * GitHub secret scanning treats it as a leaked Google API key. */
+		const QString key = ytInnertubeApiKey;
+		if (key.isEmpty()) {
+			youtubePollInFlight = false;
+			ytContinuation.clear();
+			schedule(1500);
+			return;
+		}
 		QJsonObject client;
 		client.insert(QStringLiteral("clientName"), QStringLiteral("WEB"));
 		client.insert(QStringLiteral("clientVersion"), version);
@@ -3582,7 +3588,7 @@ void ChatDock::PollYouTubeInnertube()
 		     });
 	};
 
-	if (!ytContinuation.isEmpty() && !ytInnertubeClientVersion.isEmpty()) {
+	if (!ytContinuation.isEmpty() && !ytInnertubeClientVersion.isEmpty() && !ytInnertubeApiKey.isEmpty()) {
 		post(ytContinuation);
 		return;
 	}
