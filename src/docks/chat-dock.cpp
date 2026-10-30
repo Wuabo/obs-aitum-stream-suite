@@ -1685,7 +1685,7 @@ void ChatDock::ConnectTwitchIrc()
 
 				     CurlWsSendText(curl, "PASS oauth:" + token + "\r\n");
 				     CurlWsSendText(curl, "NICK " + nick + "\r\n");
-				     CurlWsSendText(curl, "CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
+				     CurlWsSendText(curl, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/echo-message\r\n");
 
 				     QByteArray lineBuf;
 				     while (!session->stop.load()) {
@@ -1873,7 +1873,10 @@ void ChatDock::HandleTwitchLine(const QString &line)
 	msg.emotes = TwitchEmotesFromTag(emotesTag);
 	if (msg.id.isEmpty())
 		msg.id = QStringLiteral("tw-%1-%2").arg(msg.ts).arg(msg.user);
+	const bool deleteAfter = TakeTwitchEcho(msg);
 	AppendMessage(msg);
+	if (deleteAfter && !msg.id.startsWith(QLatin1String("local-tw-")) && !msg.id.startsWith(QLatin1String("tw-")))
+		DeleteTwitchMessage(msg.id);
 }
 
 void ChatDock::SendTwitchMessage(const QString &text)
@@ -1884,6 +1887,9 @@ void ChatDock::SendTwitchMessage(const QString &text)
 	ChatMessage msg;
 	msg.platform = Twitch;
 	msg.user = accounts[Twitch].userName.isEmpty() ? twitchLogin : accounts[Twitch].userName;
+	msg.userLogin = twitchLogin;
+	msg.actorId = accounts[Twitch].userId;
+	msg.echo = true;
 	msg.color = QStringLiteral("#9146FF");
 	msg.text = text;
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
@@ -3535,7 +3541,14 @@ void ChatDock::ShowMessageActions(QListWidgetItem *item, QWidget *anchor)
 
 	if (chosen == removeAction) {
 		if (platform == Twitch) {
-			if (messageId.startsWith(QLatin1String("local-tw-")) || messageId.startsWith(QLatin1String("tw-"))) {
+			if (messageId.startsWith(QLatin1String("local-tw-"))) {
+				if (!twitchPendingDeletes.contains(messageId)) {
+					twitchPendingDeletes.insert(messageId);
+					AppendSystemMessage(Tr("ChatDockDeletePending").arg(PlatformLabel(Twitch)), Twitch);
+				}
+				return;
+			}
+			if (messageId.startsWith(QLatin1String("tw-"))) {
 				AppendSystemMessage(Tr("ChatDockDeleteNoId"), Twitch);
 				return;
 			}
@@ -4788,6 +4801,46 @@ void ChatDock::SendKickMessage(const QString &text)
 			     AppendMessage(msg);
 		     });
 	});
+}
+
+bool ChatDock::TakeTwitchEcho(const ChatMessage &msg)
+{
+	if (!messageList || twitchLogin.isEmpty())
+		return false;
+	if (msg.userLogin.compare(twitchLogin, Qt::CaseInsensitive) != 0)
+		return false;
+	int match = -1;
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || !item->data(Qt::UserRole + 7).toBool())
+			continue;
+		if (item->data(Qt::UserRole + 4).toInt() != int(Twitch))
+			continue;
+		const QString id = item->data(Qt::UserRole + 1).toString();
+		if (!id.startsWith(QLatin1String("local-tw-")))
+			continue;
+		const qint64 ts = item->data(Qt::UserRole + 10).toLongLong();
+		const qint64 delta = msg.ts - ts;
+		if (ts > 0 && msg.ts > 0 && (delta > 20000 || delta < -20000))
+			continue;
+		if (item->data(Qt::UserRole + 5).toString().trimmed() != msg.text.trimmed())
+			continue;
+		match = i;
+		break;
+	}
+	if (match < 0)
+		return false;
+	QListWidgetItem *item = messageList->takeItem(match);
+	if (!item)
+		return false;
+	const QString id = item->data(Qt::UserRole + 1).toString();
+	const bool deleteAfter = twitchPendingDeletes.remove(id);
+	if (!id.isEmpty())
+		seenMessageIds.remove(id);
+	for (const QString &alias : item->data(Qt::UserRole + 6).toStringList())
+		seenMessageIds.remove(alias);
+	delete item;
+	return deleteAfter;
 }
 
 void ChatDock::DropKickEcho(const ChatMessage &msg)

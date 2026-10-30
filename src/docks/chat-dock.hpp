@@ -187,6 +187,8 @@ private:
 	int kickWsGen = 0;
 
 	QSet<QString> seenMessageIds;
+	/* OBS-sent Twitch rows start as local-tw- until echo-message returns the real id. */
+	QSet<QString> twitchPendingDeletes;
 	int maxMessages = 400;
 	QHash<QString, QString> twitchBadgeUrls;
 	QHash<QString, QString> twitchBadgeTitles;
@@ -219,6 +221,7 @@ private:
 	void DisconnectTwitchIrc();
 	void HandleTwitchLine(const QString &line);
 	void SendTwitchMessage(const QString &text);
+	bool TakeTwitchEcho(const ChatMessage &msg);
 	void FetchTwitchBadgeSets();
 	void IngestTwitchBadgeSets(const QJsonArray &sets);
 	QVector<ChatBadge> TwitchBadgesFromTags(const QString &badgesTag) const;
