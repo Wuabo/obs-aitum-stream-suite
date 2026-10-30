@@ -351,15 +351,6 @@ void OBSProjector::SetIsAlwaysOnTop(bool onTop, bool isOverridden)
 	SetAlwaysOnTop(this, onTop);
 }
 
-void OBSProjector::ScreenRemoved(QScreen *screen_)
-{
-	if (GetMonitor() < 0 || !screen)
-		return;
-
-	if (screen == screen_)
-		EscapeTriggered();
-}
-
 void OBSProjector::OBSSourceRenamed(void *data, calldata_t *params)
 {
 	OBSProjector *window = static_cast<OBSProjector *>(data);

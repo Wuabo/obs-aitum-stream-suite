@@ -121,7 +121,6 @@ private:
 	int sendPlatform = Twitch;
 	QString ytLiveChatId;
 	QString ytVideoId;
-	QString ytNextPage;
 	QString ytContinuation;
 	QString ytInnertubeClientVersion;
 	QString ytInnertubeApiKey;
@@ -168,17 +167,11 @@ private:
 	bool youtubeWaitingAnnounced = false;
 	bool youtubeQuotaAnnounced = false;
 	bool youtubePollInFlight = false;
-	int youtubePageTokenFails = 0;
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
 	qint64 youtubeLastTransitionMs = 0;
-	qint64 youtubeLastDeleteSyncMs = 0;
-	/* Page tokens that actually produced lines on screen. Re-read them to see tombstones. */
-	QStringList ytDeletePageTokens;
 	/* Messages published before this are history from a previous poll/live — never render them. */
 	qint64 youtubeIgnoreBeforeMs = 0;
-	bool youtubeCatchingUp = true;
-	int youtubeCatchupPages = 0;
 	QSet<QString> ytPendingDeletes;
 	/* channel id -> liveChatBan id, so Unban can call liveChatBans.delete */
 	QHash<QString, QString> ytBanIds;
@@ -264,7 +257,6 @@ private:
 	void RemoveYouTubeBan(const QString &banId, const QString &channelId, const QString &displayName, bool listIfMissing);
 	bool AdoptYouTubeMessage(const ChatMessage &msg);
 	bool HandleYouTubeControlItem(const QJsonObject &obj);
-	void RefreshYouTubeDeletes();
 	bool BindYouTubeChat(const QString &chatId, const QString &videoId);
 	void ClearYouTubeMessages();
 	void ReportYouTubeHttpError(int status, const QByteArray &body);

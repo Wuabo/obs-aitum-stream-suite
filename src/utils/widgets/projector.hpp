@@ -44,7 +44,6 @@ private slots:
 	void ResizeToContent();
 	void OpenWindowedProjector();
 	void AlwaysOnTopToggled(bool alwaysOnTop);
-	void ScreenRemoved(QScreen *screen_);
 
 public:
 	OBSProjector(obs_canvas_t *canvas_, obs_source_t *source_, int monitor,

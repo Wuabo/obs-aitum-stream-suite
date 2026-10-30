@@ -201,7 +201,6 @@ public:
 
 	bool MultipleBaseSelected() const;
 	bool GroupsSelected() const;
-	bool GroupedItemsSelected() const;
 
 public slots:
 	inline void ReorderItems() { GetStm()->ReorderItems(); }

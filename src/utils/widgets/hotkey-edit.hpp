@@ -69,7 +69,6 @@ public:
 		setAttribute(Qt::WA_InputMethodEnabled, false);
 		setAttribute(Qt::WA_MacShowFocusRect, true);
 		InitSignalHandler();
-		CreateDupeIcon();
 		ResetKey();
 	}
 
@@ -77,16 +76,12 @@ public:
 	obs_key_combination_t key;
 	bool changed = false;
 
-	void UpdateDuplicationState();
-	bool hasDuplicate = false;
 	QVariant inputMethodQuery(Qt::InputMethodQuery) const override;
 
 protected:
 	OBSSignal layoutChanged;
-	QAction *dupeIcon;
 
 	void InitSignalHandler();
-	void CreateDupeIcon();
 
 	void keyPressEvent(QKeyEvent *event) override;
 #ifdef __APPLE__
@@ -104,7 +99,6 @@ public slots:
 
 signals:
 	void KeyChanged(obs_key_combination_t);
-	void SearchKey(obs_key_combination_t);
 };
 
 class OBSHotkeyWidget : public QWidget {
@@ -173,5 +167,4 @@ private slots:
 
 signals:
 	void KeyChanged();
-	void SearchKey(obs_key_combination_t);
 };

@@ -1078,11 +1078,9 @@ void ChatDock::SyncAccountsFromConfig()
 			youtubeConnectedAnnounced = false;
 			youtubeWaitingAnnounced = false;
 			youtubePollInFlight = false;
-			youtubePageTokenFails = 0;
 			youtubeNotLinkedAnnounced = false;
 			ytLiveChatId.clear();
 			ytVideoId.clear();
-			ytNextPage.clear();
 		} else {
 			kickConnectStarted = false;
 			kickConnectedAnnounced = false;
@@ -1397,15 +1395,11 @@ void ChatDock::StopConnections()
 	DisconnectKickChat();
 	ytLiveChatId.clear();
 	ytVideoId.clear();
-	ytNextPage.clear();
 	ytContinuation.clear();
 	ytInnertubeClientVersion.clear();
 	ytInnertubeApiKey.clear();
 	ytInnertubeVisitor.clear();
-	ytDeletePageTokens.clear();
 	youtubeIgnoreBeforeMs = 0;
-	youtubeCatchingUp = true;
-	youtubeCatchupPages = 0;
 	ytPendingDeletes.clear();
 	ytBanIds.clear();
 	kickSlug.clear();
@@ -1419,7 +1413,6 @@ void ChatDock::StopConnections()
 	youtubeWaitingAnnounced = false;
 	youtubeQuotaAnnounced = false;
 	youtubePollInFlight = false;
-	youtubePageTokenFails = 0;
 	youtubeLastFullDiscoverMs = 0;
 	youtubeLastViewerFetchMs = 0;
 	twitchConnectStarted = false;
@@ -2266,14 +2259,10 @@ void ChatDock::OnStreamingStarted()
 	youtubeConnectedAnnounced = false;
 	ytLiveChatId.clear();
 	ytVideoId.clear();
-	ytNextPage.clear();
 	ytContinuation.clear();
 	ytInnertubeClientVersion.clear();
 	ytInnertubeApiKey.clear();
 	ytInnertubeVisitor.clear();
-	ytDeletePageTokens.clear();
-	youtubeCatchingUp = true;
-	youtubeCatchupPages = 0;
 	ytPendingDeletes.clear();
 	ytBanIds.clear();
 	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
@@ -2303,15 +2292,10 @@ bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
 	}
 	const bool switching = !ytLiveChatId.isEmpty();
 	ytLiveChatId = chatId;
-	ytNextPage.clear();
 	ytContinuation.clear();
 	ytInnertubeClientVersion.clear();
 	ytInnertubeApiKey.clear();
 	ytInnertubeVisitor.clear();
-	ytDeletePageTokens.clear();
-	youtubePageTokenFails = 0;
-	youtubeCatchingUp = true;
-	youtubeCatchupPages = 0;
 	ytPendingDeletes.clear();
 	ytBanIds.clear();
 	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
@@ -2902,43 +2886,6 @@ bool ChatDock::HandleYouTubeControlItem(const QJsonObject &obj)
 	return true;
 }
 
-void ChatDock::RefreshYouTubeDeletes()
-{
-	/* The live cursor only returns new lines. A deleted message stays on the page that
-	 * first delivered it, rewritten as a tombstone. Re-read that page and do not append. */
-	if (ytLiveChatId.isEmpty() || ytDeletePageTokens.isEmpty() || !connectionsActive)
-		return;
-	const qint64 now = QDateTime::currentMSecsSinceEpoch();
-	if (youtubeLastDeleteSyncMs > 0 && now - youtubeLastDeleteSyncMs < 8000)
-		return;
-	youtubeLastDeleteSyncMs = now;
-	const QString token = ytDeletePageTokens.last();
-	const QString chatId = ytLiveChatId;
-	EnsureToken(YouTube, [this, token, chatId](bool ok) {
-		if (!ok || ytLiveChatId != chatId)
-			return;
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
-		QUrlQuery query;
-		query.addQueryItem(QStringLiteral("liveChatId"), chatId);
-		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
-		query.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("200"));
-		if (token != QLatin1String("*"))
-			query.addQueryItem(QStringLiteral("pageToken"), token);
-		url.setQuery(query);
-		Http(QString::fromUtf8(url.toEncoded()),
-		     {{QByteArrayLiteral("Authorization"),
-		       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}},
-		     {}, "GET", [this, chatId](int status, const QByteArray &body, const QString &) {
-			     if (ytLiveChatId != chatId || status < 200 || status >= 300)
-				     return;
-			     const QJsonArray items =
-				     QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
-			     for (const QJsonValue &row : items)
-				     HandleYouTubeControlItem(row.toObject());
-		     });
-	});
-}
-
 static QString YouTubeCaptureNear(const QByteArray &html, const char *marker, const QRegularExpression &re)
 {
 	const int at = html.indexOf(marker);
@@ -3384,248 +3331,11 @@ void ChatDock::PollYouTubeInnertube()
 
 void ChatDock::PollYouTubeChat()
 {
-	if (youtubePollInFlight)
+	if (youtubePollInFlight || ytVideoId.isEmpty())
 		return;
 	/* liveChat/messages has neither emoji images nor a delete event.
 	 * The site feed (get_live_chat) is what the YouTube chat window reads. */
-	if (!ytVideoId.isEmpty()) {
-		PollYouTubeInnertube();
-		return;
-	}
-	if (ytLiveChatId.isEmpty())
-		return;
-	youtubePollInFlight = true;
-	if (!youtubeConnectedAnnounced)
-		DebugYouTube(QStringLiteral("poll liveChatMessages…"));
-	EnsureToken(YouTube, [this](bool ok) {
-		if (!ok || ytLiveChatId.isEmpty()) {
-			youtubePollInFlight = false;
-			if (!ok) {
-				DebugYouTube(QStringLiteral("poll: token FAILED"));
-				blog(LOG_WARNING, "[Stream Suite] YouTube chat poll: token failed");
-				if (connectionsActive && !ytLiveChatId.isEmpty())
-					youtubeTimer->start(8000);
-			}
-			return;
-		}
-		const Account &acc = accounts[YouTube];
-		/* Discovery path is liveChat/messages — liveChatMessages 404s with an empty body. */
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
-		QUrlQuery query;
-		query.addQueryItem("liveChatId", ytLiveChatId);
-		query.addQueryItem("part", "snippet,authorDetails");
-		/* Big pages while skipping history, then small live pages. */
-		query.addQueryItem("maxResults", youtubeCatchingUp ? QStringLiteral("2000") : QStringLiteral("200"));
-		if (!ytNextPage.isEmpty())
-			query.addQueryItem("pageToken", ytNextPage);
-		url.setQuery(query);
-		const QString requestUrl = QString::fromUtf8(url.toEncoded());
-		const QString usedToken = ytNextPage;
-		const QString polledChat = ytLiveChatId;
-		Http(requestUrl,
-		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
-		     [this, usedToken, polledChat](int status, const QByteArray &body, const QString &error) {
-			     youtubePollInFlight = false;
-			     if (polledChat != ytLiveChatId) {
-				     if (connectionsActive && !ytLiveChatId.isEmpty())
-					     QTimer::singleShot(0, this, &ChatDock::PollYouTubeChat);
-				     return;
-			     }
-			     int interval = 5000;
-			     if (status >= 200 && status < 300) {
-				     youtubePageTokenFails = 0;
-				     const QJsonObject root = QJsonDocument::fromJson(body).object();
-				     if (root.contains(QStringLiteral("offlineAt"))) {
-					     SetViewerCount(YouTube, 0, false);
-					     ytLiveChatId.clear();
-					     ytNextPage.clear();
-					     youtubeConnectedAnnounced = false;
-					     youtubeCatchingUp = true;
-					     ClearYouTubeMessages();
-					     PersistYouTubeIds();
-					     DebugYouTube(QStringLiteral("poll: offlineAt → chat fechou"));
-					     blog(LOG_INFO, "[Stream Suite] YouTube live chat went offline");
-					     if (connectionsActive && !youtubeDiscoverTimer->isActive())
-						     youtubeDiscoverTimer->start();
-					     if (!youtubeWaitingAnnounced) {
-						     youtubeWaitingAnnounced = true;
-						     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
-					     }
-					     return;
-				     }
-				     const QString next = root.value("nextPageToken").toString();
-				     if (!next.isEmpty())
-					     ytNextPage = next;
-				     /* Honor YouTube's interval (often 5–10s). Floor at 5s to protect quota (5 units/call). */
-				     interval = qMax(5000, root.value("pollingIntervalMillis").toInt(10000));
-				     /* Only announce Connected once per session after a successful poll. */
-				     if (!youtubeConnectedAnnounced) {
-					     youtubeConnectedAnnounced = true;
-					     youtubeWaitingAnnounced = false;
-					     DebugYouTube(QStringLiteral("poll HTTP 200 → Connected"));
-					     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
-				     }
-				     if (youtubeIgnoreBeforeMs <= 0)
-					     youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
-				     const QJsonArray items = root.value("items").toArray();
-				     qint64 newestPub = 0;
-				     bool keptMessage = false;
-				     for (const QJsonValue &row : items) {
-					     const QJsonObject obj = row.toObject();
-					     if (HandleYouTubeControlItem(obj))
-						     continue;
-					     const QJsonObject snip = obj.value("snippet").toObject();
-					     const qint64 published = YouTubePublishedMs(snip);
-					     if (published > newestPub)
-						     newestPub = published;
-					     /* Same liveChatId keeps the previous stream's lines. Drop them. */
-					     if (published > 0 && published < youtubeIgnoreBeforeMs)
-						     continue;
-					     const QString type = snip.value("type").toString();
-					     /* Prefer typed text, then displayMessage (covers Super Chat / stickers / etc.). */
-					     QString text =
-						     snip.value("textMessageDetails").toObject().value("messageText").toString();
-					     if (text.isEmpty())
-						     text = snip.value("superChatDetails")
-								    .toObject()
-								    .value("userComment")
-								    .toString();
-					     if (text.isEmpty())
-						     text = snip.value("displayMessage").toString();
-					     if (text.isEmpty())
-						     continue;
-					     /* Skip pure system/fan-funding noise with no useful chat line when type is known-bad. */
-					     if (type == QLatin1String("fanFundingEvent") ||
-						 type == QLatin1String("pollEvent") ||
-						 type == QLatin1String("chatEndedEvent") ||
-						 type == QLatin1String("sponsorOnlyModeStartedEvent") ||
-						 type == QLatin1String("sponsorOnlyModeEndedEvent") ||
-						 type == QLatin1String("userBannedEvent"))
-						     continue;
-					     const QJsonObject author = obj.value("authorDetails").toObject();
-					     ChatMessage msg;
-					     msg.platform = YouTube;
-					     msg.id = obj.value("id").toString();
-	msg.user = author.value("displayName").toString();
-	if (msg.user.isEmpty())
-		msg.user = QStringLiteral("YouTube");
-	if (!msg.user.startsWith(QLatin1Char('@')))
-		msg.user.prepend(QLatin1Char('@'));
-					     msg.color = QStringLiteral("#FF5555");
-					     msg.text = text;
-					     msg.ts = QDateTime::currentMSecsSinceEpoch();
-					     msg.userLogin = author.value("channelId").toString();
-					     if (msg.userLogin.isEmpty())
-						     msg.userLogin = snip.value("authorChannelId").toString();
-					     if (author.value("isChatOwner").toBool())
-						     msg.badges.append({QStringLiteral("owner"), QStringLiteral("yt-role:owner"),
-									QStringLiteral("Owner")});
-					     if (author.value("isChatModerator").toBool())
-						     msg.badges.append({QStringLiteral("mod"), QStringLiteral("yt-role:moderator"),
-									QStringLiteral("Moderator")});
-					     if (author.value("isChatSponsor").toBool())
-						     msg.badges.append({QStringLiteral("member"), QStringLiteral("yt-role:member"),
-									QStringLiteral("Member")});
-					     if (author.value("isVerified").toBool())
-						     msg.badges.append({QStringLiteral("verified"),
-									QStringLiteral("yt-role:verified"),
-									QStringLiteral("Verified")});
-					     /* Reuse the local echo so a later tombstone hits the same row.
-					      * Insert id and list id are often different. */
-					     if (!AdoptYouTubeMessage(msg))
-						     AppendMessage(msg);
-					     keptMessage = true;
-				     }
-				     if (keptMessage) {
-					     const QString pageKey = usedToken.isEmpty() ? QStringLiteral("*") : usedToken;
-					     ytDeletePageTokens.removeAll(pageKey);
-					     ytDeletePageTokens.append(pageKey);
-					     while (ytDeletePageTokens.size() > 2)
-						     ytDeletePageTokens.removeFirst();
-				     }
-				     RefreshYouTubeDeletes();
-				     /* A full old page means we are still walking the previous live.
-				      * Skip ahead quickly, then sit on YouTube's own poll interval. */
-				     const bool moreHistory = youtubeCatchingUp && !next.isEmpty() && next != usedToken &&
-							      newestPub > 0 && newestPub + 1500 < youtubeIgnoreBeforeMs &&
-							      youtubeCatchupPages < 40;
-				     if (moreHistory) {
-					     ++youtubeCatchupPages;
-					     interval = 1000;
-				     } else {
-					     youtubeCatchingUp = false;
-				     }
-			     } else {
-				     const QString errMsg = QJsonDocument::fromJson(body)
-								   .object()
-								   .value("error")
-								   .toObject()
-								   .value("message")
-								   .toString();
-				     DebugYouTube(QStringLiteral("poll HTTP %1 (%2 bytes): %3")
-							  .arg(status)
-							  .arg(body.size())
-							  .arg(errMsg.isEmpty() ? QString::fromUtf8(body.left(80))
-										: errMsg.left(100)));
-				     blog(LOG_WARNING, "[Stream Suite] YouTube chat poll HTTP %d: %s", status,
-					  error.isEmpty() ? body.left(200).constData() : error.toUtf8().constData());
-				     if (status == 401) {
-					     ReportYouTubeHttpError(status, body);
-					     youtubeConnectStarted = false;
-					     return;
-				     }
-				     if (status == 403) {
-					     ReportYouTubeHttpError(status, body);
-					     if (YouTubeBodyLooksLikeQuota(body))
-						     return;
-					     /* Invalid/forbidden chat id — drop and rediscover instead of stalling forever. */
-					     ytLiveChatId.clear();
-					     ytNextPage.clear();
-					     youtubeConnectedAnnounced = false;
-					     youtubeConnectStarted = false;
-					     if (connectionsActive)
-						     QTimer::singleShot(3000, this, &ChatDock::StartYouTubeChat);
-					     return;
-				     }
-				     if (status == 400) {
-					     /* Stale/single-use pageToken — drop and keep polling; do not rediscover. */
-					     if (!ytNextPage.isEmpty()) {
-						     ytNextPage.clear();
-						     youtubePageTokenFails++;
-					     } else {
-						     /* Bad liveChatId often returns 400 — rediscover. */
-						     ytLiveChatId.clear();
-						     youtubeConnectedAnnounced = false;
-						     youtubeConnectStarted = false;
-						     if (connectionsActive)
-							     QTimer::singleShot(2000, this, &ChatDock::StartYouTubeChat);
-						     return;
-					     }
-					     interval = youtubePageTokenFails > 3 ? 10000 : 3000;
-				     } else if (status == 404) {
-					     /* Chat stays closed while the broadcast is still "ready". Custom RTMP
-					      * outputs do not call liveBroadcasts.transition, so do that ourselves. */
-					     ytNextPage.clear();
-					     youtubePageTokenFails++;
-					     DebugYouTube(QStringLiteral("poll 404 #%1 — retry same chat id")
-								  .arg(youtubePageTokenFails));
-					     if (!youtubeWaitingAnnounced && !youtubeConnectedAnnounced) {
-						     youtubeWaitingAnnounced = true;
-						     AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
-					     }
-					     if (youtubePageTokenFails >= 1)
-						     TryYouTubeGoLive();
-					     if (connectionsActive && !ytLiveChatId.isEmpty())
-						     youtubeTimer->start(8000);
-					     return;
-				     } else {
-					     interval = 8000;
-				     }
-			     }
-			     if (connectionsActive && !ytLiveChatId.isEmpty())
-				     youtubeTimer->start(interval);
-		     });
-	});
+	PollYouTubeInnertube();
 }
 
 static bool ItemHasChatId(const QListWidgetItem *item, const QString &want);

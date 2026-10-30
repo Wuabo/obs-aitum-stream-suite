@@ -1533,28 +1533,6 @@ bool SourceTree::GroupsSelected() const
 	return true;
 }
 
-bool SourceTree::GroupedItemsSelected() const
-{
-	SourceTreeModel *stm = GetStm();
-	QModelIndexList selectedIndices = selectedIndexes();
-	obs_scene_t *scene = getScene(getSceneParam);
-
-	if (!selectedIndices.size()) {
-		return false;
-	}
-
-	for (auto &idx : selectedIndices) {
-		obs_sceneitem_t *item = stm->items[idx.row()];
-		obs_scene *itemScene = obs_sceneitem_get_scene(item);
-
-		if (itemScene != scene) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
 void SourceTree::Remove(OBSSceneItem item, OBSScene scene)
 {
 	if (canvasDock &&
