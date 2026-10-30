@@ -124,16 +124,22 @@ bool IsWarmKind(const QString &kind)
 QString KindIcon(const QString &kind)
 {
 	if (kind == QLatin1String("raid"))
-		return QStringLiteral("🚀");
+		return QStringLiteral("R");
 	if (kind == QLatin1String("superchat"))
-		return QStringLiteral("✦");
+		return QStringLiteral("S");
 	if (kind == QLatin1String("bits"))
-		return QStringLiteral("◆");
+		return QStringLiteral("B");
 	if (kind == QLatin1String("redeem"))
-		return QStringLiteral("◎");
+		return QStringLiteral("P");
 	if (kind == QLatin1String("follow"))
-		return QStringLiteral("♥");
-	return QStringLiteral("♥");
+		return QStringLiteral("F");
+	if (kind == QLatin1String("gift"))
+		return QStringLiteral("G");
+	if (kind == QLatin1String("member"))
+		return QStringLiteral("M");
+	if (kind == QLatin1String("sub"))
+		return QStringLiteral("S");
+	return QStringLiteral("A");
 }
 
 QString KindLabel(const QString &kind)
