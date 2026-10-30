@@ -1,0 +1,16 @@
+{
+  "name": "aitum-stream-suite",
+  "display_name": "Aitum Stream Suite",
+  "id": "tv.aitum.streamsuite",
+  "version": "1.2.4",
+  "os_arch": "windows-x64",
+  "description": "Multi-canvas streaming suite with unified chat and stream info for Twitch, YouTube and Kick.",
+  "long_description": "Aitum Stream Suite adds multi-canvas outputs, unified chat moderation, stream info controls and alerts for Twitch, YouTube and Kick.",
+  "has_icon": false,
+  "has_banner": false,
+  "urls": {
+    "website": "https://aitum.tv",
+    "support": "mailto:support@aitum.tv",
+    "repository": "https://github.com/Aitum/obs-aitum-stream-suite"
+  }
+}
