@@ -6,7 +6,6 @@
 #include <obs.h>
 
 #include <QAbstractItemView>
-#include <QChildEvent>
 #include <QDockWidget>
 #include <QEvent>
 #include <QFrame>

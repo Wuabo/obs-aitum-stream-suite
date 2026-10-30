@@ -7,7 +7,6 @@
 #include <QGuiApplication>
 #include <QItemSelectionModel>
 #include <QMenu>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QStyle>
 #include <QToolBar>

@@ -18,9 +18,7 @@
 #include "hotkey-edit.hpp"
 
 #include <util/dstr.hpp>
-#include <QPointer>
 #include <QStyle>
-#include <QAction>
 
 #include "obs-frontend-api.h"
 #include "obs-module.h"

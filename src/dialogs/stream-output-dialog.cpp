@@ -8,7 +8,6 @@
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
-#include <QFont>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPainter>

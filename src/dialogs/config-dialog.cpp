@@ -5,9 +5,7 @@
 #include "stream-output-dialog.hpp"
 #include <QCheckBox>
 #include <QComboBox>
-#include <QCompleter>
 #include <QDialogButtonBox>
-#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -19,7 +17,6 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QRadioButton>
 #include <QScrollArea>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -132,8 +129,6 @@ OBSBasicSettings::OBSBasicSettings(QMainWindow *parent) : QDialog(parent)
 	scrollArea->setLineWidth(0);
 	scrollArea->setFrameShape(QFrame::NoFrame);
 	settingsPages->addWidget(scrollArea);
-
-	//canvasPage
 
 	canvasLayout = new QFormLayout;
 	canvasLayout->setContentsMargins(9, 2, 9, 9);

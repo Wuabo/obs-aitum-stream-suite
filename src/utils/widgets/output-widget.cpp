@@ -880,9 +880,6 @@ bool OutputWidget::StartOutput(bool automated)
 		} else {
 			obs_data_set_string(s, "key", key);
 		}
-		//use_auth
-		//username
-		//password
 		std::string service_name = "aitum_stream_suite_service_";
 		service_name += name;
 		auto service = obs_service_create(whip ? "whip_custom" : "rtmp_custom", service_name.c_str(), s, nullptr);

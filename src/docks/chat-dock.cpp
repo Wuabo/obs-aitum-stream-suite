@@ -34,7 +34,6 @@
 #include <QMouseEvent>
 #include <QMovie>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPixmap>
 #include <QPointer>
 #include <QCheckBox>
@@ -5369,8 +5368,6 @@ void ChatDock::OnKickStreamOffline()
 {
 	SetViewerCount(Kick, 0, false);
 }
-
-static bool ItemHasChatId(const QListWidgetItem *item, const QString &want);
 
 void ChatDock::SendKickMessage(const QString &text)
 {

@@ -24,7 +24,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
-#include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QAbstractItemView>
 #include <QPixmap>

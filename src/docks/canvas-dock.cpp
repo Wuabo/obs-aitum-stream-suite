@@ -13,7 +13,6 @@
 #include <obs-module.h>
 #include <QAbstractItemDelegate>
 #include <QComboBox>
-#include <QDockWidget>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
@@ -34,7 +33,6 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QSplitter>
 #include <QStyle>
 #include <QTimer>
 #include <QToolBar>

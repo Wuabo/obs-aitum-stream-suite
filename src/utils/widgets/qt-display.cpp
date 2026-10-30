@@ -3,7 +3,6 @@
 #include <QWindow>
 #include <QScreen>
 #include <QResizeEvent>
-#include <QShowEvent>
 
 #include <obs-config.h>
 

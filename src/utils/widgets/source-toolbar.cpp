@@ -10,7 +10,6 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QStandardItemModel>
-#include <QVariant>
 
 #include "moc_source-toolbar.cpp"
 

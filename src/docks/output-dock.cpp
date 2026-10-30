@@ -5,8 +5,6 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <QMap>
-#include <QCheckBox>
-#include <QGroupBox>
 #include <QIcon>
 #include <QLabel>
 #include <QMainWindow>
@@ -18,7 +16,6 @@
 #include <QScrollArea>
 #include <QTime>
 #include <QToolBar>
-#include <QToolButton>
 #include <src/utils/color.hpp>
 #include <src/utils/icon.hpp>
 #include <util/config-file.h>

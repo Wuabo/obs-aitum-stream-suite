@@ -13,7 +13,6 @@
 #include <QDateTime>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -21,7 +20,6 @@
 #include <QListWidget>
 #include <QMetaObject>
 #include <QPointer>
-#include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
 

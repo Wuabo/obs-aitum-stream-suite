@@ -2,7 +2,6 @@
 #include <QGuiApplication>
 #include <QMouseEvent>
 #include <QMenu>
-#include <QScreen>
 #include <QWindow>
 #include "projector.hpp"
 #include <obs-module.h>
