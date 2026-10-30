@@ -1775,7 +1775,6 @@ void ChatDock::ConnectTwitchIrc()
 			     const QByteArray token = accounts[Twitch].accessToken.toUtf8();
 			     const QByteArray nick = twitchLogin.toUtf8();
 			     twitchJoined = false;
-			     twitchBuffer.clear();
 			     twitchWsGen++;
 			     const int gen = twitchWsGen;
 			     auto session = std::make_shared<ChatCurlWsSession>();
@@ -1894,7 +1893,6 @@ void ChatDock::DisconnectTwitchIrc()
 	}
 	twitchJoined = false;
 	twitchReadJoined = false;
-	twitchBuffer.clear();
 }
 
 void ChatDock::StartTwitchEchoReader()
@@ -2831,59 +2829,6 @@ void ChatDock::TryYouTubeGoLive()
 				  });
 		     });
 	});
-}
-
-bool ChatDock::HandleYouTubeControlItem(const QJsonObject &obj)
-{
-	const QJsonObject snip = obj.value(QStringLiteral("snippet")).toObject();
-	const QString type = snip.value(QStringLiteral("type")).toString();
-	const bool deleted = type == QLatin1String("tombstone") || type == QLatin1String("messageDeletedEvent") ||
-			     type == QLatin1String("messageRetractedEvent") ||
-			     type.contains(QLatin1String("eleted"), Qt::CaseInsensitive) ||
-			     type.contains(QLatin1String("etract"), Qt::CaseInsensitive);
-	if (type == QLatin1String("userBannedEvent")) {
-		const QJsonObject banned = snip.value(QStringLiteral("userBannedDetails"))
-						 .toObject()
-						 .value(QStringLiteral("bannedUserDetails"))
-						 .toObject();
-		const QString channelId = banned.value(QStringLiteral("channelId")).toString();
-		const QString name = banned.value(QStringLiteral("displayName")).toString();
-		const QString tip = Tr("ChatDockMessageRemovedUser").arg(name.isEmpty() ? channelId : name);
-		if (!channelId.isEmpty())
-			MarkMessagesDeletedByUser(YouTube, channelId, tip);
-		if (!name.isEmpty())
-			MarkMessagesDeletedByUser(YouTube, name, tip);
-		return true;
-	}
-	if (!deleted)
-		return false;
-	QStringList ids;
-	auto addId = [&ids](const QString &id) {
-		const QString trimmed = id.trimmed();
-		if (!trimmed.isEmpty() && !ids.contains(trimmed))
-			ids.append(trimmed);
-	};
-	/* Tombstones reuse the original message id. Delete/retract events use a different id
-	 * and point at the original via *MessageId. */
-	if (type == QLatin1String("tombstone"))
-		addId(obj.value(QStringLiteral("id")).toString());
-	const QJsonValue delVal = snip.value(QStringLiteral("messageDeletedDetails"));
-	if (delVal.isObject())
-		addId(delVal.toObject().value(QStringLiteral("deletedMessageId")).toString());
-	else if (delVal.isString())
-		addId(delVal.toString());
-	const QJsonValue retVal = snip.value(QStringLiteral("messageRetractedDetails"));
-	if (retVal.isObject())
-		addId(retVal.toObject().value(QStringLiteral("retractedMessageId")).toString());
-	else if (retVal.isString())
-		addId(retVal.toString());
-	addId(snip.value(QStringLiteral("deletedMessageId")).toString());
-	addId(snip.value(QStringLiteral("retractedMessageId")).toString());
-	blog(LOG_INFO, "[Stream Suite] YouTube delete type=%s id=%s", type.toUtf8().constData(),
-	     ids.join(QLatin1Char(',')).toUtf8().constData());
-	for (const QString &id : ids)
-		MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
-	return true;
 }
 
 static QString YouTubeCaptureNear(const QByteArray &html, const char *marker, const QRegularExpression &re)

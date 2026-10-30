@@ -157,7 +157,6 @@ private:
 	/* Second connection. Twitch does not send a sender their own PRIVMSG, so this one only captures that id. */
 	std::shared_ptr<ChatCurlWsSession> twitchReadWs;
 	std::shared_ptr<ChatCurlWsSession> kickWs;
-	QByteArray twitchBuffer;
 	bool twitchJoined = false;
 	bool connectionsActive = false;
 	bool kickSubscribed = false;
@@ -256,7 +255,6 @@ private:
 	void UnbanYouTubeUser(const QString &channelId, const QString &displayName);
 	void RemoveYouTubeBan(const QString &banId, const QString &channelId, const QString &displayName, bool listIfMissing);
 	bool AdoptYouTubeMessage(const ChatMessage &msg);
-	bool HandleYouTubeControlItem(const QJsonObject &obj);
 	bool BindYouTubeChat(const QString &chatId, const QString &videoId);
 	void ClearYouTubeMessages();
 	void ReportYouTubeHttpError(int status, const QByteArray &body);

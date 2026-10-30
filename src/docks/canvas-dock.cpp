@@ -425,8 +425,6 @@ void CanvasDock::LoadUI()
 
 	connect(preview, &OBSQTDisplay::DisplayResized, this, [this]() { ResizePreview(); });
 
-	//obs_display_set_enabled(preview->GetDisplay(), !preview_disabled);
-
 	auto addNudge = [this](const QKeySequence &seq, MoveDir direction, int distance) {
 		QAction *nudge = new QAction(preview);
 		nudge->setShortcut(seq);
@@ -475,7 +473,6 @@ void CanvasDock::LoadUI()
 		sceneList->setFrameShadow(QFrame::Plain);
 		sceneList->setSelectionMode(QAbstractItemView::SingleSelection);
 		sceneList->setViewMode(QListView::ListMode);
-		//sceneList->setResizeMode(QListView::Fixed);
 		sceneList->setSelectionMode(QAbstractItemView::SingleSelection);
 		sceneList->setDragEnabled(true);
 		sceneList->setDragDropMode(QAbstractItemView::InternalMove);
@@ -1507,9 +1504,6 @@ void CanvasDock::SetPreviewScalingWindow()
 {
 	SetFixedScaling(false);
 	vec2_zero(&scrollingOffset);
-	scrollX = 0.5f;
-	scrollY = 0.5f;
-	zoom = 1.0f;
 	ResizePreview();
 	if (preview) {
 		emit preview->DisplayResized();
@@ -1585,8 +1579,6 @@ void CanvasDock::ResizePreview()
 	previewScale = scale;
 	previewX = x;
 	previewY = y;
-	/* Keep legacy zoom path in sync for any code still reading zoom. */
-	zoom = fixedScaling ? (scale > 0.0f ? scalingAmount / scale : 1.0f) : 1.0f;
 	UpdatePreviewScaleControls();
 }
 
@@ -2655,8 +2647,6 @@ bool CanvasDock::DrawSelectedItem(obs_scene_t *scene, obs_sceneitem_t *item, voi
 		{{{1.f, 1.f, 0.f}}},
 	};
 
-	//main->GetCameraIcon();
-
 	QColor selColor = window->GetSelectionColor();
 	QColor cropColor = window->GetCropColor();
 	QColor hoverColor = window->GetHoverColor();
@@ -3159,9 +3149,6 @@ void CanvasDock::SwitchScene(const QString &scene_name, bool transition)
 	if (!scene_name.isEmpty()) {
 		currentSceneName = scene_name;
 	}
-	//if (scenesCombo && scenesCombo->currentText() != scene_name) {
-	//	scenesCombo->setCurrentText(scene_name);
-	//}
 	if (!scene_name.isEmpty()) {
 		if (sceneList) {
 			QListWidgetItem *item = sceneList->currentItem();
@@ -4698,8 +4685,6 @@ void CanvasDock::LoadScenes()
 		for (int idx = 0; idx < sceneCombo->count(); idx++) {
 			auto scene = obs_canvas_get_source_by_name(canvas, sceneCombo->itemText(idx).toUtf8().constData());
 			auto settings = obs_source_get_settings(scene);
-			//const int order = (int)obs_data_get_int(settings, "order");
-			//sceneCombo->insertItem(order, sceneCombo->itemText(idx));
 			if (obs_data_get_bool(settings, "canvas_active")) {
 				selectedIndex = idx;
 			}
@@ -5033,16 +5018,12 @@ OBSEventFilter *CanvasDock::BuildEventFilter()
 			return this->HandleMousePressEvent(static_cast<QMouseEvent *>(event));
 		case QEvent::MouseButtonRelease:
 			return this->HandleMouseReleaseEvent(static_cast<QMouseEvent *>(event));
-		//case QEvent::MouseButtonDblClick:			return this->HandleMouseClickEvent(				static_cast<QMouseEvent *>(event));
 		case QEvent::MouseMove:
 			return this->HandleMouseMoveEvent(static_cast<QMouseEvent *>(event));
-		//case QEvent::Enter:
 		case QEvent::Leave:
 			return this->HandleMouseLeaveEvent(static_cast<QMouseEvent *>(event));
 		case QEvent::Wheel:
 			return this->HandleMouseWheelEvent(static_cast<QWheelEvent *>(event));
-		//case QEvent::FocusIn:
-		//case QEvent::FocusOut:
 		case QEvent::KeyPress:
 			return this->HandleKeyPressEvent(static_cast<QKeyEvent *>(event));
 		case QEvent::KeyRelease:
@@ -5077,9 +5058,6 @@ bool CanvasDock::HandleMousePressEvent(QMouseEvent *event)
 		return false;
 	}
 
-	//float pixelRatio = 1.0f;
-	//float x = pos.x() - main->previewX / pixelRatio;
-	//float y = pos.y() - main->previewY / pixelRatio;
 	Qt::KeyboardModifiers modifiers = QGuiApplication::keyboardModifiers();
 	bool altDown = (modifiers & Qt::AltModifier);
 	bool shiftDown = (modifiers & Qt::ShiftModifier);
@@ -5113,10 +5091,6 @@ bool CanvasDock::HandleMousePressEvent(QMouseEvent *event)
 	}
 	startPos = GetMouseEventPos(event);
 
-	//vec2_set(&startPos, mouseEvent.x, mouseEvent.y);
-	//GetStretchHandleData(startPos, false);
-
-	//vec2_divf(&startPos, &startPos, main->previewScale / pixelRatio);
 	startPos.x = std::round(startPos.x);
 	startPos.y = std::round(startPos.y);
 
@@ -5480,9 +5454,6 @@ bool CanvasDock::HandleMouseMoveEvent(QMouseEvent *event)
 
 		if (!mouseMoved && hoveredPreviewItems.size() > 0) {
 			mousePos = pos;
-			//float scale = GetDevicePixelRatio();
-			//float x = qtPos.x(); // - main->previewX / scale;
-			//float y = qtPos.y(); // - main->previewY / scale;
 			vec2_set(&startPos, pos.x, pos.y);
 			updateCursor = true;
 		}
@@ -6046,11 +6017,6 @@ void CanvasDock::GetStretchHandleData(const vec2 &pos, bool ignoreGroup)
 		matrix4_rotate_aa4f(&screenToItem, &screenToItem, 0.0f, 0.0f, 1.0f, RAD(-itemRot));
 
 		obs_sceneitem_get_crop(stretchItem, &startCrop);
-		obs_sceneitem_get_pos(stretchItem, &startItemPos);
-
-		obs_source_t *s = obs_sceneitem_get_source(stretchItem);
-		cropSize.x = float(obs_source_get_width(s) - startCrop.left - startCrop.right);
-		cropSize.y = float(obs_source_get_height(s) - startCrop.top - startCrop.bottom);
 
 		stretchGroup = obs_sceneitem_get_group(scene, stretchItem);
 		if (stretchGroup && !ignoreGroup) {
@@ -6487,8 +6453,6 @@ void CanvasDock::MainSceneChanged()
 {
 	auto current_scene = obs_frontend_get_current_scene();
 	if (!current_scene) {
-		//if (linkedButton)
-		//	linkedButton->setChecked(false);
 		return;
 	}
 
@@ -6497,8 +6461,6 @@ void CanvasDock::MainSceneChanged()
 	auto c = obs_data_get_array(ss, "canvas");
 	obs_data_release(ss);
 	if (!c) {
-		//if (linkedButton)
-		//	linkedButton->setChecked(false);
 		return;
 	}
 	const auto count = obs_data_array_count(c);
@@ -6522,11 +6484,7 @@ void CanvasDock::MainSceneChanged()
 	if (found) {
 		auto sn = QString::fromUtf8(obs_data_get_string(found, "scene"));
 		SwitchScene(sn);
-		//if (linkedButton)
-		//	linkedButton->setChecked(true);
-	} // else if (linkedButton) {
-	//	linkedButton->setChecked(false);
-	//}
+	}
 	obs_data_release(found);
 	obs_data_array_release(c);
 }

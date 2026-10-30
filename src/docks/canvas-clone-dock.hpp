@@ -20,9 +20,6 @@ private:
 	obs_data_t *settings;
 	uint32_t canvas_width;
 	uint32_t canvas_height;
-	float zoom = 1.0f;
-	float scrollX = 0.5f;
-	float scrollY = 0.5f;
 	std::vector<OBSProjector *> projectors;
 	std::list<OBSSource> transition_cache;
 	std::list<OBSSource> scene_cache;

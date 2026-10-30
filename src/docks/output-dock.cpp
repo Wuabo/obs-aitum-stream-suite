@@ -70,7 +70,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	scrollArea->setWidgetResizable(true);
 	scrollArea->setLineWidth(0);
 	scrollArea->setFrameShape(QFrame::NoFrame);
-	//scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
 	auto layout = new QVBoxLayout;
 	layout->setContentsMargins(0, 0, 0, 0);

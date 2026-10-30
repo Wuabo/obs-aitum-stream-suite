@@ -88,9 +88,6 @@ private:
 	uint32_t canvas_width;
 	uint32_t canvas_height;
 
-	float zoom = 1.0f;
-	float scrollX = 0.5f;
-	float scrollY = 0.5f;
 	float groupRot = 0.0f;
 	float previewScale = 1.0f;
 	int previewX = 0;
@@ -149,8 +146,6 @@ private:
 	matrix4 screenToItem{};
 	matrix4 itemToScreen{};
 	obs_sceneitem_crop startCrop{};
-	vec2 startItemPos{};
-	vec2 cropSize{};
 	OBSSceneItem stretchGroup;
 	OBSSceneItem stretchItem;
 	ItemHandle stretchHandle = ItemHandle::None;

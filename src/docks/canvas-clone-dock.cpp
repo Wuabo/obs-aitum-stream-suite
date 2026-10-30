@@ -41,7 +41,6 @@ CanvasCloneDock::CanvasCloneDock(obs_data_t *settings_, QWidget *parent)
 	auto l = new QBoxLayout(QBoxLayout::TopToBottom, this);
 	l->setContentsMargins(0, 0, 0, 0);
 	setLayout(l);
-	//l->addWidget(preview);
 	l->addWidget(canvas_split);
 	canvas_split->setOrientation(Qt::Vertical);
 	canvas_split->addWidget(preview);
@@ -347,17 +346,10 @@ void CanvasCloneDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	float scale;
 
 	CanvasDock::GetScaleAndCenterPos(sourceCX, sourceCY, cx, cy, x, y, scale);
-	//if (window->previewScale != scale)
-	//	window->previewScale = scale;
-	auto newCX = scale * float(sourceCX);
-	auto newCY = scale * float(sourceCY);
-
-	auto extraCx = (window->zoom - 1.0f) * newCX;
-	auto extraCy = (window->zoom - 1.0f) * newCY;
-	int newCx = newCX * window->zoom;
-	int newCy = newCY * window->zoom;
-	x -= extraCx * window->scrollX;
-	y -= extraCy * window->scrollY;
+	const float newCX = scale * float(sourceCX);
+	const float newCY = scale * float(sourceCY);
+	const int newCx = int(newCX);
+	const int newCy = int(newCY);
 
 	gs_viewport_push();
 	gs_projection_push();
@@ -675,7 +667,6 @@ obs_source_t *CanvasCloneDock::DuplicateSource(obs_source_t *source, obs_source_
 				}
 			}
 			if (!duplicate) {
-				//duplicate = obs_source_duplicate(source, source_name, true);
 				duplicate =
 					obs_scene_get_source(obs_scene_duplicate(scene, source_name, OBS_SCENE_DUP_PRIVATE_REFS));
 				scene_cache.push_back(duplicate);
