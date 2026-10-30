@@ -68,9 +68,11 @@ public:
 		setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 	}
 
-	QLabel *addHtml(const QString &html)
+	QLabel *addHtml(const QString &html, const QString &objectName = QString())
 	{
 		auto *lab = new QLabel(this);
+		if (!objectName.isEmpty())
+			lab->setObjectName(objectName);
 		lab->setTextFormat(Qt::RichText);
 		lab->setTextInteractionFlags(Qt::TextBrowserInteraction);
 		lab->setOpenExternalLinks(true);
@@ -80,6 +82,21 @@ public:
 		lab->adjustSize();
 		segs.append({lab, lab->sizeHint().width(), lab->sizeHint().height()});
 		return lab;
+	}
+
+	void setAuthorHtml(const QString &html)
+	{
+		if (segs.isEmpty())
+			return;
+		auto *lab = qobject_cast<QLabel *>(segs.first().w);
+		if (!lab || lab->objectName() != QLatin1String("chatMsgAuthor"))
+			return;
+		lab->setText(html);
+		lab->adjustSize();
+		segs.first().wHint = qMax(lab->sizeHint().width(), 4);
+		segs.first().hHint = qMax(lab->sizeHint().height(), 16);
+		applyLayout(qMax(width(), 40));
+		updateGeometry();
 	}
 
 	QLabel *addPlain(const QString &text)
@@ -2620,12 +2637,14 @@ void ChatDock::StartYouTubeChat()
 						     QJsonDocument::fromJson(payload).object().value("items").toArray();
 					     if (!items.isEmpty()) {
 						     accounts[YouTube].userId = items.at(0).toObject().value("id").toString();
-						     accounts[YouTube].userName = items.at(0)
-											 .toObject()
-											 .value("snippet")
-											 .toObject()
-											 .value("title")
-											 .toString();
+						     const QJsonObject snip =
+							     items.at(0).toObject().value("snippet").toObject();
+						     accounts[YouTube].userName = snip.value("title").toString();
+						     const QString handle = snip.value("customUrl").toString();
+						     if (handle.startsWith(QLatin1Char('@')))
+							     ytAuthorName = handle;
+						     else if (!accounts[YouTube].userName.isEmpty())
+							     ytAuthorName = QLatin1Char('@') + accounts[YouTube].userName;
 					     }
 				     }
 				     afterChannel();
@@ -3000,9 +3019,14 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 	msg.user = YouTubeRichText(renderer.value(QStringLiteral("authorName")).toObject());
 	if (msg.user.isEmpty())
 		msg.user = QStringLiteral("YouTube");
+	if (!msg.user.startsWith(QLatin1Char('@')))
+		msg.user.prepend(QLatin1Char('@'));
 	msg.color = QStringLiteral("#FF5555");
 	msg.ts = published > 0 ? published : QDateTime::currentMSecsSinceEpoch();
 	msg.userLogin = renderer.value(QStringLiteral("authorExternalChannelId")).toString();
+	if (!accounts[YouTube].userId.isEmpty() &&
+	    msg.userLogin.compare(accounts[YouTube].userId, Qt::CaseInsensitive) == 0 && msg.user.startsWith(QLatin1Char('@')))
+		ytAuthorName = msg.user;
 
 	auto appendText = [&](const QString &text) {
 		if (text.isEmpty())
@@ -3359,9 +3383,11 @@ void ChatDock::PollYouTubeChat()
 					     ChatMessage msg;
 					     msg.platform = YouTube;
 					     msg.id = obj.value("id").toString();
-					     msg.user = author.value("displayName").toString();
-					     if (msg.user.isEmpty())
-						     msg.user = QStringLiteral("YouTube");
+	msg.user = author.value("displayName").toString();
+	if (msg.user.isEmpty())
+		msg.user = QStringLiteral("YouTube");
+	if (!msg.user.startsWith(QLatin1Char('@')))
+		msg.user.prepend(QLatin1Char('@'));
 					     msg.color = QStringLiteral("#FF5555");
 					     msg.text = text;
 					     msg.ts = QDateTime::currentMSecsSinceEpoch();
@@ -3491,7 +3517,13 @@ void ChatDock::SendYouTubeMessage(const QString &text)
 	/* Echo immediately (like Twitch); poll may also deliver the server copy with a real id. */
 	ChatMessage local;
 	local.platform = YouTube;
-	local.user = accounts[YouTube].userName.isEmpty() ? QStringLiteral("You") : accounts[YouTube].userName;
+	local.user = ytAuthorName;
+	if (local.user.isEmpty())
+		local.user = accounts[YouTube].userName;
+	if (local.user.isEmpty())
+		local.user = QStringLiteral("@You");
+	else if (!local.user.startsWith(QLatin1Char('@')))
+		local.user.prepend(QLatin1Char('@'));
 	local.color = QStringLiteral("#FF5555");
 	local.text = text;
 	local.ts = QDateTime::currentMSecsSinceEpoch();
@@ -5200,7 +5232,7 @@ QString ChatDock::TwitchEmoteImageUrl(const QString &emoteId)
 QWidget *ChatDock::BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent)
 {
 	auto *flow = new ChatFlowBody(parent);
-	flow->addHtml(prefixHtml);
+	flow->addHtml(prefixHtml, QStringLiteral("chatMsgAuthor"));
 
 	int last = 0;
 	const QString &raw = msg.text;
@@ -5239,7 +5271,7 @@ QVector<ChatDock::ChatEmoteSpan> ChatDock::KickEmotesFromText(const QString &raw
 QWidget *ChatDock::BuildKickEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent)
 {
 	auto *flow = new ChatFlowBody(parent);
-	flow->addHtml(prefixHtml);
+	flow->addHtml(prefixHtml, QStringLiteral("chatMsgAuthor"));
 
 	const QVector<ChatEmoteSpan> emotes = KickEmotesFromText(msg.text);
 	int last = 0;
@@ -5947,9 +5979,32 @@ bool ChatDock::AdoptYouTubeMessage(const ChatMessage &msg)
 {
 	if (!messageList || msg.id.isEmpty())
 		return false;
+	auto syncAuthor = [this](QListWidgetItem *item, const QString &name) {
+		if (!item || !name.startsWith(QLatin1Char('@')))
+			return;
+		if (item->data(Qt::UserRole + 9).toString() == name)
+			return;
+		item->setData(Qt::UserRole + 9, name);
+		const QString channel = item->data(Qt::UserRole + 8).toString();
+		if (!accounts[YouTube].userId.isEmpty() &&
+		    channel.compare(accounts[YouTube].userId, Qt::CaseInsensitive) == 0)
+			ytAuthorName = name;
+		QWidget *row = messageList->itemWidget(item);
+		if (!row)
+			return;
+		if (auto *flow = dynamic_cast<ChatFlowBody *>(row->findChild<QWidget *>(QStringLiteral("chatMsgBody")))) {
+			flow->setAuthorHtml(
+				QStringLiteral("<span style='color:#FF5555;font-weight:700;'>%1</span><span style='color:#e6e6e6;'>: </span>")
+					.arg(EscapeHtml(name)));
+		}
+		LayoutMessageRow(row, item, messageList->viewport()->width());
+	};
 	for (int i = 0; i < messageList->count(); ++i) {
-		if (ItemHasChatId(messageList->item(i), msg.id))
-			return true;
+		QListWidgetItem *item = messageList->item(i);
+		if (!ItemHasChatId(item, msg.id))
+			continue;
+		syncAuthor(item, msg.user);
+		return true;
 	}
 	for (int i = messageList->count() - 1; i >= 0; --i) {
 		QListWidgetItem *item = messageList->item(i);
@@ -5980,6 +6035,7 @@ bool ChatDock::AdoptYouTubeMessage(const ChatMessage &msg)
 			continue;
 		AddChatIdAlias(item, msg.id);
 		item->setData(Qt::UserRole + 7, true);
+		syncAuthor(item, msg.user);
 		seenMessageIds.insert(msg.id);
 		if (ytPendingDeletes.contains(msg.id)) {
 			ytPendingDeletes.remove(msg.id);
@@ -6122,7 +6178,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	} else if (!msg.runs.isEmpty()) {
 		/* YouTube site feed: text runs plus the real emoji image URL. */
 		auto *flow = new ChatFlowBody(row);
-		flow->addHtml(prefixHtml);
+		flow->addHtml(prefixHtml, QStringLiteral("chatMsgAuthor"));
 		auto addText = [&](const QString &text) {
 			for (const EmojiRun &run : SplitEmojiRuns(text)) {
 				if (run.emoji) {
@@ -6164,7 +6220,7 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	} else {
 		/* Emoji are images (Twemoji). Qt text + the OBS theme color drops color emoji. */
 		auto *flow = new ChatFlowBody(row);
-		flow->addHtml(prefixHtml);
+		flow->addHtml(prefixHtml, QStringLiteral("chatMsgAuthor"));
 		for (const EmojiRun &run : SplitEmojiRuns(msg.text)) {
 			if (run.emoji) {
 				QLabel *slot = flow->addEmoteSlot(22);

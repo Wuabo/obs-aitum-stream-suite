@@ -124,6 +124,7 @@ private:
 	QString ytInnertubeClientVersion;
 	QString ytInnertubeApiKey;
 	QString ytInnertubeVisitor;
+	QString ytAuthorName; /* @handle shown in YouTube live chat */
 	QString kickSlug;
 	QString kickChatroomId;
 	QString kickChannelId;
