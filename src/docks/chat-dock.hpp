@@ -57,6 +57,8 @@ public:
 	/* Stream Info found a YouTube broadcast/video — reuse that id (and chat id if already live). */
 	void NotifyYouTubeVideo(const QString &videoId, const QString &liveChatId = QString());
 	void OnStreamingStarted();
+	/* OBS is closing while YouTube is live. Transition the broadcast to complete before the process exits. */
+	void EndYouTubeLiveOnExit();
 	void PersistYouTubeIds();
 	void DebugYouTube(const QString &text);
 

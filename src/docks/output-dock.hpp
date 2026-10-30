@@ -78,7 +78,7 @@ public:
 
 	obs_data_array_t *GetOutputsArray();
 
-	void Exiting() { exiting = true; }
+	void Exiting();
 	void LoadSettings();
 	void SaveSettings();
 	bool AddChapterToOutput(const char *output_name, const char *chapter_name);

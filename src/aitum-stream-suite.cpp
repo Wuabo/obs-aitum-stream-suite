@@ -7,6 +7,7 @@
 #include "docks/output-dock.hpp"
 #include "docks/stream-info-dock.hpp"
 #include "docks/chat-dock.hpp"
+#include "utils/icon.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
 #include <obs-frontend-api.h>
@@ -454,13 +455,23 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
+		/* SCRIPTING_SHUTDOWN and EXIT both arrive. End the live once, while tokens and outputs still exist. */
+		static bool endedLiveOnExit = false;
+		if (!endedLiveOnExit) {
+			endedLiveOnExit = true;
+			const bool youtubeLive =
+				output_dock && output_dock->HasActiveStreamMatching([](const QString &endpoint) {
+					return DetectStreamPlatformFromEndpoint(endpoint) == StreamPlatformKind::YouTube;
+				});
+			if (youtubeLive && chat_dock)
+				chat_dock->EndYouTubeLiveOnExit();
+			if (output_dock)
+				output_dock->Exiting();
+		}
 		CancelSourcePreviews();
 		if (current_profile_config) {
 			obs_data_release(current_profile_config);
 			current_profile_config = nullptr;
-		}
-		if (output_dock) {
-			output_dock->Exiting();
 		}
 		/* Disconnect libobs signal handlers before ClearSceneData
 		 * (SCRIPTING_SHUTDOWN runs first) so callbacks never hit

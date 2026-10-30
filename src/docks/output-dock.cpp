@@ -336,6 +336,18 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 extern OutputDock *output_dock;
 void RemoveWidget(QWidget *widget);
 
+void OutputDock::Exiting()
+{
+	exiting = true;
+	videoCheckTimer.stop();
+	for (auto *ow : outputWidgets) {
+		if (ow && ow->IsStream()) {
+			ow->StopForShutdown();
+		}
+	}
+	blog(LOG_INFO, "[Stream Suite] live outputs stopped because OBS is closing");
+}
+
 OutputDock::~OutputDock()
 {
 	StopCanvasRecord();

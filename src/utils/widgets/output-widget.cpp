@@ -1349,6 +1349,23 @@ bool OutputWidget::StartOutput(std::function<void()> onStarted, const QString &f
 	return starting;
 }
 
+void OutputWidget::StopForShutdown()
+{
+	if (!output) {
+		return;
+	}
+	signal_handler_t *signal = obs_output_get_signal_handler(output);
+	if (signal) {
+		signal_handler_disconnect(signal, "start", output_start, this);
+		signal_handler_disconnect(signal, "stop", output_stop, this);
+	}
+	if (obs_output_active(output) || obs_output_reconnecting(output)) {
+		obs_output_force_stop(output);
+	}
+	obs_output_release(output);
+	output = nullptr;
+}
+
 void OutputWidget::StopOutput()
 {
 	if (!output || !obs_output_active(output)) {

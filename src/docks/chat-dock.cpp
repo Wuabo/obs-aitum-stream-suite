@@ -470,14 +470,14 @@ size_t CurlWrite(char *ptr, size_t size, size_t nmemb, void *userdata)
 	return size * nmemb;
 }
 
-HttpResult CurlPerform(CURL *curl)
+HttpResult CurlPerform(CURL *curl, long timeoutSec = 30L)
 {
 	HttpResult result;
 	char error[CURL_ERROR_SIZE] = {};
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWrite);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSec);
 	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, "aitum-stream-suite");
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -672,7 +672,120 @@ bool CurlWsWaitReadable(CURL *curl, int timeoutMs)
 #endif
 }
 
+/* Blocking request used while OBS is exiting. The async Http() path never runs after shutdown. */
+HttpResult SyncHttp(const QByteArray &url, const QList<QPair<QByteArray, QByteArray>> &headers, const QByteArray &body,
+		    const char *verb, long timeoutSec)
+{
+	HttpResult result;
+	CURL *curl = curl_easy_init();
+	if (!curl) {
+		result.error = QStringLiteral("curl_easy_init failed");
+		return result;
+	}
+	curl_slist *list = nullptr;
+	for (const auto &header : headers) {
+		const QByteArray line = header.first + ": " + header.second;
+		list = curl_slist_append(list, line.constData());
+	}
+	curl_easy_setopt(curl, CURLOPT_URL, url.constData());
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+	if (verb && QByteArray(verb) != "GET") {
+		curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verb);
+		if (!body.isEmpty()) {
+			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.constData());
+			curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+		}
+	}
+	result = CurlPerform(curl, timeoutSec);
+	curl_slist_free_all(list);
+	curl_easy_cleanup(curl);
+	return result;
+}
+
 } // namespace
+
+void ChatDock::EndYouTubeLiveOnExit()
+{
+	Account &acc = accounts[YouTube];
+	if (acc.accessToken.isEmpty() && acc.refreshToken.isEmpty()) {
+		blog(LOG_WARNING, "[Stream Suite] OBS closed during a YouTube live, but no YouTube account is linked");
+		return;
+	}
+
+	const qint64 now = QDateTime::currentSecsSinceEpoch();
+	if (acc.expiresAt > 0 && acc.expiresAt <= now + 60 && !acc.refreshToken.isEmpty() && !acc.clientId.isEmpty()) {
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("grant_type"), QStringLiteral("refresh_token"));
+		query.addQueryItem(QStringLiteral("refresh_token"), acc.refreshToken);
+		query.addQueryItem(QStringLiteral("client_id"), acc.clientId);
+		query.addQueryItem(QStringLiteral("client_secret"), acc.clientSecret);
+		const HttpResult refreshed =
+			SyncHttp(QByteArrayLiteral("https://oauth2.googleapis.com/token"),
+				 {{QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/x-www-form-urlencoded")}},
+				 query.query(QUrl::FullyEncoded).toUtf8(), "POST", 8);
+		const QJsonObject json = QJsonDocument::fromJson(refreshed.body).object();
+		if (refreshed.status >= 200 && refreshed.status < 300 && json.contains(QStringLiteral("access_token"))) {
+			acc.accessToken = json.value(QStringLiteral("access_token")).toString();
+			if (json.contains(QStringLiteral("refresh_token")))
+				acc.refreshToken = json.value(QStringLiteral("refresh_token")).toString();
+			const int expiresIn = json.value(QStringLiteral("expires_in")).toInt(0);
+			acc.expiresAt = expiresIn > 0 ? now + expiresIn : 0;
+		} else {
+			blog(LOG_WARNING, "[Stream Suite] YouTube token refresh on exit HTTP %d", refreshed.status);
+		}
+	}
+	if (acc.accessToken.isEmpty())
+		return;
+
+	const QList<QPair<QByteArray, QByteArray>> auth{
+		{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()},
+		{QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}};
+
+	QStringList ids;
+	if (!ytVideoId.isEmpty())
+		ids << ytVideoId;
+
+	QUrl listUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+	QUrlQuery listQuery;
+	listQuery.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
+	listQuery.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("active"));
+	listQuery.addQueryItem(QStringLiteral("broadcastType"), QStringLiteral("all"));
+	listQuery.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("5"));
+	listUrl.setQuery(listQuery);
+	const HttpResult listed = SyncHttp(listUrl.toEncoded(), auth, {}, "GET", 8);
+	if (listed.status >= 200 && listed.status < 300) {
+		const QJsonArray items = QJsonDocument::fromJson(listed.body).object().value(QStringLiteral("items")).toArray();
+		for (const QJsonValue &value : items) {
+			const QString id = value.toObject().value(QStringLiteral("id")).toString();
+			if (!id.isEmpty() && !ids.contains(id))
+				ids << id;
+		}
+	} else if (ids.isEmpty()) {
+		blog(LOG_WARNING, "[Stream Suite] YouTube active broadcasts on exit HTTP %d", listed.status);
+	}
+
+	if (ids.isEmpty()) {
+		blog(LOG_WARNING, "[Stream Suite] YouTube output is live, but no broadcast id was found to end");
+		return;
+	}
+
+	for (const QString &id : ids) {
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("complete"));
+		query.addQueryItem(QStringLiteral("id"), id);
+		query.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
+		url.setQuery(query);
+		const HttpResult ended = SyncHttp(url.toEncoded(), auth, QByteArrayLiteral("{}"), "POST", 8);
+		if (ended.status >= 200 && ended.status < 300) {
+			blog(LOG_INFO, "[Stream Suite] YouTube live ended because OBS closed (%s)",
+			     id.left(16).toUtf8().constData());
+		} else {
+			blog(LOG_WARNING, "[Stream Suite] YouTube end live HTTP %d: %s", ended.status,
+			     ended.body.left(180).constData());
+		}
+	}
+}
 
 const char *ChatDock::PlatformKey(Platform platform)
 {

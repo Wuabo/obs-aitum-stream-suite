@@ -56,6 +56,8 @@ public:
 	bool AddChapter(const char *chapter_name);
 	bool StartOutput(std::function<void()> onStarted, const QString &filenameOverride = QString());
 	void StopOutput();
+	/* Stop and release without queued callbacks. Used when OBS is exiting. */
+	void StopForShutdown();
 	bool IsStream() const;
 	bool IsRecord() const;
 	bool IsFileRecord() const;
