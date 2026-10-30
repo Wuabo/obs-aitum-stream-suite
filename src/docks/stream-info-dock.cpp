@@ -3,7 +3,9 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <QAction>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QMessageBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QCryptographicHash>
@@ -45,6 +47,7 @@
 #include <src/utils/icon.hpp>
 #include "output-dock.hpp"
 #include "chat-dock.hpp"
+#include "alerts-dock.hpp"
 
 extern obs_data_t *current_profile_config;
 extern OutputDock *output_dock;
@@ -53,7 +56,8 @@ void save_current_profile_config(bool save_docks);
 
 static const int kRedirectPort = 17654;
 static const char *kTwitchScopes =
-	"channel:manage:broadcast chat:read chat:edit moderator:manage:chat_messages moderator:manage:banned_users";
+	"channel:manage:broadcast chat:read chat:edit moderator:manage:chat_messages moderator:manage:banned_users "
+	"moderator:manage:chat_settings moderator:read:followers channel:read:subscriptions bits:read";
 static const QSize kCategoryIconSize(24, 32);
 
 /* liveBroadcasts.snippet.liveChatId — NOT activeLiveChatId (that is videos.liveStreamingDetails). */
@@ -336,6 +340,15 @@ static QFrame *InfoRow(QWidget *parent, const QString &labelText, QWidget *field
 	return row;
 }
 
+static void SelectComboValue(QComboBox *combo, const QString &value)
+{
+	if (!combo || value.isEmpty())
+		return;
+	const int index = combo->findData(value);
+	if (index >= 0)
+		combo->setCurrentIndex(index);
+}
+
 static void StyleTextButton(QPushButton *button)
 {
 	button->setMinimumHeight(28);
@@ -404,6 +417,38 @@ void StreamInfoDock::BuildUi()
 	descriptionRow->setObjectName(QStringLiteral("streamInfoDescriptionRow"));
 	rows->addWidget(descriptionRow);
 
+	privacyCombo = new QComboBox(content);
+	privacyCombo->addItem(Tr("StreamInfoPrivacyPublic"), QStringLiteral("public"));
+	privacyCombo->addItem(Tr("StreamInfoPrivacyUnlisted"), QStringLiteral("unlisted"));
+	privacyCombo->addItem(Tr("StreamInfoPrivacyPrivate"), QStringLiteral("private"));
+	auto *privacyRow = InfoRow(content, Tr("StreamInfoPrivacy"), privacyCombo);
+	privacyRow->setObjectName(QStringLiteral("streamInfoPrivacyRow"));
+	rows->addWidget(privacyRow);
+
+	latencyCombo = new QComboBox(content);
+	latencyCombo->addItem(Tr("StreamInfoLatencyNormal"), QStringLiteral("normal"));
+	latencyCombo->addItem(Tr("StreamInfoLatencyLow"), QStringLiteral("low"));
+	latencyCombo->addItem(Tr("StreamInfoLatencyUltraLow"), QStringLiteral("ultraLow"));
+	auto *latencyRow = InfoRow(content, Tr("StreamInfoLatency"), latencyCombo);
+	latencyRow->setObjectName(QStringLiteral("streamInfoLatencyRow"));
+	rows->addWidget(latencyRow);
+
+	kidsCheck = new QCheckBox(Tr("StreamInfoMadeForKids"), content);
+	auto *kidsRow = InfoRow(content, QString(), kidsCheck);
+	kidsRow->setObjectName(QStringLiteral("streamInfoKidsRow"));
+	rows->addWidget(kidsRow);
+
+	endYouTubeButton = new QPushButton(Tr("StreamInfoEndYouTube"), content);
+	StyleTextButton(endYouTubeButton);
+	endYouTubeButton->setEnabled(false);
+	auto *endRow = new QFrame(content);
+	endRow->setObjectName(QStringLiteral("streamInfoEndRow"));
+	auto *endLayout = new QHBoxLayout(endRow);
+	endLayout->setContentsMargins(8, 4, 8, 4);
+	endLayout->setSpacing(8);
+	endLayout->addWidget(endYouTubeButton);
+	rows->addWidget(endRow);
+
 	tagsEdit = new QLineEdit(content);
 	tagsEdit->setPlaceholderText(Tr("StreamInfoTagsHint"));
 	rows->addWidget(InfoRow(content, Tr("StreamInfoTags"), tagsEdit));
@@ -444,6 +489,7 @@ void StreamInfoDock::BuildUi()
 	connect(connectButton, &QPushButton::clicked, this, &StreamInfoDock::BeginConnect);
 	connect(disconnectButton, &QPushButton::clicked, this, &StreamInfoDock::DisconnectAccount);
 	connect(applyButton, &QPushButton::clicked, this, &StreamInfoDock::Apply);
+	connect(endYouTubeButton, &QPushButton::clicked, this, &StreamInfoDock::EndYouTubeBroadcast);
 	connect(categorySearch, &QLineEdit::textEdited, this, [this] {
 		searchTimer->start();
 	});
@@ -830,6 +876,8 @@ void StreamInfoDock::SavePlatform()
 	save_current_profile_config(false);
 	if (chat_dock)
 		chat_dock->SyncAccountsFromConfig();
+	if (alerts_dock)
+		alerts_dock->ReloadAccounts();
 }
 
 void StreamInfoDock::SetStatus(const QString &text)
@@ -847,6 +895,10 @@ void StreamInfoDock::UpdateFieldVisibility()
 	const bool youtube = platform == YouTube;
 	if (auto *row = findChild<QFrame *>(QStringLiteral("streamInfoDescriptionRow")))
 		row->setVisible(youtube);
+	for (const char *name : {"streamInfoPrivacyRow", "streamInfoLatencyRow", "streamInfoKidsRow", "streamInfoEndRow"}) {
+		if (auto *row = findChild<QFrame *>(QLatin1String(name)))
+			row->setVisible(youtube);
+	}
 	if (categorySearch)
 		categorySearch->setPlaceholderText(Tr("StreamInfoCategorySearch"));
 	QString endpoint = QStringLiteral("rtmp://live.twitch.tv/app");
@@ -890,6 +942,11 @@ void StreamInfoDock::UpdateDisconnectState()
 		applyButton->setEnabled(canApply);
 	if (disconnectButton->isEnabled() != canDisconnect)
 		disconnectButton->setEnabled(canDisconnect);
+	if (endYouTubeButton) {
+		const bool canEnd = accountConnected && platform == YouTube && !ytBroadcastId.isEmpty();
+		if (endYouTubeButton->isEnabled() != canEnd)
+			endYouTubeButton->setEnabled(canEnd);
+	}
 }
 
 void StreamInfoDock::SetConnected(bool connected)
@@ -1317,7 +1374,7 @@ void StreamInfoDock::RefreshYouTubeForChat()
 	*tryList = [this, ytReq, acceptBroadcast, tryList](const QString &status) {
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 		QUrlQuery query;
-		query.addQueryItem("part", "snippet,status");
+		query.addQueryItem("part", "snippet,status,contentDetails");
 		if (status == QLatin1String("mine"))
 			query.addQueryItem("mine", "true");
 		else
@@ -1402,7 +1459,13 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	const QJsonObject snippet = item.value("snippet").toObject();
 	titleEdit->setText(snippet.value("title").toString());
 	descriptionEdit->setPlainText(snippet.value("description").toString());
+	const QJsonObject status = item.value("status").toObject();
+	SelectComboValue(privacyCombo, status.value("privacyStatus").toString());
+	if (kidsCheck)
+		kidsCheck->setChecked(status.value("selfDeclaredMadeForKids").toBool());
+	SelectComboValue(latencyCombo, item.value("contentDetails").toObject().value("latencyPreference").toString());
 	SetResult(QString());
+	UpdateDisconnectState();
 	const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
 	const QString snippetChatId = YouTubeBroadcastChatId(snippet);
 	const bool dead = life == QLatin1String("complete") || life == QLatin1String("revoked") ||
@@ -1505,13 +1568,14 @@ void StreamInfoDock::LoadYouTubeBroadcast()
 	auto finishWithoutBroadcast = [this] {
 		ytBroadcastId.clear();
 		SetResult(Tr("StreamInfoNoBroadcast"));
+		UpdateDisconnectState();
 		categorySearch->clear();
 		LoadCategoryCatalog();
 	};
 	auto tryMine = [this, gen, ytGet, finishWithoutBroadcast] {
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 		QUrlQuery query;
-		query.addQueryItem("part", "snippet,status");
+		query.addQueryItem("part", "snippet,status,contentDetails");
 		query.addQueryItem("mine", "true");
 		query.addQueryItem("broadcastType", "all");
 		query.addQueryItem("maxResults", "50");
@@ -1533,7 +1597,7 @@ void StreamInfoDock::LoadYouTubeBroadcast()
 	auto requestStatus = [this, ytGet](const QString &status) {
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 		QUrlQuery query;
-		query.addQueryItem("part", "snippet,status");
+		query.addQueryItem("part", "snippet,status,contentDetails");
 		query.addQueryItem("broadcastStatus", status);
 		query.addQueryItem("broadcastType", "all");
 		query.addQueryItem("maxResults", "25");
@@ -2318,13 +2382,166 @@ void StreamInfoDock::ApplyYouTube()
 				     status += QStringLiteral(" · %1").arg(name.isEmpty() ? confirmed : name);
 				     if (confirmed != existingCategory)
 					     status += QStringLiteral(" (%1 → %2)").arg(existingCategory, confirmed);
-				     SetResult(status);
+				     UpdateYouTubeBroadcastSettings(status);
 			     } else {
 				     blog(LOG_WARNING, "[Stream Suite] YouTube videos.update HTTP %d: %s", vstatus,
 					  vbody.left(300).constData());
 				     SetResult(JsonError(vbody));
 			     }
 		     });
+	});
+}
+
+static QJsonObject YouTubeWritableContent(const QJsonObject &current, const QString &latency)
+{
+	QJsonObject out;
+	const char *keys[] = {"enableEmbed",
+			      "enableDvr",
+			      "recordFromStart",
+			      "enableAutoStart",
+			      "enableAutoStop",
+			      "startWithSlate",
+			      "enableClosedCaptions",
+			      "projection",
+			      "enableContentEncryption",
+			      "monitorStream",
+			      "closedCaptionsType"};
+	for (const char *key : keys) {
+		if (current.contains(QLatin1String(key)))
+			out.insert(QLatin1String(key), current.value(QLatin1String(key)));
+	}
+	if (!latency.isEmpty())
+		out.insert(QStringLiteral("latencyPreference"), latency);
+	else if (current.contains(QStringLiteral("latencyPreference")))
+		out.insert(QStringLiteral("latencyPreference"), current.value(QStringLiteral("latencyPreference")));
+	return out;
+}
+
+void StreamInfoDock::UpdateYouTubeBroadcastSettings(const QString &appliedStatus)
+{
+	if (ytBroadcastId.isEmpty() || !privacyCombo || !latencyCombo || !kidsCheck) {
+		SetResult(appliedStatus);
+		return;
+	}
+	const QString privacy = privacyCombo->currentData().toString();
+	const QString latency = latencyCombo->currentData().toString();
+	const bool kids = kidsCheck->isChecked();
+	QUrl getUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+	QUrlQuery query;
+	query.addQueryItem(QStringLiteral("part"), QStringLiteral("status,contentDetails"));
+	query.addQueryItem(QStringLiteral("id"), ytBroadcastId);
+	getUrl.setQuery(query);
+	QNetworkRequest req(getUrl);
+	req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+	Http(req, {}, "GET", [this, privacy, latency, kids, appliedStatus](int status, const QByteArray &body, const QString &) {
+		if (status < 200 || status >= 300) {
+			SetResult(appliedStatus + QStringLiteral(" · ") + JsonError(body));
+			return;
+		}
+		const QJsonArray items = QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
+		const QJsonObject current = items.isEmpty() ? QJsonObject() : items.at(0).toObject();
+		QJsonObject broadcastStatus;
+		broadcastStatus.insert(QStringLiteral("privacyStatus"), privacy.isEmpty() ? QStringLiteral("public") : privacy);
+		broadcastStatus.insert(QStringLiteral("selfDeclaredMadeForKids"), kids);
+		QJsonObject broadcast;
+		broadcast.insert(QStringLiteral("id"), ytBroadcastId);
+		broadcast.insert(QStringLiteral("status"), broadcastStatus);
+		broadcast.insert(QStringLiteral("contentDetails"),
+				 YouTubeWritableContent(current.value(QStringLiteral("contentDetails")).toObject(), latency));
+		QUrl putUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery putQuery;
+		putQuery.addQueryItem(QStringLiteral("part"), QStringLiteral("status,contentDetails"));
+		putUrl.setQuery(putQuery);
+		QNetworkRequest putReq(putUrl);
+		putReq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+		putReq.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+		Http(putReq, QJsonDocument(broadcast).toJson(QJsonDocument::Compact), "PUT",
+		     [this, appliedStatus](int putStatus, const QByteArray &putBody, const QString &) {
+			     if (putStatus >= 200 && putStatus < 300) {
+				     SetResult(appliedStatus);
+				     return;
+			     }
+			     blog(LOG_WARNING, "[Stream Suite] YouTube liveBroadcasts.update HTTP %d: %s", putStatus,
+				  putBody.left(300).constData());
+			     SetResult(appliedStatus + QStringLiteral(" · ") + JsonError(putBody));
+		     });
+	});
+}
+
+void StreamInfoDock::EndYouTubeBroadcast()
+{
+	const auto answer = QMessageBox::question(this, Tr("StreamInfoEndYouTube"), Tr("StreamInfoEndYouTubeConfirm"),
+						  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+	if (answer != QMessageBox::Yes)
+		return;
+	EnsureToken([this](bool ok) {
+		if (!ok) {
+			SetResult(Tr("StreamInfoNotConnected"));
+			return;
+		}
+		QStringList ids;
+		if (!ytBroadcastId.isEmpty())
+			ids << ytBroadcastId;
+		QUrl listUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery listQuery;
+		listQuery.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
+		listQuery.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("active"));
+		listQuery.addQueryItem(QStringLiteral("broadcastType"), QStringLiteral("all"));
+		listQuery.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("5"));
+		listUrl.setQuery(listQuery);
+		QNetworkRequest listReq(listUrl);
+		listReq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+		Http(listReq, {}, "GET", [this, ids](int status, const QByteArray &body, const QString &) mutable {
+			if (status >= 200 && status < 300) {
+				const QJsonArray items =
+					QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
+				for (const QJsonValue &value : items) {
+					const QString id = value.toObject().value(QStringLiteral("id")).toString();
+					if (!id.isEmpty() && !ids.contains(id))
+						ids << id;
+				}
+			}
+			if (ids.isEmpty()) {
+				SetResult(Tr("StreamInfoNoBroadcast"));
+				return;
+			}
+			auto left = std::make_shared<int>(ids.size());
+			auto error = std::make_shared<QString>();
+			auto finish = [this, left, error] {
+				if (--(*left) > 0)
+					return;
+				if (output_dock) {
+					output_dock->StopStreamsMatching([](const QString &endpoint) {
+						return DetectStreamPlatformFromEndpoint(endpoint) == StreamPlatformKind::YouTube;
+					});
+				}
+				SetResult(error->isEmpty() ? Tr("StreamInfoYouTubeEnded") : *error);
+			};
+			for (const QString &id : ids) {
+				QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"));
+				QUrlQuery query;
+				query.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("complete"));
+				query.addQueryItem(QStringLiteral("id"), id);
+				query.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
+				url.setQuery(query);
+				QNetworkRequest req(url);
+				req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
+				req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+				Http(req, QByteArrayLiteral("{}"), "POST",
+				     [this, id, error, finish](int code, const QByteArray &payload, const QString &) {
+					     if (code >= 200 && code < 300) {
+						     blog(LOG_INFO, "[Stream Suite] YouTube live ended from Stream Info (%s)",
+							  id.left(16).toUtf8().constData());
+					     } else {
+						     blog(LOG_WARNING, "[Stream Suite] YouTube end live HTTP %d: %s", code,
+							  payload.left(180).constData());
+						     if (error->isEmpty())
+							     *error = JsonError(payload);
+					     }
+					     finish();
+				     });
+			}
+		});
 	});
 }
 

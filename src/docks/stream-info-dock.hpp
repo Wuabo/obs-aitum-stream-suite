@@ -13,6 +13,7 @@
 #include <QVector>
 #include <functional>
 
+class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QPlainTextEdit;
@@ -79,6 +80,10 @@ private:
 	QLineEdit *categorySearch = nullptr;
 	QComboBox *categoryCombo = nullptr;
 	QPlainTextEdit *descriptionEdit = nullptr;
+	QComboBox *privacyCombo = nullptr;
+	QComboBox *latencyCombo = nullptr;
+	QCheckBox *kidsCheck = nullptr;
+	QPushButton *endYouTubeButton = nullptr;
 	QLineEdit *tagsEdit = nullptr;
 	QPushButton *applyButton = nullptr;
 	QLabel *resultLabel = nullptr;
@@ -133,6 +138,8 @@ private:
 	void Apply();
 	void ApplyTwitch();
 	void ApplyYouTube();
+	void UpdateYouTubeBroadcastSettings(const QString &appliedStatus);
+	void EndYouTubeBroadcast();
 	void ApplyKick();
 	void DisconnectAccount();
 	QStringList Tags() const;

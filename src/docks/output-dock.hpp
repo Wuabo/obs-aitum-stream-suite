@@ -24,7 +24,11 @@ private:
 	QLabel *mainStreamCanvasLabel = nullptr;
 	QLabel *mainRecordCanvasLabel = nullptr;
 	QLabel *mainStreamTimerLabel = nullptr;
+	QLabel *mainStreamStatsLabel = nullptr;
 	QLabel *mainRecordTimerLabel = nullptr;
+	uint64_t mainStreamStatsBytes = 0;
+	uint64_t mainStreamStatsNs = 0;
+	bool mainStreamStatsHave = false;
 	QPushButton *mainStreamButton = nullptr;
 	QPushButton *mainRecordButton = nullptr;
 	obs_output_t *canvasRecordOutput = nullptr;
@@ -42,6 +46,7 @@ private:
 	static QLabel *MakeTimerLabel(QWidget *parent);
 	static QString FormatElapsed(const QDateTime &start);
 	void SetTimerText(QLabel *label, bool active, QDateTime &startTime);
+	void UpdateMainStreamStats(bool active);
 
 	std::vector<OutputWidget *> outputWidgets;
 
@@ -85,6 +90,7 @@ public:
 	bool HasActiveStreams() const;
 	bool HasActiveRecordings() const;
 	bool HasActiveStreamMatching(const std::function<bool(const QString &server)> &match) const;
+	void StopStreamsMatching(const std::function<bool(const QString &server)> &match);
 
 public slots:
 	void UpdateMainStreamStatus(bool active);

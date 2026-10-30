@@ -21,6 +21,10 @@ private:
 	QPushButton *outputButton = nullptr;
 	QLabel *canvasLabel = nullptr;
 	QLabel *timerLabel = nullptr;
+	QLabel *statsLabel = nullptr;
+	uint64_t statsLastBytes = 0;
+	uint64_t statsLastNs = 0;
+	bool statsHaveSample = false;
 	obs_output_t *output = nullptr;
 
 	std::function<void()> onStarted = nullptr;
@@ -51,6 +55,7 @@ public:
 	obs_output_t *GetOutput() const { return output; }
 
 	void CheckActive();
+	void UpdateStats();
 	void SaveSettings();
 	void UpdateSettings(obs_data_t *data);
 	bool AddChapter(const char *chapter_name);

@@ -58,6 +58,47 @@ void OutputDock::SetTimerText(QLabel *label, bool active, QDateTime &startTime)
 	label->setText(FormatElapsed(startTime));
 }
 
+void OutputDock::UpdateMainStreamStats(bool active)
+{
+	if (!mainStreamStatsLabel)
+		return;
+	if (!active) {
+		if (!mainStreamStatsLabel->text().isEmpty())
+			mainStreamStatsLabel->clear();
+		mainStreamStatsHave = false;
+		return;
+	}
+	obs_output_t *output = obs_frontend_get_streaming_output();
+	if (!output) {
+		mainStreamStatsLabel->clear();
+		mainStreamStatsHave = false;
+		return;
+	}
+	if (obs_output_reconnecting(output)) {
+		mainStreamStatsLabel->setText(QString::fromUtf8(obs_module_text("OutputReconnecting")));
+		mainStreamStatsHave = false;
+		obs_output_release(output);
+		return;
+	}
+	const uint64_t now = os_gettime_ns();
+	const uint64_t bytes = obs_output_get_total_bytes(output);
+	const long long dropped = (long long)obs_output_get_frames_dropped(output);
+	obs_output_release(output);
+	if (!mainStreamStatsHave) {
+		mainStreamStatsBytes = bytes;
+		mainStreamStatsNs = now;
+		mainStreamStatsHave = true;
+		return;
+	}
+	if (now < mainStreamStatsNs || now - mainStreamStatsNs < 1000000000ULL)
+		return;
+	const double seconds = double(now - mainStreamStatsNs) / 1000000000.0;
+	const double kbps = seconds > 0.0 ? (double(bytes - mainStreamStatsBytes) * 8.0 / seconds) / 1000.0 : 0.0;
+	mainStreamStatsBytes = bytes;
+	mainStreamStatsNs = now;
+	mainStreamStatsLabel->setText(QString::fromUtf8(obs_module_text("OutputStats")).arg(qRound(kbps)).arg(dropped));
+}
+
 OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 {
 
@@ -177,6 +218,10 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	l2->addWidget(mainStreamCanvasLabel, 1, Qt::AlignVCenter);
 	mainStreamTimerLabel = MakeTimerLabel(this);
 	l2->addWidget(mainStreamTimerLabel, 0, Qt::AlignVCenter);
+	mainStreamStatsLabel = new QLabel;
+	mainStreamStatsLabel->setMinimumWidth(148);
+	mainStreamStatsLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	l2->addWidget(mainStreamStatsLabel, 0, Qt::AlignVCenter);
 	mainStreamButton = new QPushButton;
 	mainStreamButton->setObjectName(QStringLiteral("canvasStream"));
 	styleActionButton(mainStreamButton);
@@ -260,6 +305,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 				}
 			}
 			SetTimerText(mainStreamTimerLabel, active, mainStreamStartTime);
+			UpdateMainStreamStats(active);
 		}
 
 		if (mainRecordEnabled) {
@@ -650,6 +696,19 @@ bool OutputDock::HasActiveStreamMatching(const std::function<bool(const QString 
 			return true;
 	}
 	return false;
+}
+
+void OutputDock::StopStreamsMatching(const std::function<bool(const QString &server)> &match)
+{
+	if (mainStreamEnabled && obs_frontend_streaming_active() && match(mainPlatformUrl))
+		obs_frontend_streaming_stop();
+	for (auto *ow : outputWidgets) {
+		if (!ow || !ow->IsStream())
+			continue;
+		if (!match(ow->GetStreamServer()))
+			continue;
+		ow->StopOutput();
+	}
 }
 
 bool OutputDock::HasActiveRecordings() const

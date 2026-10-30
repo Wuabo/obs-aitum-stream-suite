@@ -14,12 +14,17 @@
 #include <mutex>
 #include <vector>
 
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
+class QSpinBox;
+class QTabWidget;
 class QTimer;
+class QVBoxLayout;
+class QWidget;
 
 struct ChatCurlWsSession {
 	std::atomic<bool> stop{false};
@@ -138,6 +143,17 @@ private:
 	QString twitchLogin;
 
 	QFrame *viewerBar = nullptr;
+	QPushButton *roomButton = nullptr;
+	QFrame *roomPanel = nullptr;
+	QTabWidget *roomTabs = nullptr;
+	QWidget *roomPages[3] = {};
+	bool roomSyncing = false;
+	QCheckBox *twSlow = nullptr;
+	QSpinBox *twSlowSeconds = nullptr;
+	QCheckBox *twFollowers = nullptr;
+	QSpinBox *twFollowMinutes = nullptr;
+	QCheckBox *twSubs = nullptr;
+	QCheckBox *twEmotes = nullptr;
 	QLabel *viewerLabels[3] = {};
 	QFrame *viewerChips[3] = {};
 	QPushButton *clearSystemButton = nullptr;
@@ -197,6 +213,11 @@ private:
 	QSet<QString> badgeFetchPending;
 
 	void BuildUi();
+	void BuildRoomPanel(QVBoxLayout *root);
+	void RefreshRoomTabs();
+	void LoadTwitchRoom();
+	void PatchTwitchRoom();
+	void ClearTwitchRoom();
 	void RebuildViewerBar();
 	void CycleSendPlatform();
 	void UpdateSendStatus();

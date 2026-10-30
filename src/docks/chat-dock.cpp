@@ -1,4 +1,5 @@
 #include "chat-dock.hpp"
+#include "alerts-dock.hpp"
 #include "stream-info-dock.hpp"
 #include <src/utils/icon.hpp>
 
@@ -36,7 +37,10 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPointer>
+#include <QCheckBox>
 #include <QPushButton>
+#include <QSpinBox>
+#include <QTabWidget>
 #include <QRegularExpression>
 #include <QHideEvent>
 #include <QResizeEvent>
@@ -966,7 +970,20 @@ void ChatDock::BuildUi()
 		"QPushButton:pressed { background: #1a1a1a; }"));
 	connect(clearSystemButton, &QPushButton::clicked, this, &ChatDock::ClearSystemMessages);
 	barLayout->addWidget(clearSystemButton);
+	roomButton = new QPushButton(Tr("ChatRoom"), viewerBar);
+	roomButton->setCursor(Qt::PointingHandCursor);
+	roomButton->setFlat(true);
+	roomButton->setCheckable(true);
+	roomButton->setStyleSheet(clearSystemButton->styleSheet());
+	barLayout->addWidget(roomButton);
 	root->addWidget(viewerBar);
+	BuildRoomPanel(root);
+	connect(roomButton, &QPushButton::toggled, this, [this](bool open) {
+		if (roomPanel)
+			roomPanel->setVisible(open);
+		if (open)
+			LoadTwitchRoom();
+	});
 
 	messageList = new QListWidget(this);
 	messageList->setObjectName(QStringLiteral("chatMessageList"));
@@ -1056,6 +1073,7 @@ void ChatDock::ReloadAccounts()
 	/* Full restart so a newly linked YouTube/Kick account connects immediately. */
 	StartConnections();
 	RefreshViewers();
+	RefreshRoomTabs();
 }
 
 void ChatDock::SyncAccountsFromConfig()
@@ -1090,6 +1108,7 @@ void ChatDock::SyncAccountsFromConfig()
 			kickSlug.clear();
 		}
 	}
+	RefreshRoomTabs();
 	if (!connectionsActive) {
 		if (DockIsOpen())
 			StartConnections();
@@ -1144,9 +1163,233 @@ void ChatDock::RefreshAvailablePlatforms()
 	if (!availablePlatforms.contains(sendPlatform) && !availablePlatforms.isEmpty())
 		sendPlatform = *availablePlatforms.constBegin();
 	RebuildViewerBar();
+	RefreshRoomTabs();
 	UpdateSendStatus();
 	if (connectionsActive)
 		EnsurePlatformConnections();
+}
+
+void ChatDock::BuildRoomPanel(QVBoxLayout *root)
+{
+	roomPanel = new QFrame(this);
+	roomPanel->setObjectName(QStringLiteral("chatRoomPanel"));
+	roomPanel->setVisible(false);
+	auto *layout = new QVBoxLayout(roomPanel);
+	layout->setContentsMargins(8, 4, 8, 8);
+	layout->setSpacing(6);
+	roomTabs = new QTabWidget(roomPanel);
+	layout->addWidget(roomTabs);
+
+	auto *twitchPage = new QWidget(roomTabs);
+	auto *twitchLayout = new QVBoxLayout(twitchPage);
+	twitchLayout->setContentsMargins(8, 8, 8, 8);
+	twitchLayout->setSpacing(6);
+	auto *slowRow = new QHBoxLayout;
+	twSlow = new QCheckBox(Tr("ChatRoomSlow"), twitchPage);
+	twSlowSeconds = new QSpinBox(twitchPage);
+	twSlowSeconds->setRange(1, 180);
+	twSlowSeconds->setValue(30);
+	slowRow->addWidget(twSlow);
+	slowRow->addWidget(twSlowSeconds);
+	slowRow->addWidget(new QLabel(Tr("ChatRoomSeconds"), twitchPage));
+	slowRow->addStretch(1);
+	twitchLayout->addLayout(slowRow);
+	auto *followRow = new QHBoxLayout;
+	twFollowers = new QCheckBox(Tr("ChatRoomFollowers"), twitchPage);
+	twFollowMinutes = new QSpinBox(twitchPage);
+	twFollowMinutes->setRange(0, 129600);
+	twFollowMinutes->setValue(0);
+	followRow->addWidget(twFollowers);
+	followRow->addWidget(twFollowMinutes);
+	followRow->addWidget(new QLabel(Tr("ChatRoomMinutes"), twitchPage));
+	followRow->addStretch(1);
+	twitchLayout->addLayout(followRow);
+	twSubs = new QCheckBox(Tr("ChatRoomSubs"), twitchPage);
+	twEmotes = new QCheckBox(Tr("ChatRoomEmotes"), twitchPage);
+	twitchLayout->addWidget(twSubs);
+	twitchLayout->addWidget(twEmotes);
+	auto *clearChat = new QPushButton(Tr("ChatRoomClear"), twitchPage);
+	connect(clearChat, &QPushButton::clicked, this, &ChatDock::ClearTwitchRoom);
+	twitchLayout->addWidget(clearChat);
+	roomPages[Twitch] = twitchPage;
+
+	auto *kickPage = new QWidget(roomTabs);
+	auto *kickLayout = new QVBoxLayout(kickPage);
+	auto *kickNote = new QLabel(Tr("ChatRoomKickUnavailable"), kickPage);
+	kickNote->setWordWrap(true);
+	kickLayout->addWidget(kickNote);
+	roomPages[Kick] = kickPage;
+
+	auto *youtubePage = new QWidget(roomTabs);
+	auto *youtubeLayout = new QVBoxLayout(youtubePage);
+	auto *youtubeNote = new QLabel(Tr("ChatRoomYouTubeUnavailable"), youtubePage);
+	youtubeNote->setWordWrap(true);
+	youtubeLayout->addWidget(youtubeNote);
+	roomPages[YouTube] = youtubePage;
+
+	const auto queuePatch = [this] {
+		if (!roomSyncing)
+			PatchTwitchRoom();
+	};
+	connect(twSlow, &QCheckBox::toggled, this, queuePatch);
+	connect(twFollowers, &QCheckBox::toggled, this, queuePatch);
+	connect(twSubs, &QCheckBox::toggled, this, queuePatch);
+	connect(twEmotes, &QCheckBox::toggled, this, queuePatch);
+	connect(twSlowSeconds, &QSpinBox::valueChanged, this, queuePatch);
+	connect(twFollowMinutes, &QSpinBox::valueChanged, this, queuePatch);
+	root->addWidget(roomPanel);
+	RefreshRoomTabs();
+}
+
+void ChatDock::RefreshRoomTabs()
+{
+	if (!roomTabs || !roomButton)
+		return;
+	for (int i = 0; i < 3; ++i) {
+		const bool linked = !accounts[i].accessToken.isEmpty();
+		const int index = roomTabs->indexOf(roomPages[i]);
+		if (linked && index < 0)
+			roomTabs->addTab(roomPages[i], PlatformIcon(Platform(i)), PlatformLabel(Platform(i)));
+		else if (!linked && index >= 0)
+			roomTabs->removeTab(index);
+	}
+	const bool any = roomTabs->count() > 0;
+	roomButton->setVisible(any);
+	if (!any) {
+		roomButton->setChecked(false);
+		roomPanel->setVisible(false);
+	}
+}
+
+void ChatDock::LoadTwitchRoom()
+{
+	if (accounts[Twitch].accessToken.isEmpty() || accounts[Twitch].userId.isEmpty())
+		return;
+	EnsureToken(Twitch, [this](bool ok) {
+		if (!ok)
+			return;
+		const Account &acc = accounts[Twitch];
+		QUrl url(QStringLiteral("https://api.twitch.tv/helix/chat/settings"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("broadcaster_id"), acc.userId);
+		query.addQueryItem(QStringLiteral("moderator_id"), acc.userId);
+		url.setQuery(query);
+		Http(QString::fromUtf8(url.toEncoded()),
+		     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
+		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
+		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+			     if (status == 401 || status == 403) {
+				     AskModerationReconnect(Twitch);
+				     return;
+			     }
+			     const QJsonArray data = QJsonDocument::fromJson(body).object().value(QStringLiteral("data")).toArray();
+			     if (status < 200 || status >= 300 || data.isEmpty() || !twSlow)
+				     return;
+			     const QJsonObject row = data.at(0).toObject();
+			     roomSyncing = true;
+			     twSlow->setChecked(row.value(QStringLiteral("slow_mode")).toBool());
+			     const int wait = row.value(QStringLiteral("slow_mode_wait_time")).toInt(30);
+			     if (wait > 0)
+				     twSlowSeconds->setValue(wait);
+			     twFollowers->setChecked(row.value(QStringLiteral("follower_mode")).toBool());
+			     twFollowMinutes->setValue(row.value(QStringLiteral("follower_mode_duration")).toInt(0));
+			     twSubs->setChecked(row.value(QStringLiteral("subscriber_mode")).toBool());
+			     twEmotes->setChecked(row.value(QStringLiteral("emote_mode")).toBool());
+			     roomSyncing = false;
+		     });
+	});
+}
+
+void ChatDock::PatchTwitchRoom()
+{
+	if (roomSyncing || !twSlow || accounts[Twitch].userId.isEmpty())
+		return;
+	const bool slow = twSlow->isChecked();
+	const int slowSeconds = twSlowSeconds->value();
+	const bool followers = twFollowers->isChecked();
+	const int followMinutes = twFollowMinutes->value();
+	const bool subs = twSubs->isChecked();
+	const bool emotes = twEmotes->isChecked();
+	EnsureToken(Twitch, [this, slow, slowSeconds, followers, followMinutes, subs, emotes](bool ok) {
+		if (!ok)
+			return;
+		const Account &acc = accounts[Twitch];
+		QJsonObject body;
+		body.insert(QStringLiteral("slow_mode"), slow);
+		if (slow)
+			body.insert(QStringLiteral("slow_mode_wait_time"), slowSeconds);
+		body.insert(QStringLiteral("follower_mode"), followers);
+		if (followers)
+			body.insert(QStringLiteral("follower_mode_duration"), followMinutes);
+		body.insert(QStringLiteral("subscriber_mode"), subs);
+		body.insert(QStringLiteral("emote_mode"), emotes);
+		QUrl url(QStringLiteral("https://api.twitch.tv/helix/chat/settings"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("broadcaster_id"), acc.userId);
+		query.addQueryItem(QStringLiteral("moderator_id"), acc.userId);
+		url.setQuery(query);
+		Http(QString::fromUtf8(url.toEncoded()),
+		     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
+		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()},
+		      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}},
+		     QJsonDocument(body).toJson(QJsonDocument::Compact), "PATCH",
+		     [this](int status, const QByteArray &payload, const QString &) {
+			     if (status == 401 || status == 403) {
+				     AskModerationReconnect(Twitch);
+				     return;
+			     }
+			     if (status < 200 || status >= 300) {
+				     const QString message = QJsonDocument::fromJson(payload)
+								     .object()
+								     .value(QStringLiteral("message"))
+								     .toString();
+				     AppendSystemMessage(
+					     Tr("ChatDockActionFailed")
+						     .arg(Tr("ChatRoom"), message.isEmpty() ? QString::number(status) : message),
+					     Twitch);
+			     }
+		     });
+	});
+}
+
+void ChatDock::ClearTwitchRoom()
+{
+	if (QMessageBox::question(this, Tr("ChatRoomClear"), Tr("ChatRoomClearConfirm"), QMessageBox::Yes | QMessageBox::No,
+				  QMessageBox::No) != QMessageBox::Yes)
+		return;
+	const QString userId = accounts[Twitch].userId;
+	if (userId.isEmpty())
+		return;
+	EnsureToken(Twitch, [this, userId](bool ok) {
+		if (!ok)
+			return;
+		const Account &acc = accounts[Twitch];
+		QUrl url(QStringLiteral("https://api.twitch.tv/helix/moderation/chat"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("broadcaster_id"), userId);
+		query.addQueryItem(QStringLiteral("moderator_id"), userId);
+		url.setQuery(query);
+		Http(QString::fromUtf8(url.toEncoded()),
+		     {{QByteArrayLiteral("Client-Id"), acc.clientId.toUtf8()},
+		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
+		     {}, "DELETE", [this](int status, const QByteArray &body, const QString &) {
+			     if (status == 204 || (status >= 200 && status < 300)) {
+				     MarkPlatformMessagesDeleted(Twitch, Tr("ChatDockChatCleared"));
+				     AppendSystemMessage(Tr("ChatDockChatCleared"), Twitch);
+				     return;
+			     }
+			     if (status == 401 || status == 403) {
+				     AskModerationReconnect(Twitch);
+				     return;
+			     }
+			     const QString message =
+				     QJsonDocument::fromJson(body).object().value(QStringLiteral("message")).toString();
+			     AppendSystemMessage(
+				     Tr("ChatDockActionFailed")
+					     .arg(Tr("ChatRoomClear"), message.isEmpty() ? QString::number(status) : message),
+				     Twitch);
+		     });
+	});
 }
 
 void ChatDock::RebuildViewerBar()
@@ -3000,9 +3243,28 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 	const QJsonObject item = action.value(QStringLiteral("addChatItemAction")).toObject().value(QStringLiteral("item")).toObject();
 	if (item.isEmpty())
 		return;
+	auto emitYouTubeAlert = [&](const char *key, const char *kind) {
+		const QJsonObject renderer = item.value(QLatin1String(key)).toObject();
+		if (renderer.isEmpty())
+			return false;
+		if (alerts_dock) {
+			const QString user = YouTubeRichText(renderer.value(QStringLiteral("authorName")).toObject());
+			QString detail = YouTubeRichText(renderer.value(QStringLiteral("purchaseAmountText")).toObject());
+			if (detail.isEmpty())
+				detail = YouTubeRichText(renderer.value(QStringLiteral("headerSubtext")).toObject());
+			if (detail.isEmpty())
+				detail = YouTubeRichText(renderer.value(QStringLiteral("headerPrimaryText")).toObject());
+			alerts_dock->Push(int(YouTube), QString::fromUtf8(kind), user, detail);
+		}
+		return true;
+	};
+	if (emitYouTubeAlert("liveChatPaidMessageRenderer", "superchat") ||
+	    emitYouTubeAlert("liveChatPaidStickerRenderer", "superchat") ||
+	    emitYouTubeAlert("liveChatMembershipItemRenderer", "member") ||
+	    emitYouTubeAlert("liveChatSponsorshipsGiftPurchaseAnnouncementRenderer", "member") ||
+	    emitYouTubeAlert("liveChatSponsorshipsGiftRedemptionAnnouncementRenderer", "member"))
+		return;
 	QJsonObject renderer = item.value(QStringLiteral("liveChatTextMessageRenderer")).toObject();
-	if (renderer.isEmpty())
-		renderer = item.value(QStringLiteral("liveChatPaidMessageRenderer")).toObject();
 	if (renderer.isEmpty())
 		return;
 
@@ -4619,6 +4881,45 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 		return;
 	QString resolvedEvent = eventName;
 	const QJsonObject payload = KickUnwrapEventData(data, &resolvedEvent);
+
+	const QString kickType = payload.value(QStringLiteral("type")).toString();
+	const bool kickChatLine = payload.contains(QStringLiteral("content")) || payload.contains(QStringLiteral("sender"));
+	if (!kickChatLine) {
+		const QString blob = resolvedEvent + kickType;
+		const bool follow = blob.contains(QStringLiteral("Follow"), Qt::CaseInsensitive) &&
+				    !blob.contains(QStringLiteral("Unfollow"), Qt::CaseInsensitive);
+		const bool gift = blob.contains(QStringLiteral("Gift"), Qt::CaseInsensitive);
+		const bool sub = gift || blob.contains(QStringLiteral("Subscr"), Qt::CaseInsensitive);
+		if (follow || sub) {
+			auto person = [](const QJsonObject &object) {
+				const QString direct = object.value(QStringLiteral("username"))
+							       .toString(object.value(QStringLiteral("slug")).toString());
+				if (!direct.isEmpty())
+					return direct;
+				for (const char *key : {"user", "follower", "sender", "subscriber"}) {
+					const QJsonObject nested = object.value(QLatin1String(key)).toObject();
+					const QString name = nested.value(QStringLiteral("username"))
+								      .toString(nested.value(QStringLiteral("slug")).toString());
+					if (!name.isEmpty())
+						return name;
+				}
+				return QString();
+			};
+			const QString user = person(payload);
+			if (!(follow && blob.contains(QStringLiteral("Updated"), Qt::CaseInsensitive) && user.isEmpty()) &&
+			    alerts_dock) {
+				alerts_dock->Push(int(Kick), follow ? QStringLiteral("follow")
+								    : (gift ? QStringLiteral("gift") : QStringLiteral("sub")),
+						  user, QString());
+			}
+			return;
+		}
+		static QSet<QString> seenKickEvents;
+		if (!resolvedEvent.isEmpty() && !seenKickEvents.contains(resolvedEvent) && seenKickEvents.size() < 40) {
+			seenKickEvents.insert(resolvedEvent);
+			blog(LOG_INFO, "[Stream Suite] Kick event %s", resolvedEvent.toUtf8().constData());
+		}
+	}
 
 	if (resolvedEvent.contains(QStringLiteral("StopStreamBroadcast")) ||
 	    payload.value(QStringLiteral("type")).toString().contains(QStringLiteral("StopStreamBroadcast"))) {

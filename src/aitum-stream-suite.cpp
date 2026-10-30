@@ -7,6 +7,7 @@
 #include "docks/output-dock.hpp"
 #include "docks/stream-info-dock.hpp"
 #include "docks/chat-dock.hpp"
+#include "docks/alerts-dock.hpp"
 #include "utils/icon.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
@@ -445,6 +446,13 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			else
 				chat_dock->hide();
 		}
+		if (alerts_dock) {
+			alerts_dock->ReloadAccounts();
+			if (auto *dw = qobject_cast<QDockWidget *>(alerts_dock->parentWidget()))
+				dw->hide();
+			else
+				alerts_dock->hide();
+		}
 		install_main_canvas_context_bar_fix();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
@@ -452,6 +460,8 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			stream_info_dock->ReloadAccounts();
 		if (chat_dock)
 			chat_dock->ReloadAccounts();
+		if (alerts_dock)
+			alerts_dock->ReloadAccounts();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
@@ -487,6 +497,10 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		stream_info_dock = nullptr;
 		obs_frontend_remove_dock("AitumStreamSuiteChat");
 		chat_dock = nullptr;
+		if (alerts_dock) {
+			alerts_dock = nullptr;
+			obs_frontend_remove_dock("AitumStreamSuiteAlerts");
+		}
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
@@ -700,14 +714,20 @@ bool obs_module_load(void)
 				    stream_info_dock);
 	chat_dock = new ChatDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteChat", obs_module_text("AitumStreamSuiteChat"), chat_dock);
-	/* Chat stays off until the user enables it in View → Docks. */
+	alerts_dock = new AlertsDock(main_window);
+	obs_frontend_add_dock_by_id("AitumStreamSuiteAlerts", obs_module_text("AitumStreamSuiteAlerts"), alerts_dock);
+	/* Chat and alerts stay off until the user enables them in View → Docks. */
 	QTimer::singleShot(0, main_window, [] {
-		if (!chat_dock)
-			return;
-		if (auto *dw = qobject_cast<QDockWidget *>(chat_dock->parentWidget()))
-			dw->hide();
-		else
-			chat_dock->hide();
+		auto hideDock = [](QWidget *widget) {
+			if (!widget)
+				return;
+			if (auto *dw = qobject_cast<QDockWidget *>(widget->parentWidget()))
+				dw->hide();
+			else
+				widget->hide();
+		};
+		hideDock(chat_dock);
+		hideDock(alerts_dock);
 	});
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */
@@ -758,6 +778,10 @@ void obs_module_unload()
 	if (chat_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteChat");
 		chat_dock = nullptr;
+	}
+	if (alerts_dock) {
+		alerts_dock = nullptr;
+		obs_frontend_remove_dock("AitumStreamSuiteAlerts");
 	}
 }
 

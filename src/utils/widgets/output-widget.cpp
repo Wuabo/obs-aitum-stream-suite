@@ -233,6 +233,13 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	timerLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	timerLabel->setText(QString());
 	outputLayout->addWidget(timerLabel, 0, Qt::AlignVCenter);
+	if (IsStream()) {
+		statsLabel = new QLabel;
+		statsLabel->setMinimumWidth(148);
+		statsLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		statsLabel->setText(QString());
+		outputLayout->addWidget(statsLabel, 0, Qt::AlignVCenter);
+	}
 	outputLayout->addWidget(outputButton, 0, Qt::AlignVCenter);
 
 	setLayout(outputLayout);
@@ -1233,6 +1240,41 @@ void OutputWidget::CheckActive()
 			}
 		}
 	}
+	UpdateStats();
+}
+
+void OutputWidget::UpdateStats()
+{
+	if (!statsLabel)
+		return;
+	const bool live = output && (obs_output_active(output) || obs_output_reconnecting(output));
+	if (!live) {
+		if (!statsLabel->text().isEmpty())
+			statsLabel->clear();
+		statsHaveSample = false;
+		return;
+	}
+	if (obs_output_reconnecting(output)) {
+		statsLabel->setText(QString::fromUtf8(obs_module_text("OutputReconnecting")));
+		statsHaveSample = false;
+		return;
+	}
+	const uint64_t now = os_gettime_ns();
+	const uint64_t bytes = obs_output_get_total_bytes(output);
+	if (!statsHaveSample) {
+		statsLastBytes = bytes;
+		statsLastNs = now;
+		statsHaveSample = true;
+		return;
+	}
+	if (now < statsLastNs || now - statsLastNs < 1000000000ULL)
+		return;
+	const double seconds = double(now - statsLastNs) / 1000000000.0;
+	const double kbps = seconds > 0.0 ? (double(bytes - statsLastBytes) * 8.0 / seconds) / 1000.0 : 0.0;
+	statsLastBytes = bytes;
+	statsLastNs = now;
+	const long long dropped = (long long)obs_output_get_frames_dropped(output);
+	statsLabel->setText(QString::fromUtf8(obs_module_text("OutputStats")).arg(qRound(kbps)).arg(dropped));
 }
 
 void OutputWidget::SaveSettings()
