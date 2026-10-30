@@ -1697,6 +1697,7 @@ void ChatDock::StopConnections()
 	DisconnectTwitchIrc();
 	DisconnectKickChat();
 	ytLiveChatId.clear();
+	ytLiveChatIds.clear();
 	ytVideoId.clear();
 	ytContinuation.clear();
 	ytInnertubeClientVersion.clear();
@@ -1705,6 +1706,7 @@ void ChatDock::StopConnections()
 	youtubeIgnoreBeforeMs = 0;
 	ytPendingDeletes.clear();
 	ytBanIds.clear();
+	ytBanIdList.clear();
 	kickSlug.clear();
 	kickChatroomId.clear();
 	kickChannelId.clear();
@@ -2562,6 +2564,7 @@ void ChatDock::OnStreamingStarted()
 	youtubeQuotaAnnounced = false;
 	youtubeConnectedAnnounced = false;
 	ytLiveChatId.clear();
+	ytLiveChatIds.clear();
 	ytVideoId.clear();
 	ytContinuation.clear();
 	ytInnertubeClientVersion.clear();
@@ -2569,6 +2572,7 @@ void ChatDock::OnStreamingStarted()
 	ytInnertubeVisitor.clear();
 	ytPendingDeletes.clear();
 	ytBanIds.clear();
+	ytBanIdList.clear();
 	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
 	ClearYouTubeMessages();
 	DebugYouTube(QStringLiteral("streaming-started fresh discover"));
@@ -2576,6 +2580,22 @@ void ChatDock::OnStreamingStarted()
 	EnsureYouTubeWaitLiveTimer();
 	if (!youtubeDiscoverTimer->isActive())
 		youtubeDiscoverTimer->start();
+}
+
+void ChatDock::RememberYouTubeChatId(const QString &chatId)
+{
+	if (chatId.isEmpty() || ytLiveChatIds.contains(chatId))
+		return;
+	ytLiveChatIds.append(chatId);
+	blog(LOG_INFO, "[Stream Suite] YouTube moderation chat ids: %d", ytLiveChatIds.size());
+}
+
+QStringList ChatDock::YouTubeModerationChatIds() const
+{
+	QStringList ids = ytLiveChatIds;
+	if (!ytLiveChatId.isEmpty() && !ids.contains(ytLiveChatId))
+		ids.prepend(ytLiveChatId);
+	return ids;
 }
 
 bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
@@ -2586,14 +2606,19 @@ bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
 	if (chatId.isEmpty() || chatId == ytLiveChatId)
 		return false;
 	/* Stream Info sends snippet.liveChatId and then activeLiveChatId for one video.
-	 * Treating that as a new chat wiped the lines and the live cursor. */
+	 * Both stay valid for delete/ban. Replacing the only id left the website chat unmoderated. */
 	const bool sameVideo = !ytLiveChatId.isEmpty() && !previousVideo.isEmpty() &&
 			       (videoId.isEmpty() || videoId == previousVideo);
 	if (sameVideo) {
+		RememberYouTubeChatId(ytLiveChatId);
+		RememberYouTubeChatId(chatId);
 		ytLiveChatId = chatId;
-		blog(LOG_INFO, "[Stream Suite] YouTube chat id updated for the same video (%d chars)", chatId.size());
+		blog(LOG_INFO, "[Stream Suite] YouTube chat id updated for the same video (%d chars, %d kept)",
+		     chatId.size(), ytLiveChatIds.size());
 		return false;
 	}
+	ytLiveChatIds.clear();
+	RememberYouTubeChatId(chatId);
 	const bool switching = !ytLiveChatId.isEmpty();
 	ytLiveChatId = chatId;
 	ytContinuation.clear();
@@ -2602,6 +2627,7 @@ bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
 	ytInnertubeVisitor.clear();
 	ytPendingDeletes.clear();
 	ytBanIds.clear();
+	ytBanIdList.clear();
 	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
 	youtubeConnectedAnnounced = false;
 	if (youtubeTimer)
@@ -3759,14 +3785,34 @@ void ChatDock::ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor)
 	if (!alreadyDeleted) {
 		removeAction = menu.addAction(Tr("ChatDockDeleteMessage"));
 	}
-	QAction *banAction = nullptr;
+	QAction *hideAction = nullptr;
 	QAction *unbanAction = nullptr;
+	QList<QPair<QAction *, int>> blockActions;
 	if (canModerate) {
-		const bool alreadyBanned = youtubeBannedUsers.contains(channelId) || ytBanIds.contains(channelId);
-		if (alreadyBanned)
-			unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
-		else
-			banAction = menu.addAction(Tr("ChatDockBanUser"));
+		const bool hidden = youtubeBannedUsers.contains(channelId);
+		const bool blocked = youtubeTimedOutUsers.contains(channelId) || ytBanIds.contains(channelId);
+		auto *blockMenu = menu.addMenu(Tr("ChatDockYouTubeBlockMenu"));
+		const struct {
+			const char *key;
+			int seconds;
+		} blocks[] = {
+			{"ChatDockYouTubeBlock10s", 10},
+			{"ChatDockYouTubeBlock1m", 60},
+			{"ChatDockYouTubeBlock5m", 300},
+			{"ChatDockYouTubeBlock10m", 600},
+			{"ChatDockYouTubeBlock30m", 1800},
+			{"ChatDockYouTubeBlock24h", 86400},
+		};
+		for (const auto &block : blocks) {
+			QAction *action = blockMenu->addAction(Tr(block.key));
+			blockActions.append({action, block.seconds});
+		}
+		if (!hidden)
+			hideAction = menu.addAction(Tr("ChatDockYouTubeHide"));
+		if (hidden)
+			unbanAction = menu.addAction(Tr("ChatDockYouTubeUnhide"));
+		else if (blocked)
+			unbanAction = menu.addAction(Tr("ChatDockYouTubeUnblock"));
 	}
 	if (menu.actions().isEmpty())
 		return;
@@ -3781,10 +3827,17 @@ void ChatDock::ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor)
 			FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, QString(), 6);
 		return;
 	}
-	if (chosen == banAction) {
-		if (QMessageBox::question(this, Tr("ChatDockBanUser"), Tr("ChatDockBanConfirm").arg(name)) != QMessageBox::Yes)
+	for (const auto &block : blockActions) {
+		if (chosen != block.first)
+			continue;
+		BanYouTubeUser(channelId, name, block.second);
+		return;
+	}
+	if (chosen == hideAction) {
+		if (QMessageBox::question(this, Tr("ChatDockYouTubeHide"), Tr("ChatDockYouTubeHideConfirm").arg(name)) !=
+		    QMessageBox::Yes)
 			return;
-		BanYouTubeUser(channelId, name);
+		BanYouTubeUser(channelId, name, 0);
 		return;
 	}
 	if (chosen == unbanAction) {
@@ -4279,21 +4332,30 @@ void ChatDock::DeleteYouTubeMessage(const QStringList &ids, int index, const QSt
 }
 
 void ChatDock::FindYouTubeMessageToDelete(const QString &uiId, const QString &channelId, const QString &text,
-					  qint64 publishedMs, const QString &pageToken, int pagesLeft)
+					  qint64 publishedMs, const QString &pageToken, int pagesLeft, int chatSlot,
+					  bool reportMiss)
 {
-	if (ytLiveChatId.isEmpty() || pagesLeft <= 0) {
-		AppendSystemMessage(Tr("ChatDockDeleteNotFound"), YouTube);
+	const QStringList chats = YouTubeModerationChatIds();
+	if (chatSlot >= 0 && chatSlot + 1 < chats.size() && (chats.isEmpty() || chatSlot >= chats.size() || pagesLeft <= 0)) {
+		FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, QString(), 6, chatSlot + 1, reportMiss);
 		return;
 	}
-	EnsureToken(YouTube, [this, uiId, channelId, text, publishedMs, pageToken, pagesLeft](bool ok) {
-		if (!ok || ytLiveChatId.isEmpty()) {
+	if (chats.isEmpty() || chatSlot < 0 || chatSlot >= chats.size() || pagesLeft <= 0) {
+		if (reportMiss)
+			AppendSystemMessage(Tr("ChatDockDeleteNotFound"), YouTube);
+		return;
+	}
+	const QString liveChatId = chats.at(chatSlot);
+	EnsureToken(YouTube, [this, uiId, channelId, text, publishedMs, pageToken, pagesLeft, chatSlot, liveChatId, chats,
+			      reportMiss](bool ok) {
+		if (!ok || liveChatId.isEmpty()) {
 			AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), QStringLiteral("auth")),
 					    YouTube);
 			return;
 		}
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
 		QUrlQuery query;
-		query.addQueryItem(QStringLiteral("liveChatId"), ytLiveChatId);
+		query.addQueryItem(QStringLiteral("liveChatId"), liveChatId);
 		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet,authorDetails"));
 		query.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("2000"));
 		if (!pageToken.isEmpty())
@@ -4303,8 +4365,8 @@ void ChatDock::FindYouTubeMessageToDelete(const QString &uiId, const QString &ch
 		     {{QByteArrayLiteral("Authorization"),
 		       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}},
 		     {}, "GET",
-		     [this, uiId, channelId, text, publishedMs, pageToken, pagesLeft](int status, const QByteArray &body,
-										      const QString &error) {
+		     [this, uiId, channelId, text, publishedMs, pageToken, pagesLeft, chatSlot, reportMiss](
+			     int status, const QByteArray &body, const QString &error) {
 			     if (status < 200 || status >= 300) {
 				     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
 				     blog(LOG_WARNING, "[Stream Suite] YouTube delete lookup HTTP %d: %s", status,
@@ -4344,67 +4406,156 @@ void ChatDock::FindYouTubeMessageToDelete(const QString &uiId, const QString &ch
 				     }
 			     }
 			     if (!bestId.isEmpty()) {
-				     blog(LOG_INFO, "[Stream Suite] YouTube delete matched API id (%d chars)", bestId.size());
+				     blog(LOG_INFO, "[Stream Suite] YouTube delete matched API id (%d chars) chat %d",
+					  bestId.size(), chatSlot);
 				     DeleteYouTubeMessage(QStringList{bestId}, 0, uiId, QString(), QString(), 0);
+				     if (chatSlot + 1 < YouTubeModerationChatIds().size())
+					     FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, QString(), 6,
+									chatSlot + 1, false);
 				     return;
 			     }
 			     const QString next = root.value(QStringLiteral("nextPageToken")).toString();
 			     const bool olderPage = publishedMs > 0 && newest > 0 && newest + 2000 < publishedMs;
 			     if (!next.isEmpty() && next != pageToken && pagesLeft > 1 && (publishedMs <= 0 || olderPage)) {
-				     FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, next, pagesLeft - 1);
+				     FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, next, pagesLeft - 1,
+								chatSlot, reportMiss);
+				     return;
+			     }
+			     if (chatSlot + 1 < YouTubeModerationChatIds().size()) {
+				     FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, QString(), 6, chatSlot + 1,
+								reportMiss);
 				     return;
 			     }
 			     blog(LOG_INFO, "[Stream Suite] YouTube delete lookup missed (%d items)", items.size());
-			     AppendSystemMessage(Tr("ChatDockDeleteNotFound"), YouTube);
+			     if (reportMiss)
+				     AppendSystemMessage(Tr("ChatDockDeleteNotFound"), YouTube);
 		     });
 	});
 }
 
-void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayName)
+void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayName, int durationSeconds)
 {
-	if (channelId.isEmpty() || ytLiveChatId.isEmpty()) {
-		AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), Tr("ChatDockYouTubeWaiting")), YouTube);
+	const QStringList chats = YouTubeModerationChatIds();
+	const bool hide = durationSeconds <= 0;
+	const QString actionLabel = hide ? Tr("ChatDockYouTubeHide") : Tr("ChatDockYouTubeBlockMenu");
+	if (channelId.isEmpty() || chats.isEmpty()) {
+		AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, Tr("ChatDockYouTubeWaiting")), YouTube);
 		return;
 	}
-	EnsureToken(YouTube, [this, channelId, displayName](bool ok) {
-		if (!ok || ytLiveChatId.isEmpty()) {
-			AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QStringLiteral("auth")), YouTube);
+	EnsureToken(YouTube, [this, channelId, displayName, chats, durationSeconds, hide, actionLabel](bool ok) {
+		if (!ok) {
+			AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, QStringLiteral("auth")), YouTube);
 			return;
 		}
-		QJsonObject banned;
-		banned.insert(QStringLiteral("channelId"), channelId);
-		QJsonObject snippet;
-		snippet.insert(QStringLiteral("liveChatId"), ytLiveChatId);
-		snippet.insert(QStringLiteral("type"), QStringLiteral("permanent"));
-		snippet.insert(QStringLiteral("bannedUserDetails"), banned);
-		QJsonObject payload;
-		payload.insert(QStringLiteral("snippet"), snippet);
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/bans"));
-		QUrlQuery query;
-		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
-		url.setQuery(query);
-		Http(QString::fromUtf8(url.toEncoded()),
-		     {{QByteArrayLiteral("Authorization"),
-		       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()},
-		      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}},
-		     QJsonDocument(payload).toJson(QJsonDocument::Compact), "POST",
-		     [this, channelId, displayName](int status, const QByteArray &body, const QString &error) {
-			     if (status < 200 || status >= 300) {
+		/* A second ban on the same chat is rejected. Drop the current one so a new duration or a hide replaces it. */
+		QStringList previous = ytBanIdList.value(channelId);
+		const QString current = ytBanIds.value(channelId);
+		if (!current.isEmpty() && !previous.contains(current))
+			previous.append(current);
+		auto step = std::make_shared<std::function<void(int, bool, QString)>>();
+		*step = [this, channelId, displayName, chats, durationSeconds, hide, actionLabel, step](int index, bool anyOk,
+													const QString &lastError) {
+			if (index >= chats.size()) {
+				if (!anyOk) {
+					AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel,
+											   lastError.isEmpty() ? actionLabel : lastError),
+							    YouTube);
+					return;
+				}
+				QString done;
+				if (hide) {
+					youtubeBannedUsers.insert(channelId);
+					youtubeTimedOutUsers.remove(channelId);
+					done = Tr("ChatDockYouTubeHidden").arg(displayName);
+					blog(LOG_INFO, "[Stream Suite] YouTube hid %s on %d chat(s)", channelId.toUtf8().constData(),
+					     chats.size());
+				} else {
+					youtubeTimedOutUsers.insert(channelId);
+					const char *labelKey = "ChatDockYouTubeBlock5m";
+					if (durationSeconds <= 10)
+						labelKey = "ChatDockYouTubeBlock10s";
+					else if (durationSeconds <= 60)
+						labelKey = "ChatDockYouTubeBlock1m";
+					else if (durationSeconds <= 300)
+						labelKey = "ChatDockYouTubeBlock5m";
+					else if (durationSeconds <= 600)
+						labelKey = "ChatDockYouTubeBlock10m";
+					else if (durationSeconds <= 1800)
+						labelKey = "ChatDockYouTubeBlock30m";
+					else
+						labelKey = "ChatDockYouTubeBlock24h";
+					done = Tr("ChatDockYouTubeBlocked").arg(displayName, Tr(labelKey));
+					blog(LOG_INFO, "[Stream Suite] YouTube blocked %s for %ds on %d chat(s)",
+					     channelId.toUtf8().constData(), durationSeconds, chats.size());
+				}
+				MarkMessagesDeletedByUser(YouTube, channelId, done);
+				AppendSystemMessage(done, YouTube);
+				return;
+			}
+			QJsonObject banned;
+			banned.insert(QStringLiteral("channelId"), channelId);
+			QJsonObject snippet;
+			snippet.insert(QStringLiteral("liveChatId"), chats.at(index));
+			if (hide) {
+				snippet.insert(QStringLiteral("type"), QStringLiteral("permanent"));
+			} else {
+				snippet.insert(QStringLiteral("type"), QStringLiteral("temporary"));
+				snippet.insert(QStringLiteral("banDurationSeconds"), durationSeconds);
+			}
+			snippet.insert(QStringLiteral("bannedUserDetails"), banned);
+			QJsonObject payload;
+			payload.insert(QStringLiteral("snippet"), snippet);
+			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/bans"));
+			QUrlQuery query;
+			query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
+			url.setQuery(query);
+			blog(LOG_INFO, "[Stream Suite] YouTube %s %s chat %d/%d", hide ? "hide" : "block",
+			     channelId.toUtf8().constData(), index + 1, chats.size());
+			Http(QString::fromUtf8(url.toEncoded()),
+			     {{QByteArrayLiteral("Authorization"),
+			       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()},
+			      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}},
+			     QJsonDocument(payload).toJson(QJsonDocument::Compact), "POST",
+			     [step, index, anyOk, channelId, this](int status, const QByteArray &body, const QString &error) {
+				     if (status >= 200 && status < 300) {
+					     const QString banId =
+						     QJsonDocument::fromJson(body).object().value(QStringLiteral("id")).toString();
+					     if (!banId.isEmpty()) {
+						     ytBanIds.insert(channelId, banId);
+						     QStringList ids = ytBanIdList.value(channelId);
+						     if (!ids.contains(banId))
+							     ids.append(banId);
+						     ytBanIdList.insert(channelId, ids);
+					     }
+					     (*step)(index + 1, true, QString());
+					     return;
+				     }
 				     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
 				     blog(LOG_WARNING, "[Stream Suite] YouTube ban HTTP %d: %s", status,
 					  reason.toUtf8().constData());
-				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), reason), YouTube);
-				     return;
-			     }
-			     const QString banId = QJsonDocument::fromJson(body).object().value(QStringLiteral("id")).toString();
-			     if (!banId.isEmpty())
-				     ytBanIds.insert(channelId, banId);
-			     youtubeBannedUsers.insert(channelId);
-			     blog(LOG_INFO, "[Stream Suite] YouTube banned %s", channelId.toUtf8().constData());
-			     const QString tip = Tr("ChatDockMessageRemovedUser").arg(displayName);
-			     MarkMessagesDeletedByUser(YouTube, channelId, tip);
-			     AppendSystemMessage(Tr("ChatDockUserBanned").arg(displayName), YouTube);
-		     });
+				     (*step)(index + 1, anyOk, reason);
+			     });
+		};
+		auto begin = std::make_shared<std::function<void(int)>>();
+		*begin = [this, previous, channelId, step, begin](int index) {
+			if (index >= previous.size()) {
+				ytBanIds.remove(channelId);
+				ytBanIdList.remove(channelId);
+				youtubeBannedUsers.remove(channelId);
+				youtubeTimedOutUsers.remove(channelId);
+				(*step)(0, false, QString());
+				return;
+			}
+			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/bans"));
+			QUrlQuery query;
+			query.addQueryItem(QStringLiteral("id"), previous.at(index));
+			url.setQuery(query);
+			Http(QString::fromUtf8(url.toEncoded()),
+			     {{QByteArrayLiteral("Authorization"),
+			       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}},
+			     {}, "DELETE", [begin, index](int, const QByteArray &, const QString &) { (*begin)(index + 1); });
+		};
+		(*begin)(0);
 	});
 }
 
@@ -4412,9 +4563,15 @@ void ChatDock::UnbanYouTubeUser(const QString &channelId, const QString &display
 {
 	if (channelId.isEmpty())
 		return;
-	const QString known = ytBanIds.value(channelId);
+	QStringList known = ytBanIdList.value(channelId);
+	const QString one = ytBanIds.value(channelId);
+	if (!one.isEmpty() && !known.contains(one))
+		known.append(one);
 	if (!known.isEmpty()) {
-		RemoveYouTubeBan(known, channelId, displayName, true);
+		/* First id announces. The rest are the other live chat of the same broadcast. */
+		RemoveYouTubeBan(known.at(0), channelId, displayName, known.size() == 1);
+		for (int i = 1; i < known.size(); ++i)
+			RemoveYouTubeBan(known.at(i), channelId, QString(), false);
 		return;
 	}
 	if (ytLiveChatId.isEmpty()) {
@@ -4491,14 +4648,25 @@ void ChatDock::RemoveYouTubeBan(const QString &banId, const QString &channelId, 
 		     [this, banId, channelId, displayName, listIfMissing](int status, const QByteArray &body, const QString &error) {
 			     if (status == 204 || (status >= 200 && status < 300)) {
 				     ytBanIds.remove(channelId);
-				     youtubeBannedUsers.remove(channelId);
+				     QStringList ids = ytBanIdList.value(channelId);
+				     ids.removeAll(banId);
+				     if (ids.isEmpty())
+					     ytBanIdList.remove(channelId);
+				     else
+					     ytBanIdList.insert(channelId, ids);
+				     if (ytBanIdList.value(channelId).isEmpty()) {
+					     youtubeBannedUsers.remove(channelId);
+					     youtubeTimedOutUsers.remove(channelId);
+				     }
 				     blog(LOG_INFO, "[Stream Suite] YouTube unbanned %s", channelId.toUtf8().constData());
-				     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), YouTube);
+				     if (!displayName.isEmpty())
+					     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), YouTube);
 				     return;
 			     }
 			     if (status == 404 && listIfMissing) {
 				     ytBanIds.remove(channelId);
 				     youtubeBannedUsers.remove(channelId);
+				     youtubeTimedOutUsers.remove(channelId);
 				     UnbanYouTubeUser(channelId, displayName);
 				     return;
 			     }
@@ -6409,6 +6577,7 @@ void ChatDock::ApplyExternalUnban(Platform platform, const QString &userId, cons
 		if (!userId.isEmpty()) {
 			youtubeBannedUsers.remove(userId);
 			ytBanIds.remove(userId);
+			ytBanIdList.remove(userId);
 		}
 		if (!loginKey.isEmpty())
 			youtubeBannedUsers.remove(loginKey);

@@ -131,6 +131,8 @@ private:
 	Account accounts[3];
 	int sendPlatform = Twitch;
 	QString ytLiveChatId;
+	/* snippet.liveChatId and activeLiveChatId can both be live at once. Moderate every one. */
+	QStringList ytLiveChatIds;
 	QString ytVideoId;
 	QString ytContinuation;
 	QString ytInnertubeClientVersion;
@@ -197,6 +199,7 @@ private:
 	QSet<QString> ytPendingDeletes;
 	/* channel id -> liveChatBan id, so Unban can call liveChatBans.delete */
 	QHash<QString, QString> ytBanIds;
+	QHash<QString, QStringList> ytBanIdList;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
@@ -215,6 +218,7 @@ private:
 	QSet<QString> twitchBannedUsers;
 	QSet<QString> kickBannedUsers;
 	QSet<QString> youtubeBannedUsers;
+	QSet<QString> youtubeTimedOutUsers;
 	/* Active timeouts — Unban clears these via the same API as unban. */
 	QSet<QString> twitchTimedOutUsers;
 	QSet<QString> kickTimedOutUsers;
@@ -285,8 +289,11 @@ private:
 	void DeleteYouTubeMessage(const QStringList &ids, int index, const QString &uiId, const QString &channelId,
 				  const QString &text, qint64 publishedMs);
 	void FindYouTubeMessageToDelete(const QString &uiId, const QString &channelId, const QString &text, qint64 publishedMs,
-					const QString &pageToken, int pagesLeft);
-	void BanYouTubeUser(const QString &channelId, const QString &displayName);
+					const QString &pageToken, int pagesLeft, int chatSlot = 0, bool reportMiss = true);
+	QStringList YouTubeModerationChatIds() const;
+	void RememberYouTubeChatId(const QString &chatId);
+	/* durationSeconds > 0 is YouTube's temporary block. 0 hides the user from the channel (permanent). */
+	void BanYouTubeUser(const QString &channelId, const QString &displayName, int durationSeconds);
 	void UnbanYouTubeUser(const QString &channelId, const QString &displayName);
 	void RemoveYouTubeBan(const QString &banId, const QString &channelId, const QString &displayName, bool listIfMissing);
 	bool AdoptYouTubeMessage(const ChatMessage &msg);
