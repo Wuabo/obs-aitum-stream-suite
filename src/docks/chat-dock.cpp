@@ -1683,9 +1683,9 @@ void ChatDock::ConnectTwitchIrc()
 					     return;
 				     }
 
+				     CurlWsSendText(curl, "CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
 				     CurlWsSendText(curl, "PASS oauth:" + token + "\r\n");
 				     CurlWsSendText(curl, "NICK " + nick + "\r\n");
-				     CurlWsSendText(curl, "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/echo-message\r\n");
 
 				     QByteArray lineBuf;
 				     while (!session->stop.load()) {
@@ -1752,6 +1752,7 @@ void ChatDock::ConnectTwitchIrc()
 						     Qt::QueuedConnection);
 				     }
 			     }).detach();
+			     StartTwitchEchoReader();
 		     });
 	});
 }
@@ -1759,12 +1760,167 @@ void ChatDock::ConnectTwitchIrc()
 void ChatDock::DisconnectTwitchIrc()
 {
 	twitchWsGen++;
+	twitchReadWsGen++;
 	if (twitchWs) {
 		twitchWs->stop = true;
 		twitchWs.reset();
 	}
+	if (twitchReadWs) {
+		twitchReadWs->stop = true;
+		twitchReadWs.reset();
+	}
 	twitchJoined = false;
+	twitchReadJoined = false;
 	twitchBuffer.clear();
+}
+
+void ChatDock::StartTwitchEchoReader()
+{
+	twitchReadWsGen++;
+	if (twitchReadWs) {
+		twitchReadWs->stop = true;
+		twitchReadWs.reset();
+	}
+	twitchReadJoined = false;
+	if (!connectionsActive || twitchLogin.isEmpty() || accounts[Twitch].accessToken.isEmpty())
+		return;
+	const QByteArray token = accounts[Twitch].accessToken.toUtf8();
+	const QByteArray nick = twitchLogin.toUtf8();
+	const int gen = twitchReadWsGen;
+	auto session = std::make_shared<ChatCurlWsSession>();
+	twitchReadWs = session;
+	QPointer<ChatDock> alive(this);
+	std::thread([alive, session, gen, token, nick] {
+		CURL *curl = curl_easy_init();
+		if (!curl)
+			return;
+		ApplyCurlSsl(curl);
+		curl_easy_setopt(curl, CURLOPT_URL, "wss://irc-ws.chat.twitch.tv:443");
+		curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
+		if (curl_easy_perform(curl) != CURLE_OK) {
+			curl_easy_cleanup(curl);
+			return;
+		}
+		CurlWsSendText(curl, "CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
+		CurlWsSendText(curl, "PASS oauth:" + token + "\r\n");
+		CurlWsSendText(curl, "NICK " + nick + "\r\n");
+		QByteArray lineBuf;
+		while (!session->stop.load()) {
+			for (const QByteArray &out : session->takeOutbound()) {
+				if (!CurlWsSendText(curl, out)) {
+					session->stop = true;
+					break;
+				}
+			}
+			char buffer[4096];
+			size_t n = 0;
+			const curl_ws_frame *meta = nullptr;
+			const CURLcode rc = curl_ws_recv(curl, buffer, sizeof(buffer), &n, &meta);
+			if (rc == CURLE_AGAIN) {
+				CurlWsWaitReadable(curl, 200);
+				continue;
+			}
+			if (rc != CURLE_OK || !meta)
+				break;
+			if (meta->flags & CURLWS_CLOSE)
+				break;
+			if (meta->flags & CURLWS_PING) {
+				size_t sent = 0;
+				curl_ws_send(curl, buffer, n, &sent, 0, CURLWS_PONG);
+				continue;
+			}
+			if (!(meta->flags & CURLWS_TEXT) || n == 0)
+				continue;
+			lineBuf.append(buffer, static_cast<int>(n));
+			while (true) {
+				int idx = lineBuf.indexOf("\r\n");
+				int skip = 2;
+				if (idx < 0) {
+					idx = lineBuf.indexOf('\n');
+					skip = 1;
+				}
+				if (idx < 0)
+					break;
+				const QString line = QString::fromUtf8(lineBuf.left(idx)).trimmed();
+				lineBuf.remove(0, idx + skip);
+				if (line.isEmpty() || !alive)
+					continue;
+				QMetaObject::invokeMethod(
+					alive,
+					[alive, gen, line] {
+						if (!alive || alive->twitchReadWsGen != gen)
+							return;
+						alive->HandleTwitchEchoLine(line);
+					},
+					Qt::QueuedConnection);
+			}
+		}
+		curl_easy_cleanup(curl);
+		if (alive) {
+			QMetaObject::invokeMethod(
+				alive,
+				[alive, gen] {
+					if (!alive || alive->twitchReadWsGen != gen)
+						return;
+					alive->twitchReadJoined = false;
+				},
+				Qt::QueuedConnection);
+		}
+	}).detach();
+}
+
+void ChatDock::HandleTwitchEchoLine(const QString &line)
+{
+	if (line.startsWith(QStringLiteral("PING"))) {
+		const QByteArray payload = line.section(QLatin1Char(':'), 1).toUtf8();
+		const QByteArray pong = "PONG :" + (payload.isEmpty() ? QByteArrayLiteral("tmi.twitch.tv") : payload) + "\r\n";
+		if (twitchReadWs)
+			twitchReadWs->enqueue(pong);
+		return;
+	}
+	if ((line.contains(QStringLiteral(" 001 ")) || line.contains(QStringLiteral("GLOBALUSERSTATE"))) && !twitchReadJoined &&
+	    !twitchLogin.isEmpty()) {
+		twitchReadJoined = true;
+		if (twitchReadWs)
+			twitchReadWs->enqueue("JOIN #" + twitchLogin.toUtf8() + "\r\n");
+		blog(LOG_INFO, "[Stream Suite] Twitch id reader joined");
+		return;
+	}
+	QString tags;
+	QString rest = line;
+	if (rest.startsWith(QLatin1Char('@'))) {
+		const int sp = rest.indexOf(QLatin1Char(' '));
+		if (sp < 0)
+			return;
+		tags = rest.mid(1, sp - 1);
+		rest = rest.mid(sp + 1);
+	}
+	if (!rest.contains(QStringLiteral("PRIVMSG")))
+		return;
+	QString id;
+	QString nonce;
+	QString login;
+	for (const QString &part : tags.split(QLatin1Char(';'))) {
+		const QString key = part.section(QLatin1Char('='), 0, 0);
+		const QString val = part.section(QLatin1Char('='), 1);
+		if (key == QLatin1String("id"))
+			id = val;
+		else if (key == QLatin1String("client-nonce"))
+			nonce = val;
+		else if (key == QLatin1String("login") && !val.isEmpty())
+			login = val.toLower();
+	}
+	if (login.isEmpty()) {
+		const int excl = rest.indexOf(QLatin1Char('!'));
+		if (excl > 0)
+			login = rest.left(excl).section(QLatin1Char(':'), -1).toLower();
+	}
+	if (login != twitchLogin || id.isEmpty())
+		return;
+	const int priv = rest.indexOf(QStringLiteral("PRIVMSG"));
+	const int colon = rest.indexOf(QStringLiteral(" :"), priv >= 0 ? priv : 0);
+	const QString text = colon >= 0 ? rest.mid(colon + 2) : QString();
+	BindTwitchSentMessage(nonce, id, text);
 }
 
 void ChatDock::HandleTwitchLine(const QString &line)
@@ -1883,7 +2039,6 @@ void ChatDock::SendTwitchMessage(const QString &text)
 {
 	if (!twitchWs || !twitchJoined || twitchLogin.isEmpty())
 		return;
-	twitchWs->enqueue("PRIVMSG #" + twitchLogin.toUtf8() + " :" + text.toUtf8() + "\r\n");
 	ChatMessage msg;
 	msg.platform = Twitch;
 	msg.user = accounts[Twitch].userName.isEmpty() ? twitchLogin : accounts[Twitch].userName;
@@ -1894,6 +2049,9 @@ void ChatDock::SendTwitchMessage(const QString &text)
 	msg.text = text;
 	msg.ts = QDateTime::currentMSecsSinceEpoch();
 	msg.id = QStringLiteral("local-tw-%1").arg(msg.ts);
+	/* client-nonce comes back on the read connection, which is the only place Twitch shows our own id. */
+	twitchWs->enqueue("@client-nonce=" + msg.id.toUtf8() + " PRIVMSG #" + twitchLogin.toUtf8() + " :" + text.toUtf8() +
+			  "\r\n");
 	AppendMessage(msg);
 }
 
@@ -3544,7 +3702,11 @@ void ChatDock::ShowMessageActions(QListWidgetItem *item, QWidget *anchor)
 			if (messageId.startsWith(QLatin1String("local-tw-"))) {
 				if (!twitchPendingDeletes.contains(messageId)) {
 					twitchPendingDeletes.insert(messageId);
-					AppendSystemMessage(Tr("ChatDockDeletePending").arg(PlatformLabel(Twitch)), Twitch);
+					QTimer::singleShot(3000, this, [this, messageId] {
+						if (!twitchPendingDeletes.contains(messageId))
+							return;
+						AppendSystemMessage(Tr("ChatDockDeletePending").arg(PlatformLabel(Twitch)), Twitch);
+					});
 				}
 				return;
 			}
@@ -4801,6 +4963,40 @@ void ChatDock::SendKickMessage(const QString &text)
 			     AppendMessage(msg);
 		     });
 	});
+}
+
+void ChatDock::BindTwitchSentMessage(const QString &nonce, const QString &realId, const QString &text)
+{
+	if (!messageList || realId.isEmpty())
+		return;
+	int match = -1;
+	for (int i = 0; i < messageList->count(); ++i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || item->data(Qt::UserRole + 4).toInt() != int(Twitch))
+			continue;
+		if (!nonce.isEmpty() && ItemHasChatId(item, nonce)) {
+			match = i;
+			break;
+		}
+		if (match >= 0)
+			continue;
+		const QString id = item->data(Qt::UserRole + 1).toString();
+		if (!id.startsWith(QLatin1String("local-tw-")))
+			continue;
+		if (item->data(Qt::UserRole + 5).toString() != text)
+			continue;
+		match = i;
+	}
+	if (match < 0)
+		return;
+	QListWidgetItem *item = messageList->item(match);
+	const QString localId = item->data(Qt::UserRole + 1).toString();
+	AddChatIdAlias(item, realId);
+	seenMessageIds.insert(realId);
+	item->setData(Qt::UserRole + 7, false);
+	blog(LOG_INFO, "[Stream Suite] Twitch sent message id bound");
+	if (twitchPendingDeletes.remove(localId) || (!nonce.isEmpty() && twitchPendingDeletes.remove(nonce)))
+		DeleteTwitchMessage(realId);
 }
 
 bool ChatDock::TakeTwitchEcho(const ChatMessage &msg)

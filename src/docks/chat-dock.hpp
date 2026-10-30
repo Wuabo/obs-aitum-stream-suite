@@ -152,6 +152,8 @@ private:
 	QTimer *twitchReconnectTimer = nullptr;
 
 	std::shared_ptr<ChatCurlWsSession> twitchWs;
+	/* Second connection. Twitch does not send a sender their own PRIVMSG, so this one only captures that id. */
+	std::shared_ptr<ChatCurlWsSession> twitchReadWs;
 	std::shared_ptr<ChatCurlWsSession> kickWs;
 	QByteArray twitchBuffer;
 	bool twitchJoined = false;
@@ -184,6 +186,8 @@ private:
 	bool youtubeNotLinkedAnnounced = false;
 	bool kickNotLinkedAnnounced = false;
 	int twitchWsGen = 0;
+	int twitchReadWsGen = 0;
+	bool twitchReadJoined = false;
 	int kickWsGen = 0;
 
 	QSet<QString> seenMessageIds;
@@ -220,6 +224,9 @@ private:
 	void ConnectTwitchIrc();
 	void DisconnectTwitchIrc();
 	void HandleTwitchLine(const QString &line);
+	void StartTwitchEchoReader();
+	void HandleTwitchEchoLine(const QString &line);
+	void BindTwitchSentMessage(const QString &nonce, const QString &realId, const QString &text);
 	void SendTwitchMessage(const QString &text);
 	bool TakeTwitchEcho(const ChatMessage &msg);
 	void FetchTwitchBadgeSets();
