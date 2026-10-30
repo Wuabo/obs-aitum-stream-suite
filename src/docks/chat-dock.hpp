@@ -207,6 +207,12 @@ private:
 	QSet<QString> seenMessageIds;
 	/* OBS-sent Twitch rows start as local-tw- until echo-message returns the real id. */
 	QSet<QString> twitchPendingDeletes;
+	/* Permanent bans we know about (user id and/or login lowercased). */
+	QSet<QString> twitchBannedUsers;
+	QSet<QString> kickBannedUsers;
+	/* Active timeouts — Unban clears these via the same API as unban. */
+	QSet<QString> twitchTimedOutUsers;
+	QSet<QString> kickTimedOutUsers;
 	int maxMessages = 400;
 	QHash<QString, QString> twitchBadgeUrls;
 	QHash<QString, QString> twitchBadgeTitles;

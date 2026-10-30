@@ -2409,6 +2409,24 @@ void ChatDock::HandleTwitchLine(const QString &line)
 			const QString tip = Tr("ChatDockMessageRemovedUser").arg(targetUser);
 			MarkMessagesDeletedByUser(Twitch, targetUser, tip);
 			AppendSystemMessage(tip, Twitch);
+			const QString targetId = tagValue(QStringLiteral("target-user-id"));
+			const QString banDuration = tagValue(QStringLiteral("ban-duration"));
+			const QString loginKey = targetUser.toLower();
+			if (banDuration.isEmpty()) {
+				if (!targetId.isEmpty()) {
+					twitchBannedUsers.insert(targetId);
+					twitchTimedOutUsers.remove(targetId);
+				}
+				twitchBannedUsers.insert(loginKey);
+				twitchTimedOutUsers.remove(loginKey);
+			} else {
+				if (!targetId.isEmpty()) {
+					twitchTimedOutUsers.insert(targetId);
+					twitchBannedUsers.remove(targetId);
+				}
+				twitchTimedOutUsers.insert(loginKey);
+				twitchBannedUsers.remove(loginKey);
+			}
 		}
 		return;
 	}
@@ -3819,9 +3837,24 @@ void ChatDock::ShowMessageActions(QListWidgetItem *item, QWidget *anchor)
 	QAction *banAction = nullptr;
 	QAction *unbanAction = nullptr;
 	if (canModerate) {
-		timeoutAction = menu.addAction(Tr("ChatDockTimeout"));
-		banAction = menu.addAction(Tr("ChatDockBanUser"));
-		unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
+		const auto known = [](const QSet<QString> &set, const QString &id, const QString &loginKey) {
+			return (!id.isEmpty() && set.contains(id)) || (!loginKey.isEmpty() && set.contains(loginKey));
+		};
+		const QString loginKey = login.toLower();
+		const bool permanentlyBanned =
+			platform == Twitch ? known(twitchBannedUsers, actorId, loginKey)
+					   : known(kickBannedUsers, actorId, loginKey);
+		const bool timedOut = platform == Twitch ? known(twitchTimedOutUsers, actorId, loginKey)
+							 : known(kickTimedOutUsers, actorId, loginKey);
+		if (permanentlyBanned) {
+			unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
+		} else if (timedOut) {
+			unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
+			banAction = menu.addAction(Tr("ChatDockBanUser"));
+		} else {
+			timeoutAction = menu.addAction(Tr("ChatDockTimeout"));
+			banAction = menu.addAction(Tr("ChatDockBanUser"));
+		}
 	}
 	if (menu.actions().isEmpty())
 		return;
@@ -4020,8 +4053,8 @@ void ChatDock::ModerateTwitchUser(const QString &userId, const QString &login, c
 		if (!payload.isEmpty())
 			headers.append({QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")});
 		Http(QString::fromUtf8(url.toEncoded()), headers, payload, verb,
-		     [this, login, displayName, timeoutSeconds, unban, actionLabel](int status, const QByteArray &body,
-										    const QString &error) {
+		     [this, userId, login, displayName, timeoutSeconds, unban, actionLabel](int status, const QByteArray &body,
+											    const QString &error) {
 			     if (status == 401 || status == 403) {
 				     blog(LOG_WARNING, "[Stream Suite] Twitch moderation HTTP %d: %s", status, body.left(180).constData());
 				     AskModerationReconnect(Twitch);
@@ -4035,9 +4068,31 @@ void ChatDock::ModerateTwitchUser(const QString &userId, const QString &login, c
 				     return;
 			     }
 			     blog(LOG_INFO, "[Stream Suite] Twitch moderation ok");
+			     const QString loginKey = login.toLower();
 			     if (unban) {
+				     twitchBannedUsers.remove(userId);
+				     twitchTimedOutUsers.remove(userId);
+				     if (!loginKey.isEmpty()) {
+					     twitchBannedUsers.remove(loginKey);
+					     twitchTimedOutUsers.remove(loginKey);
+				     }
 				     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), Twitch);
 				     return;
+			     }
+			     if (timeoutSeconds > 0) {
+				     twitchTimedOutUsers.insert(userId);
+				     twitchBannedUsers.remove(userId);
+				     if (!loginKey.isEmpty()) {
+					     twitchTimedOutUsers.insert(loginKey);
+					     twitchBannedUsers.remove(loginKey);
+				     }
+			     } else {
+				     twitchBannedUsers.insert(userId);
+				     twitchTimedOutUsers.remove(userId);
+				     if (!loginKey.isEmpty()) {
+					     twitchBannedUsers.insert(loginKey);
+					     twitchTimedOutUsers.remove(loginKey);
+				     }
 			     }
 			     const QString tip = timeoutSeconds > 0 ? Tr("ChatDockUserTimedOut").arg(displayName)
 								    : Tr("ChatDockMessageRemovedUser").arg(displayName);
@@ -4093,36 +4148,44 @@ void ChatDock::DeleteKickMessage(const QString &messageId, const QString &uiId)
 void ChatDock::ModerateKickUser(const QString &userId, const QString &displayName, const QString &matchLogin,
 				int timeoutMinutes)
 {
-	const QString broadcaster = kickChannelId.isEmpty() ? accounts[Kick].userId : kickChannelId;
-	if (userId.isEmpty() || broadcaster.isEmpty()) {
+	/* kickChannelId is the channel id used by Centrifugo — moderation needs the broadcaster user id. */
+	const QString broadcaster = accounts[Kick].userId;
+	bool broadcasterOk = false;
+	bool userOk = false;
+	const qint64 broadcasterId = broadcaster.toLongLong(&broadcasterOk);
+	const qint64 targetId = userId.toLongLong(&userOk);
+	if (!broadcasterOk || !userOk || broadcasterId <= 0 || targetId <= 0) {
 		AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockBanUser"), QStringLiteral("id")), Kick);
 		return;
 	}
 	const bool unban = timeoutMinutes < 0;
 	const QString actionLabel = unban ? Tr("ChatDockUnbanUser")
 					  : (timeoutMinutes > 0 ? Tr("ChatDockTimeout") : Tr("ChatDockBanUser"));
-	EnsureToken(Kick, [this, userId, displayName, matchLogin, timeoutMinutes, broadcaster, unban, actionLabel](bool ok) {
+	EnsureToken(Kick, [this, userId, displayName, matchLogin, timeoutMinutes, broadcasterId, targetId, unban,
+			   actionLabel](bool ok) {
 		if (!ok) {
 			AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, QStringLiteral("auth")), Kick);
 			return;
 		}
 		QJsonObject payload;
-		payload.insert(QStringLiteral("broadcaster_user_id"), broadcaster.toLongLong());
-		payload.insert(QStringLiteral("user_id"), userId.toLongLong());
+		payload.insert(QStringLiteral("broadcaster_user_id"), broadcasterId);
+		payload.insert(QStringLiteral("user_id"), targetId);
 		if (!unban && timeoutMinutes > 0) {
 			payload.insert(QStringLiteral("duration"), timeoutMinutes);
 			payload.insert(QStringLiteral("reason"), QStringLiteral("Timeout"));
 		} else if (!unban) {
 			payload.insert(QStringLiteral("reason"), QStringLiteral("Ban"));
 		}
+		const QByteArray bodyBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+		blog(LOG_INFO, "[Stream Suite] Kick moderation %s %s", unban ? "DELETE" : "POST", bodyBytes.constData());
 		Http(QStringLiteral("https://api.kick.com/public/v1/moderation/bans"),
 		     {{QByteArrayLiteral("Authorization"),
 		       QByteArrayLiteral("Bearer ") + accounts[Kick].accessToken.toUtf8()},
 		      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")},
 		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
-		     QJsonDocument(payload).toJson(QJsonDocument::Compact), unban ? "DELETE" : "POST",
+		     bodyBytes, unban ? "DELETE" : "POST",
 		     [this, userId, displayName, matchLogin, timeoutMinutes, unban, actionLabel](int status, const QByteArray &body,
-										      const QString &error) {
+												 const QString &error) {
 			     if (status == 401 || status == 403) {
 				     blog(LOG_WARNING, "[Stream Suite] Kick moderation HTTP %d: %s", status, body.left(180).constData());
 				     AskModerationReconnect(Kick);
@@ -4135,14 +4198,36 @@ void ChatDock::ModerateKickUser(const QString &userId, const QString &displayNam
 				     blog(LOG_WARNING, "[Stream Suite] Kick moderation HTTP %d: %s", status,
 					  reason.isEmpty() ? body.left(160).constData() : reason.toUtf8().constData());
 				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, reason.isEmpty() ? QString::number(status)
-												       : reason),
+														       : reason),
 							 Kick);
 				     return;
 			     }
 			     blog(LOG_INFO, "[Stream Suite] Kick moderation ok for %s", userId.toUtf8().constData());
+			     const QString loginKey = matchLogin.toLower();
 			     if (unban) {
+				     kickBannedUsers.remove(userId);
+				     kickTimedOutUsers.remove(userId);
+				     if (!loginKey.isEmpty()) {
+					     kickBannedUsers.remove(loginKey);
+					     kickTimedOutUsers.remove(loginKey);
+				     }
 				     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), Kick);
 				     return;
+			     }
+			     if (timeoutMinutes > 0) {
+				     kickTimedOutUsers.insert(userId);
+				     kickBannedUsers.remove(userId);
+				     if (!loginKey.isEmpty()) {
+					     kickTimedOutUsers.insert(loginKey);
+					     kickBannedUsers.remove(loginKey);
+				     }
+			     } else {
+				     kickBannedUsers.insert(userId);
+				     kickTimedOutUsers.remove(userId);
+				     if (!loginKey.isEmpty()) {
+					     kickBannedUsers.insert(loginKey);
+					     kickTimedOutUsers.remove(loginKey);
+				     }
 			     }
 			     const QString tip = timeoutMinutes > 0 ? Tr("ChatDockUserTimedOut").arg(displayName)
 								    : Tr("ChatDockMessageRemovedUser").arg(displayName);
