@@ -728,7 +728,6 @@ void StreamInfoDock::SwitchPlatform(int index)
 	categoryId.clear();
 	lastCategoryName.clear();
 	ytBroadcastId.clear();
-	ytScheduledStart.clear();
 	SetResult(QString());
 	LoadPlatform();
 	UpdateFieldVisibility();
@@ -1379,7 +1378,6 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 	const QJsonObject snippet = item.value("snippet").toObject();
 	titleEdit->setText(snippet.value("title").toString());
 	descriptionEdit->setPlainText(snippet.value("description").toString());
-	ytScheduledStart = snippet.value("scheduledStartTime").toString();
 	SetResult(QString());
 	const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
 	const QString snippetChatId = YouTubeBroadcastChatId(snippet);
@@ -1419,9 +1417,10 @@ void StreamInfoDock::ApplyYouTubeBroadcast(const QJsonObject &item)
 				EnsureCategoryInCatalog(categoryId, QString());
 				PopulateCategoryCombo();
 			}
-			const QString chatId =
-				video.value("liveStreamingDetails").toObject().value("activeLiveChatId").toString();
-			if (!chatId.isEmpty() && chat_dock)
+			const QJsonObject details = video.value("liveStreamingDetails").toObject();
+			const QString chatId = details.value("activeLiveChatId").toString();
+			const bool ended = !details.value("actualEndTime").toString().isEmpty();
+			if (!chatId.isEmpty() && chat_dock && !ended)
 				chat_dock->NotifyYouTubeVideo(ytBroadcastId, chatId);
 		}
 		categorySearch->clear();
@@ -1485,66 +1484,7 @@ void StreamInfoDock::LoadYouTubeBroadcast()
 		categorySearch->clear();
 		LoadCategoryCatalog();
 	};
-	auto trySearchLive = [this, gen, ytGet, finishWithoutBroadcast] {
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
-		QUrlQuery query;
-		query.addQueryItem("part", "snippet");
-		query.addQueryItem("forMine", "true");
-		query.addQueryItem("type", "video");
-		query.addQueryItem("eventType", "live");
-		query.addQueryItem("maxResults", "5");
-		url.setQuery(query);
-		Http(ytGet(url), {}, "GET", [this, gen, ytGet, finishWithoutBroadcast](int code, const QByteArray &body,
-											const QString &) {
-			if (gen != authGeneration)
-				return;
-			QString videoId;
-			if (code >= 200 && code < 300) {
-				const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-				if (!items.isEmpty())
-					videoId = items.at(0).toObject().value("id").toObject().value("videoId").toString();
-			}
-			if (videoId.isEmpty()) {
-				QUrl upcoming(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
-				QUrlQuery uq;
-				uq.addQueryItem("part", "snippet");
-				uq.addQueryItem("forMine", "true");
-				uq.addQueryItem("type", "video");
-				uq.addQueryItem("eventType", "upcoming");
-				uq.addQueryItem("maxResults", "5");
-				upcoming.setQuery(uq);
-				Http(ytGet(upcoming), {}, "GET",
-				     [this, gen, finishWithoutBroadcast](int code2, const QByteArray &body2, const QString &) {
-					     if (gen != authGeneration)
-						     return;
-					     if (code2 >= 200 && code2 < 300) {
-						     const QJsonArray items =
-							     QJsonDocument::fromJson(body2).object().value("items").toArray();
-						     if (!items.isEmpty()) {
-							     QJsonObject fake;
-							     fake.insert("id", items.at(0)
-										       .toObject()
-										       .value("id")
-										       .toObject()
-										       .value("videoId")
-										       .toString());
-							     fake.insert("snippet", items.at(0).toObject().value("snippet"));
-							     ApplyYouTubeBroadcast(fake);
-							     return;
-						     }
-					     }
-					     finishWithoutBroadcast();
-				     });
-				return;
-			}
-			QJsonObject fake;
-			fake.insert("id", videoId);
-			const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
-			fake.insert("snippet", items.at(0).toObject().value("snippet"));
-			ApplyYouTubeBroadcast(fake);
-		});
-	};
-	auto tryMine = [this, gen, ytGet, trySearchLive] {
+	auto tryMine = [this, gen, ytGet, finishWithoutBroadcast] {
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
 		QUrlQuery query;
 		query.addQueryItem("part", "snippet,status");
@@ -1552,7 +1492,7 @@ void StreamInfoDock::LoadYouTubeBroadcast()
 		query.addQueryItem("broadcastType", "all");
 		query.addQueryItem("maxResults", "50");
 		url.setQuery(query);
-		Http(ytGet(url), {}, "GET", [this, gen, trySearchLive](int code, const QByteArray &body, const QString &) {
+		Http(ytGet(url), {}, "GET", [this, gen, finishWithoutBroadcast](int code, const QByteArray &body, const QString &) {
 			if (gen != authGeneration)
 				return;
 			if (code >= 200 && code < 300) {
@@ -1563,7 +1503,7 @@ void StreamInfoDock::LoadYouTubeBroadcast()
 					return;
 				}
 			}
-			trySearchLive();
+			finishWithoutBroadcast();
 		});
 	};
 	auto requestStatus = [this, ytGet](const QString &status) {

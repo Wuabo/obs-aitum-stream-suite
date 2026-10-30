@@ -66,7 +66,6 @@ private:
 	QString lastTitle;
 	QString lastTags;
 	QString ytBroadcastId;
-	QString ytScheduledStart;
 	QString ytCategoryId;
 
 	QLabel *platformIcon = nullptr;

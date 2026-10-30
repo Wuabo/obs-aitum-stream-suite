@@ -13,9 +13,11 @@
 #include <QEvent>
 #include <QFile>
 #include <QFrame>
+#include <QFont>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -255,6 +257,33 @@ QVector<EmojiRun> SplitEmojiRuns(const QString &text)
 	return runs;
 }
 
+/* OBS theme forces QLabel { color }, which strips color emoji. Draw them into a pixmap instead. */
+QPixmap RenderEmojiPixmap(const QString &grapheme, int size)
+{
+	static QHash<QString, QPixmap> cache;
+	const QString key = QString::number(size) + QLatin1Char('|') + grapheme;
+	if (cache.contains(key))
+		return cache.value(key);
+	const int px = qMax(size * 2, 36);
+	QImage img(px, px, QImage::Format_ARGB32_Premultiplied);
+	img.fill(Qt::transparent);
+	QPainter painter(&img);
+	painter.setRenderHint(QPainter::Antialiasing, true);
+	painter.setRenderHint(QPainter::TextAntialiasing, true);
+	QFont font(QStringLiteral("Segoe UI Emoji"));
+	font.setPixelSize(px - 6);
+	font.setStyleStrategy(QFont::PreferDefault);
+	painter.setFont(font);
+	painter.drawText(QRect(0, 0, px, px), Qt::AlignCenter, grapheme);
+	painter.end();
+	const QPixmap pix =
+		QPixmap::fromImage(img).scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+	if (cache.size() > 400)
+		cache.clear();
+	cache.insert(key, pix);
+	return pix;
+}
+
 } // namespace
 #include <util/base.h>
 
@@ -360,6 +389,19 @@ bool YouTubeBroadcastLifeDead(const QString &life)
 {
 	return life == QLatin1String("complete") || life == QLatin1String("revoked") ||
 	       life == QLatin1String("abandoned");
+}
+
+qint64 YouTubePublishedMs(const QJsonObject &snippet)
+{
+	const QString published = snippet.value(QStringLiteral("publishedAt")).toString();
+	if (published.isEmpty())
+		return 0;
+	QDateTime dt = QDateTime::fromString(published, Qt::ISODateWithMs);
+	if (!dt.isValid())
+		dt = QDateTime::fromString(published, Qt::ISODate);
+	if (!dt.isValid())
+		return 0;
+	return dt.toMSecsSinceEpoch();
 }
 
 QString EscapeHtml(const QString &text)
@@ -553,7 +595,7 @@ ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 	connect(youtubeTimer, &QTimer::timeout, this, &ChatDock::PollYouTubeChat);
 
 	youtubeDiscoverTimer = new QTimer(this);
-	/* Slow on purpose — search.list is capped at ~100/day and liveChatMessages.list costs 5 units each. */
+	/* Slow on purpose — each live chat poll costs quota. */
 	youtubeDiscoverTimer->setInterval(30000);
 	connect(youtubeDiscoverTimer, &QTimer::timeout, this, [this] {
 		if (!connectionsActive || !availablePlatforms.contains(YouTube))
@@ -892,11 +934,12 @@ void ChatDock::LoadAccount(Platform platform)
 		acc.userName = QString::fromUtf8(obs_data_get_string(one, "user_name"));
 		acc.login = acc.userName.toLower();
 		if (platform == YouTube) {
-			const QString savedVideo = QString::fromUtf8(obs_data_get_string(one, "youtube_video_id"));
-			/* Do not restore youtube_live_chat_id — it goes stale after the stream ends and
-			 * causes 403/404 poll loops. Always resolve a fresh id from the video/broadcast. */
-			if (!savedVideo.isEmpty() && ytVideoId.isEmpty())
-				ytVideoId = savedVideo;
+			/* Never restore the last video/chat. A saved id is the previous live and
+			 * its history shows up again the next time OBS opens. */
+			obs_data_erase(one, "youtube_video_id");
+			obs_data_erase(one, "youtube_live_chat_id");
+			obs_data_set_obj(root, PlatformKey(YouTube), one);
+			obs_data_set_obj(current_profile_config, "stream_accounts", root);
 		}
 	}
 	obs_data_release(one);
@@ -1075,6 +1118,10 @@ void ChatDock::StopConnections()
 	ytLiveChatId.clear();
 	ytVideoId.clear();
 	ytNextPage.clear();
+	youtubeIgnoreBeforeMs = 0;
+	youtubeCatchingUp = true;
+	youtubeCatchupPages = 0;
+	ytPendingDeletes.clear();
 	kickSlug.clear();
 	kickChatroomId.clear();
 	kickChannelId.clear();
@@ -1204,7 +1251,7 @@ void ChatDock::FetchYouTubeViewers()
 			const QString url =
 				QStringLiteral("https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=") +
 				videoId;
-			Http(url, ytAuth(), {}, "GET", [this](int status, const QByteArray &body, const QString &) {
+			Http(url, ytAuth(), {}, "GET", [this, videoId](int status, const QByteArray &body, const QString &) {
 				if (status < 200 || status >= 300) {
 					SetViewerCount(YouTube, 0, false);
 					return;
@@ -1217,13 +1264,9 @@ void ChatDock::FetchYouTubeViewers()
 				const QJsonObject details =
 					items.at(0).toObject().value("liveStreamingDetails").toObject();
 				const QString chatId = YouTubeVideoActiveChatId(details);
-				if (!chatId.isEmpty()) {
-					const bool wasEmpty = ytLiveChatId.isEmpty();
-					ytLiveChatId = chatId;
-					/* Viewers can resolve chat id first — kick poll; Connected only after first OK poll. */
-					if (wasEmpty && connectionsActive && !youtubePollInFlight && !youtubeTimer->isActive())
-						PollYouTubeChat();
-				}
+				if (!chatId.isEmpty() &&
+				    BindYouTubeChat(chatId, videoId) && connectionsActive && !youtubePollInFlight)
+					PollYouTubeChat();
 				const QString viewers = details.value("concurrentViewers").toString();
 				if (viewers.isEmpty())
 					SetViewerCount(YouTube, 0, false);
@@ -1250,20 +1293,22 @@ void ChatDock::FetchYouTubeViewers()
 				     if (!items.isEmpty()) {
 					     const QJsonObject item = items.at(0).toObject();
 					     const QString id = item.value("id").toString();
+					     const QString life =
+						     item.value("status").toObject().value("lifeCycleStatus").toString();
+					     if (YouTubeBroadcastLifeDead(life)) {
+						     SetViewerCount(YouTube, 0, false);
+						     return;
+					     }
 					     const QString chatId =
 						     YouTubeBroadcastChatId(item.value("snippet").toObject());
-					     if (!chatId.isEmpty()) {
-						     const bool wasEmpty = ytLiveChatId.isEmpty();
-						     ytLiveChatId = chatId;
-						     if (wasEmpty && connectionsActive && !youtubePollInFlight &&
-							 !youtubeTimer->isActive())
-							     PollYouTubeChat();
-					     }
+					     if (!chatId.isEmpty() && BindYouTubeChat(chatId, id) && connectionsActive &&
+						 !youtubePollInFlight)
+						     PollYouTubeChat();
 					     applyVideoId(id);
 					     return;
 				     }
 			     }
-			     /* Do not fall back to search.list here — that bucket is only ~100 calls/day. */
+			     /* Viewers only. Chat discovery uses liveBroadcasts, not search.list. */
 			     SetViewerCount(YouTube, 0, false);
 		     });
 	});
@@ -1716,7 +1761,6 @@ void ChatDock::DebugYouTube(const QString &text)
 {
 	/* Chat stays clean — diagnostics only go to the OBS log (Help → Log Files). */
 	blog(LOG_INFO, "[Stream Suite] YT-debug: %s", text.toUtf8().constData());
-	Q_UNUSED(youtubeDebugSeq);
 }
 
 void ChatDock::EnsureYouTubeWaitLiveTimer()
@@ -1764,19 +1808,65 @@ void ChatDock::OnStreamingStarted()
 		return;
 	/* Encoder just went up: drop any chat id (may be a ready-broadcast stub that 404s) and rediscover.
 	 * Keep ytVideoId if we have one — activeLiveChatId often appears a few seconds later. */
+	/* New stream: drop the previous broadcast so its chat history is not polled again. */
 	youtubeWaitingAnnounced = false;
 	youtubeQuotaAnnounced = false;
-	if (!youtubeConnectedAnnounced) {
-		ytLiveChatId.clear();
-		ytNextPage.clear();
-	}
-	DebugYouTube(QStringLiteral("streaming-started video=%1 connected=%2")
-			     .arg(ytVideoId.isEmpty() ? QStringLiteral("-") : ytVideoId.left(11),
-				  youtubeConnectedAnnounced ? QStringLiteral("yes") : QStringLiteral("no")));
+	youtubeConnectedAnnounced = false;
+	ytLiveChatId.clear();
+	ytVideoId.clear();
+	ytNextPage.clear();
+	youtubeCatchingUp = true;
+	youtubeCatchupPages = 0;
+	ytPendingDeletes.clear();
+	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
+	ClearYouTubeMessages();
+	DebugYouTube(QStringLiteral("streaming-started fresh discover"));
 	StartYouTubeChat();
 	EnsureYouTubeWaitLiveTimer();
 	if (!youtubeDiscoverTimer->isActive())
 		youtubeDiscoverTimer->start();
+}
+
+bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
+{
+	if (!videoId.isEmpty())
+		ytVideoId = videoId;
+	if (chatId.isEmpty() || chatId == ytLiveChatId)
+		return false;
+	const bool switching = !ytLiveChatId.isEmpty();
+	ytLiveChatId = chatId;
+	ytNextPage.clear();
+	youtubePageTokenFails = 0;
+	youtubeCatchingUp = true;
+	youtubeCatchupPages = 0;
+	ytPendingDeletes.clear();
+	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
+	youtubeConnectedAnnounced = false;
+	if (youtubeTimer)
+		youtubeTimer->stop();
+	if (switching)
+		ClearYouTubeMessages();
+	blog(LOG_INFO, "[Stream Suite] YouTube chat bound, history before this session is ignored");
+	return true;
+}
+
+void ChatDock::ClearYouTubeMessages()
+{
+	if (!messageList)
+		return;
+	for (int i = messageList->count() - 1; i >= 0; --i) {
+		QListWidgetItem *item = messageList->item(i);
+		if (!item || item->data(Qt::UserRole + 4).toInt() != int(YouTube))
+			continue;
+		const QString id = item->data(Qt::UserRole + 1).toString();
+		if (!id.isEmpty())
+			seenMessageIds.remove(id);
+		for (const QString &alias : item->data(Qt::UserRole + 6).toStringList()) {
+			if (!alias.isEmpty())
+				seenMessageIds.remove(alias);
+		}
+		delete messageList->takeItem(i);
+	}
 }
 
 void ChatDock::PersistYouTubeIds()
@@ -1786,11 +1876,8 @@ void ChatDock::PersistYouTubeIds()
 	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
 	obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(YouTube)) : nullptr;
 	if (one) {
-		if (!ytVideoId.isEmpty())
-			obs_data_set_string(one, "youtube_video_id", ytVideoId.toUtf8().constData());
-		else
-			obs_data_erase(one, "youtube_video_id");
-		/* Never persist live chat id — only valid while that broadcast is live. */
+		/* Session-only. Writing these made the next OBS launch reopen the previous live. */
+		obs_data_erase(one, "youtube_video_id");
 		obs_data_erase(one, "youtube_live_chat_id");
 		obs_data_set_obj(root, PlatformKey(YouTube), one);
 		obs_data_set_obj(current_profile_config, "stream_accounts", root);
@@ -1810,13 +1897,12 @@ void ChatDock::NotifyYouTubeVideo(const QString &videoId, const QString &liveCha
 	if (!videoId.isEmpty())
 		ytVideoId = videoId;
 	if (!liveChatId.isEmpty()) {
-		const bool wasEmpty = ytLiveChatId.isEmpty();
-		ytLiveChatId = liveChatId;
+		const bool changed = BindYouTubeChat(liveChatId, videoId);
 		youtubeWaitingAnnounced = false;
 		youtubeQuotaAnnounced = false;
 		PersistYouTubeIds();
 		blog(LOG_INFO, "[Stream Suite] YouTube liveChatId from Stream Info (%d chars)", liveChatId.size());
-		if (connectionsActive && (wasEmpty || !youtubeTimer->isActive()) && !youtubePollInFlight) {
+		if (connectionsActive && !youtubePollInFlight && (changed || !youtubeTimer->isActive())) {
 			DebugYouTube(QStringLiteral("notify → PollYouTubeChat"));
 			PollYouTubeChat();
 		} else if (!connectionsActive && DockIsOpen()) {
@@ -1883,7 +1969,7 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 			query.addQueryItem("id", videoId);
 			url.setQuery(query);
 			Http(QString::fromUtf8(url.toEncoded()), authHdr(), {}, "GET",
-			     [this, finishOk, done](int st, const QByteArray &payload, const QString &) {
+			     [this, finishOk, done, videoId](int st, const QByteArray &payload, const QString &) {
 				     if (!ytLiveChatId.isEmpty()) {
 					     finishOk();
 					     return;
@@ -1897,9 +1983,19 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 											.value("liveStreamingDetails")
 											.toObject();
 						     const QString chatId = YouTubeVideoActiveChatId(details);
+						     if (!details.value(QStringLiteral("actualEndTime")).toString().isEmpty()) {
+							     DebugYouTube(QStringLiteral("videos.list: live já terminou"));
+							     if (ytVideoId == videoId) {
+								     ytVideoId.clear();
+								     PersistYouTubeIds();
+							     }
+							     if (done)
+								     done(false);
+							     return;
+						     }
 						     if (!chatId.isEmpty()) {
 							     DebugYouTube(QStringLiteral("videos.list → chat id OK"));
-							     ytLiveChatId = chatId;
+							     BindYouTubeChat(chatId, videoId);
 							     finishOk();
 							     return;
 						     }
@@ -1962,13 +2058,13 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 					     }
 					     /* snippet.liveChatId exists from ready onward. Poll it; 404 just means
 					      * chat is not open yet and we retry the same id. */
-					     if (!videoId.isEmpty())
-						     ytVideoId = videoId;
 					     if (!chatId.isEmpty()) {
-						     ytLiveChatId = chatId;
+						     BindYouTubeChat(chatId, videoId);
 						     finishOk();
 						     return;
 					     }
+					     if (!videoId.isEmpty())
+						     ytVideoId = videoId;
 					     EnsureYouTubeWaitLiveTimer();
 				     } else {
 					     DebugYouTube(QStringLiteral("liveBroadcasts by id: items vazio"));
@@ -2048,9 +2144,7 @@ void ChatDock::StartYouTubeChat()
 				return;
 			}
 			if (!hintChatId.isEmpty()) {
-				ytLiveChatId = hintChatId;
-				if (!videoId.isEmpty())
-					ytVideoId = videoId;
+				BindYouTubeChat(hintChatId, videoId);
 				DebugYouTube(QStringLiteral("trust chat hint (%1)").arg(life.isEmpty() ? QStringLiteral("?") : life));
 				beginPoll();
 				return;
@@ -2144,79 +2238,31 @@ void ChatDock::StartYouTubeChat()
 				     (*tryAt)(0);
 			     });
 		};
-		auto trySearchLive = [this, authHdr, resolveVideoChat](bool forMine, std::function<void()> next) {
-			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/search"));
-			QUrlQuery query;
-			query.addQueryItem("part", "snippet");
-			query.addQueryItem("type", "video");
-			query.addQueryItem("eventType", "live");
-			query.addQueryItem("maxResults", "5");
-			if (forMine) {
-				query.addQueryItem("forMine", "true");
-			} else {
-				if (accounts[YouTube].userId.isEmpty()) {
-					if (next)
-						next();
-					return;
-				}
-				query.addQueryItem("channelId", accounts[YouTube].userId);
-			}
-			url.setQuery(query);
-			Http(QString::fromUtf8(url.toEncoded()), authHdr(), {}, "GET",
-			     [this, resolveVideoChat, next](int code, const QByteArray &body, const QString &) {
-				     if (!ytLiveChatId.isEmpty()) {
-					     if (!youtubePollInFlight && !youtubeTimer->isActive())
-						     PollYouTubeChat();
-					     return;
-				     }
-				     QString videoId;
-				     if (code >= 200 && code < 300) {
-					     const QJsonArray items =
-						     QJsonDocument::fromJson(body).object().value("items").toArray();
-					     if (!items.isEmpty())
-						     videoId = items.at(0)
-								       .toObject()
-								       .value("id")
-								       .toObject()
-								       .value("videoId")
-								       .toString();
-				     } else {
-					     blog(LOG_WARNING, "[Stream Suite] YouTube search.list HTTP %d", code);
-				     }
-				     resolveVideoChat(videoId, QString(), QStringLiteral("live"), next);
-			     });
-		};
-
-		auto afterChannel = [this, tryBroadcastList, trySearchLive, markWaiting, resolveVideoChat] {
+		auto afterChannel = [this, tryBroadcastList, markWaiting, resolveVideoChat] {
 			if (!ytLiveChatId.isEmpty()) {
 				if (!youtubePollInFlight && !youtubeTimer->isActive())
 					PollYouTubeChat();
 				return;
 			}
-			auto rest = [tryBroadcastList, trySearchLive, markWaiting] {
-				/* Prefer truly active → channel search → forMine search → mine list.
-				 * Never stop on an upcoming broadcast that has no liveChatId. */
+			auto rest = [tryBroadcastList, markWaiting] {
+				/* Active broadcast first, then the channel's own list. search.list is not used:
+				 * it is capped near 100 calls/day and was returning HTTP 429. */
 				QUrlQuery activeQ;
 				activeQ.addQueryItem("broadcastStatus", "active");
-				tryBroadcastList(activeQ, [trySearchLive, tryBroadcastList, markWaiting] {
-					trySearchLive(false, [trySearchLive, tryBroadcastList, markWaiting] {
-						trySearchLive(true, [tryBroadcastList, markWaiting] {
-							QUrlQuery mineQ;
-							mineQ.addQueryItem("mine", "true");
-							mineQ.addQueryItem("maxResults", "50");
-							tryBroadcastList(mineQ, markWaiting);
-						});
-					});
+				tryBroadcastList(activeQ, [tryBroadcastList, markWaiting] {
+					QUrlQuery mineQ;
+					mineQ.addQueryItem("mine", "true");
+					mineQ.addQueryItem("maxResults", "50");
+					tryBroadcastList(mineQ, markWaiting);
 				});
 			};
-			/* Known video from Stream Info / previous session — resolve first (may be complete). */
 			if (!ytVideoId.isEmpty())
 				resolveVideoChat(ytVideoId, QString(), QString(), rest);
 			else
 				rest();
 		};
 
-		/* Channel id is required for the most reliable live search. */
+		/* Display name for messages we send. liveBroadcasts does not need the channel id. */
 		if (accounts[YouTube].userId.isEmpty() || accounts[YouTube].userName.isEmpty()) {
 			QUrl ch(QStringLiteral("https://www.googleapis.com/youtube/v3/channels"));
 			QUrlQuery cq;
@@ -2352,55 +2398,32 @@ bool ChatDock::HandleYouTubeControlItem(const QJsonObject &obj)
 	if (!deleted)
 		return false;
 	QStringList ids;
-	ids << obj.value(QStringLiteral("id")).toString();
-	const QJsonObject del = snip.value(QStringLiteral("messageDeletedDetails")).toObject();
-	const QJsonObject ret = snip.value(QStringLiteral("messageRetractedDetails")).toObject();
-	ids << del.value(QStringLiteral("deletedMessageId")).toString();
-	ids << ret.value(QStringLiteral("retractedMessageId")).toString();
-	ids << snip.value(QStringLiteral("deletedMessageId")).toString();
-	bool any = false;
-	for (const QString &id : ids) {
-		if (id.isEmpty())
-			continue;
+	auto addId = [&ids](const QString &id) {
+		const QString trimmed = id.trimmed();
+		if (!trimmed.isEmpty() && !ids.contains(trimmed))
+			ids.append(trimmed);
+	};
+	/* Tombstones reuse the original message id. Delete/retract events use a different id
+	 * and point at the original via *MessageId. */
+	if (type == QLatin1String("tombstone"))
+		addId(obj.value(QStringLiteral("id")).toString());
+	const QJsonValue delVal = snip.value(QStringLiteral("messageDeletedDetails"));
+	if (delVal.isObject())
+		addId(delVal.toObject().value(QStringLiteral("deletedMessageId")).toString());
+	else if (delVal.isString())
+		addId(delVal.toString());
+	const QJsonValue retVal = snip.value(QStringLiteral("messageRetractedDetails"));
+	if (retVal.isObject())
+		addId(retVal.toObject().value(QStringLiteral("retractedMessageId")).toString());
+	else if (retVal.isString())
+		addId(retVal.toString());
+	addId(snip.value(QStringLiteral("deletedMessageId")).toString());
+	addId(snip.value(QStringLiteral("retractedMessageId")).toString());
+	blog(LOG_INFO, "[Stream Suite] YouTube delete type=%s id=%s", type.toUtf8().constData(),
+	     ids.join(QLatin1Char(',')).toUtf8().constData());
+	for (const QString &id : ids)
 		MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
-		any = true;
-	}
 	return true;
-}
-
-void ChatDock::ReplayYouTubeDeletes()
-{
-	if (ytLiveChatId.isEmpty() || ytReplayTokens.isEmpty())
-		return;
-	const qint64 now = QDateTime::currentMSecsSinceEpoch();
-	if (now - youtubeLastDeleteSyncMs < 8000)
-		return;
-	youtubeLastDeleteSyncMs = now;
-	const QString token = ytReplayTokens.at(ytReplayIndex % ytReplayTokens.size());
-	++ytReplayIndex;
-	EnsureToken(YouTube, [this, token](bool ok) {
-		if (!ok || ytLiveChatId.isEmpty())
-			return;
-		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
-		QUrlQuery query;
-		query.addQueryItem(QStringLiteral("liveChatId"), ytLiveChatId);
-		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
-		query.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("50"));
-		if (token != QLatin1String("*") && !token.isEmpty())
-			query.addQueryItem(QStringLiteral("pageToken"), token);
-		url.setQuery(query);
-		const QString requestUrl = QString::fromUtf8(url.toEncoded());
-		Http(requestUrl,
-		     {{QByteArrayLiteral("Authorization"),
-		       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}},
-		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
-			     if (status < 200 || status >= 300)
-				     return;
-			     const QJsonArray items = QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
-			     for (const QJsonValue &row : items)
-				     HandleYouTubeControlItem(row.toObject());
-		     });
-	});
 }
 
 void ChatDock::PollYouTubeChat()
@@ -2427,16 +2450,23 @@ void ChatDock::PollYouTubeChat()
 		QUrlQuery query;
 		query.addQueryItem("liveChatId", ytLiveChatId);
 		query.addQueryItem("part", "snippet,authorDetails");
-		query.addQueryItem("maxResults", "200");
+		/* Big pages while skipping history, then small live pages. */
+		query.addQueryItem("maxResults", youtubeCatchingUp ? QStringLiteral("2000") : QStringLiteral("200"));
 		if (!ytNextPage.isEmpty())
 			query.addQueryItem("pageToken", ytNextPage);
 		url.setQuery(query);
 		const QString requestUrl = QString::fromUtf8(url.toEncoded());
 		const QString usedToken = ytNextPage;
+		const QString polledChat = ytLiveChatId;
 		Http(requestUrl,
 		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}}, {}, "GET",
-		     [this, usedToken](int status, const QByteArray &body, const QString &error) {
+		     [this, usedToken, polledChat](int status, const QByteArray &body, const QString &error) {
 			     youtubePollInFlight = false;
+			     if (polledChat != ytLiveChatId) {
+				     if (connectionsActive && !ytLiveChatId.isEmpty())
+					     QTimer::singleShot(0, this, &ChatDock::PollYouTubeChat);
+				     return;
+			     }
 			     int interval = 5000;
 			     if (status >= 200 && status < 300) {
 				     youtubePageTokenFails = 0;
@@ -2446,6 +2476,8 @@ void ChatDock::PollYouTubeChat()
 					     ytLiveChatId.clear();
 					     ytNextPage.clear();
 					     youtubeConnectedAnnounced = false;
+					     youtubeCatchingUp = true;
+					     ClearYouTubeMessages();
 					     PersistYouTubeIds();
 					     DebugYouTube(QStringLiteral("poll: offlineAt → chat fechou"));
 					     blog(LOG_INFO, "[Stream Suite] YouTube live chat went offline");
@@ -2469,18 +2501,21 @@ void ChatDock::PollYouTubeChat()
 					     DebugYouTube(QStringLiteral("poll HTTP 200 → Connected"));
 					     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
 				     }
-				     const QString pageKey = usedToken.isEmpty() ? QStringLiteral("*") : usedToken;
-				     if (!ytReplayTokens.contains(pageKey))
-					     ytReplayTokens.append(pageKey);
-				     while (ytReplayTokens.size() > 4)
-					     ytReplayTokens.removeFirst();
-				     ReplayYouTubeDeletes();
+				     if (youtubeIgnoreBeforeMs <= 0)
+					     youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
 				     const QJsonArray items = root.value("items").toArray();
+				     qint64 newestPub = 0;
 				     for (const QJsonValue &row : items) {
 					     const QJsonObject obj = row.toObject();
 					     if (HandleYouTubeControlItem(obj))
 						     continue;
 					     const QJsonObject snip = obj.value("snippet").toObject();
+					     const qint64 published = YouTubePublishedMs(snip);
+					     if (published > newestPub)
+						     newestPub = published;
+					     /* Same liveChatId keeps the previous stream's lines. Drop them. */
+					     if (published > 0 && published < youtubeIgnoreBeforeMs)
+						     continue;
 					     const QString type = snip.value("type").toString();
 					     /* Prefer typed text, then displayMessage (covers Super Chat / stickers / etc.). */
 					     QString text =
@@ -2532,6 +2567,17 @@ void ChatDock::PollYouTubeChat()
 					      * Insert id and list id are often different. */
 					     if (!AdoptYouTubeMessage(msg))
 						     AppendMessage(msg);
+				     }
+				     /* A full old page means we are still walking the previous live.
+				      * Skip ahead quickly, then sit on YouTube's own poll interval. */
+				     const bool moreHistory = youtubeCatchingUp && !next.isEmpty() && next != usedToken &&
+							      newestPub > 0 && newestPub + 1500 < youtubeIgnoreBeforeMs &&
+							      youtubeCatchupPages < 40;
+				     if (moreHistory) {
+					     ++youtubeCatchupPages;
+					     interval = 1000;
+				     } else {
+					     youtubeCatchingUp = false;
 				     }
 			     } else {
 				     const QString errMsg = QJsonDocument::fromJson(body)
@@ -2659,6 +2705,8 @@ void ChatDock::SendYouTubeMessage(const QString &text)
 						     if (item && ItemHasChatId(item, localId)) {
 							     AddChatIdAlias(item, realId);
 							     seenMessageIds.insert(realId);
+							     if (ytPendingDeletes.contains(realId))
+								     MarkMessageDeleted(realId, Tr("ChatDockMessageRemoved"));
 							     break;
 						     }
 					     }
@@ -3266,27 +3314,6 @@ void ChatDock::OnKickStreamOffline()
 	SetViewerCount(Kick, 0, false);
 }
 
-void ChatDock::OnKickWsMessage(const QString &message)
-{
-	const QJsonObject root = QJsonDocument::fromJson(message.toUtf8()).object();
-	if (root.contains(QStringLiteral("push"))) {
-		HandleKickCentrifugoFrame(message.toUtf8());
-		return;
-	}
-	const QString event = root.value(QStringLiteral("event")).toString();
-	if (event.contains(QStringLiteral("StopStreamBroadcast"))) {
-		OnKickStreamOffline();
-		return;
-	}
-	if (!event.contains(QStringLiteral("ChatMessage")) && !event.contains(QStringLiteral("MessageDeleted")) &&
-	    !event.contains(QStringLiteral("ChatroomClear")) && !event.contains(QStringLiteral("UserBanned")))
-		return;
-	QJsonObject data = root.value(QStringLiteral("data")).toObject();
-	if (data.isEmpty())
-		data = QJsonDocument::fromJson(root.value(QStringLiteral("data")).toString().toUtf8()).object();
-	HandleKickChatPayload(data, event);
-}
-
 void ChatDock::SendKickMessage(const QString &text)
 {
 	EnsureToken(Kick, [this, text](bool ok) {
@@ -3436,88 +3463,6 @@ QString ChatDock::TwitchEmoteImageUrl(const QString &emoteId)
 {
 	/* "default" returns animated GIF when available, otherwise static PNG. */
 	return QStringLiteral("https://static-cdn.jtvnw.net/emoticons/v2/%1/default/dark/1.0").arg(emoteId);
-}
-
-QString ChatDock::FormatTwitchContentHtml(const QString &raw, const QVector<ChatEmoteSpan> &emotes) const
-{
-	if (emotes.isEmpty())
-		return Linkify(EscapeHtml(raw));
-	QString out;
-	int last = 0;
-	for (const ChatEmoteSpan &span : emotes) {
-		if (span.start < last || span.end >= raw.size() || span.start > span.end)
-			continue;
-		if (span.start > last)
-			out += Linkify(EscapeHtml(raw.mid(last, span.start - last)));
-		const QString cacheKey = QStringLiteral("twitch-emote:%1").arg(span.id);
-		const QString name = raw.mid(span.start, span.end - span.start + 1);
-		if (badgePixmaps.contains(cacheKey)) {
-			out += QStringLiteral("<img src='%1' height='18' style='vertical-align:middle;' />")
-				       .arg(PixmapDataUri(badgePixmaps.value(cacheKey)));
-		} else {
-			out += QStringLiteral("<span style='color:#9a9a9a;'>:%1:</span>").arg(EscapeHtml(name));
-		}
-		last = span.end + 1;
-	}
-	if (last < raw.size())
-		out += Linkify(EscapeHtml(raw.mid(last)));
-	return out;
-}
-
-void ChatDock::RefreshTwitchMessageLabel(QLabel *label)
-{
-	if (!label)
-		return;
-	const QString raw = label->property("twitchRawText").toString();
-	const QString prefix = label->property("twitchPrefixHtml").toString();
-	if (raw.isEmpty())
-		return;
-	const QVector<ChatEmoteSpan> spans = TwitchEmotesFromTag(label->property("twitchEmotesTag").toString());
-	label->setText(prefix + FormatTwitchContentHtml(raw, spans));
-	if (auto *row = qobject_cast<QWidget *>(label->parent())) {
-		for (int i = 0; messageList && i < messageList->count(); ++i) {
-			QListWidgetItem *it = messageList->item(i);
-			if (messageList->itemWidget(it) == row) {
-				LayoutMessageRow(row, it, messageList->viewport()->width());
-				break;
-			}
-		}
-	}
-}
-
-void ChatDock::PrefetchTwitchEmotes(const QVector<ChatEmoteSpan> &emotes, QLabel *label)
-{
-	QSet<QString> ids;
-	for (const ChatEmoteSpan &span : emotes)
-		ids.insert(span.id);
-	if (ids.isEmpty())
-		return;
-
-	QPointer<QLabel> alive(label);
-	for (const QString &id : ids) {
-		const QString cacheKey = QStringLiteral("twitch-emote:%1").arg(id);
-		if (badgePixmaps.contains(cacheKey) || badgeFetchPending.contains(cacheKey))
-			continue;
-		badgeFetchPending.insert(cacheKey);
-		const QString url = TwitchEmoteImageUrl(id);
-		Http(url,
-		     {{QByteArrayLiteral("User-Agent"),
-		       QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-					 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")}},
-		     {}, "GET", [this, cacheKey, alive](int status, const QByteArray &body, const QString &) {
-			     badgeFetchPending.remove(cacheKey);
-			     if (status < 200 || status >= 300 || body.isEmpty())
-				     return;
-			     badgeRawBytes.insert(cacheKey, body);
-			     QPixmap pix;
-			     if (!pix.loadFromData(body))
-				     return;
-			     badgePixmaps.insert(cacheKey,
-						 pix.scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-			     if (alive)
-				     RefreshTwitchMessageLabel(alive);
-		     });
-	}
 }
 
 QWidget *ChatDock::BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent)
@@ -3821,96 +3766,6 @@ QString ChatDock::KickEmoteImageUrl(const QString &emoteId)
 	return QStringLiteral("https://files.kick.com/emotes/%1/fullsize").arg(emoteId);
 }
 
-QString ChatDock::PixmapDataUri(const QPixmap &pix)
-{
-	QByteArray bytes;
-	QBuffer buffer(&bytes);
-	buffer.open(QIODevice::WriteOnly);
-	pix.save(&buffer, "PNG");
-	return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(bytes.toBase64());
-}
-
-QString ChatDock::FormatKickContentHtml(const QString &raw) const
-{
-	static const QRegularExpression re(QStringLiteral(R"(\[emote:(\d+):([^\]]+)\])"));
-	QString out;
-	int last = 0;
-	auto it = re.globalMatch(raw);
-	while (it.hasNext()) {
-		const QRegularExpressionMatch m = it.next();
-		out += Linkify(EscapeHtml(raw.mid(last, m.capturedStart() - last)));
-		const QString id = m.captured(1);
-		const QString name = m.captured(2);
-		const QString cacheKey = QStringLiteral("kick-emote:%1").arg(id);
-		if (badgePixmaps.contains(cacheKey)) {
-			out += QStringLiteral("<img src='%1' height='18' style='vertical-align:middle;' />")
-				       .arg(PixmapDataUri(badgePixmaps.value(cacheKey)));
-		} else {
-			out += QStringLiteral("<span style='color:#9a9a9a;'>:%1:</span>").arg(EscapeHtml(name));
-		}
-		last = m.capturedEnd();
-	}
-	out += Linkify(EscapeHtml(raw.mid(last)));
-	return out;
-}
-
-void ChatDock::RefreshKickMessageLabel(QLabel *label)
-{
-	if (!label)
-		return;
-	const QString raw = label->property("kickRawText").toString();
-	const QString prefix = label->property("kickPrefixHtml").toString();
-	if (raw.isEmpty())
-		return;
-	label->setText(prefix + FormatKickContentHtml(raw));
-	if (auto *row = qobject_cast<QWidget *>(label->parent())) {
-		for (int i = 0; messageList && i < messageList->count(); ++i) {
-			QListWidgetItem *it = messageList->item(i);
-			if (messageList->itemWidget(it) == row) {
-				LayoutMessageRow(row, it, messageList->viewport()->width());
-				break;
-			}
-		}
-	}
-}
-
-void ChatDock::PrefetchKickEmotes(const QString &raw, QLabel *label)
-{
-	static const QRegularExpression re(QStringLiteral(R"(\[emote:(\d+):([^\]]+)\])"));
-	QSet<QString> ids;
-	auto it = re.globalMatch(raw);
-	while (it.hasNext())
-		ids.insert(it.next().captured(1));
-	if (ids.isEmpty())
-		return;
-
-	QPointer<QLabel> alive(label);
-	for (const QString &id : ids) {
-		const QString cacheKey = QStringLiteral("kick-emote:%1").arg(id);
-		if (badgePixmaps.contains(cacheKey) || badgeFetchPending.contains(cacheKey))
-			continue;
-		badgeFetchPending.insert(cacheKey);
-		const QString url = KickEmoteImageUrl(id);
-		Http(url,
-		     {{QByteArrayLiteral("User-Agent"),
-		       QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-					 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")},
-		      {QByteArrayLiteral("Referer"), QByteArrayLiteral("https://kick.com/")}},
-		     {}, "GET", [this, cacheKey, alive](int status, const QByteArray &body, const QString &) {
-			     badgeFetchPending.remove(cacheKey);
-			     if (status < 200 || status >= 300 || body.isEmpty())
-				     return;
-			     QPixmap pix;
-			     if (!pix.loadFromData(body))
-				     return;
-			     badgePixmaps.insert(cacheKey,
-						 pix.scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-			     if (alive)
-				     RefreshKickMessageLabel(alive);
-		     });
-	}
-}
-
 void ChatDock::ApplyBadgeToLabel(const ChatBadge &badge, QLabel *target)
 {
 	if (!target || badge.url.isEmpty())
@@ -4073,7 +3928,9 @@ void ChatDock::FetchImageToLabel(const QString &url, QLabel *target, int size, c
 
 	const QByteArray referer = url.contains(QLatin1String("kick.com"), Qt::CaseInsensitive)
 					   ? QByteArrayLiteral("https://kick.com/")
-					   : QByteArrayLiteral("https://www.twitch.tv/");
+					   : url.contains(QLatin1String("jsdelivr.net"), Qt::CaseInsensitive)
+						     ? QByteArrayLiteral("https://cdn.jsdelivr.net/")
+						     : QByteArrayLiteral("https://www.twitch.tv/");
 	const QList<QPair<QByteArray, QByteArray>> headers = {
 		{QByteArrayLiteral("User-Agent"),
 		 QByteArrayLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -4345,6 +4202,10 @@ bool ChatDock::AdoptYouTubeMessage(const ChatMessage &msg)
 		AddChatIdAlias(item, msg.id);
 		item->setData(Qt::UserRole + 7, true);
 		seenMessageIds.insert(msg.id);
+		if (ytPendingDeletes.contains(msg.id)) {
+			ytPendingDeletes.remove(msg.id);
+			ApplyDeletedStyleToRow(messageList->itemWidget(item), item, Tr("ChatDockMessageRemoved"));
+		}
 		return true;
 	}
 	return false;
@@ -4361,10 +4222,15 @@ void ChatDock::MarkMessageDeleted(const QString &messageId, const QString &toolt
 		if (!ItemHasChatId(item, want))
 			continue;
 		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tooltip);
+		ytPendingDeletes.remove(want);
 		found = true;
 	}
-	if (!found)
+	if (!found) {
+		ytPendingDeletes.insert(want);
+		if (ytPendingDeletes.size() > 400)
+			ytPendingDeletes.clear();
 		blog(LOG_INFO, "[Stream Suite] Deleted message id not in chat list yet: %s", want.toUtf8().constData());
+	}
 }
 
 void ChatDock::MarkMessagesDeletedByUser(Platform platform, const QString &userLogin, const QString &tooltip)
@@ -4476,9 +4342,11 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 		flow->addHtml(prefixHtml);
 		for (const EmojiRun &run : SplitEmojiRuns(msg.text)) {
 			if (run.emoji) {
-				QLabel *slot = flow->addEmoteSlot(18);
+				QLabel *slot = flow->addEmoteSlot(22);
 				slot->setToolTip(run.text);
-				FetchImageToLabel(run.url, slot, 18, run.url);
+				slot->setPixmap(RenderEmojiPixmap(run.text, 22));
+				if (!run.url.isEmpty())
+					FetchImageToLabel(run.url, slot, 22, run.url);
 				continue;
 			}
 			const QStringList parts = run.text.split(QRegularExpression(QStringLiteral("(\\s+)")));
@@ -4498,6 +4366,10 @@ void ChatDock::AppendMessage(const ChatMessage &msg)
 	messageList->addItem(item);
 	messageList->setItemWidget(item, row);
 	LayoutMessageRow(row, item, messageList->viewport()->width());
+	if (!msg.id.isEmpty() && ytPendingDeletes.contains(msg.id)) {
+		ytPendingDeletes.remove(msg.id);
+		ApplyDeletedStyleToRow(row, item, Tr("ChatDockMessageRemoved"));
+	}
 
 	while (messageList->count() > maxMessages) {
 		QListWidgetItem *old = messageList->takeItem(0);

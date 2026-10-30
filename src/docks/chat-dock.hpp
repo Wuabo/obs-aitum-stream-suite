@@ -58,7 +58,6 @@ public:
 	void NotifyYouTubeVideo(const QString &videoId, const QString &liveChatId = QString());
 	void OnStreamingStarted();
 	void PersistYouTubeIds();
-	/* Temporary diagnostics into Unified Chat (and OBS log). Unique per call so nothing is deduped. */
 	void DebugYouTube(const QString &text);
 
 protected:
@@ -152,13 +151,14 @@ private:
 	bool youtubeQuotaAnnounced = false;
 	bool youtubePollInFlight = false;
 	int youtubePageTokenFails = 0;
-	int youtubeDebugSeq = 0;
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
 	qint64 youtubeLastTransitionMs = 0;
-	qint64 youtubeLastDeleteSyncMs = 0;
-	QStringList ytReplayTokens;
-	int ytReplayIndex = 0;
+	/* Messages published before this are history from a previous poll/live — never render them. */
+	qint64 youtubeIgnoreBeforeMs = 0;
+	bool youtubeCatchingUp = true;
+	int youtubeCatchupPages = 0;
+	QSet<QString> ytPendingDeletes;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
@@ -206,9 +206,6 @@ private:
 	QVector<ChatBadge> TwitchBadgesFromTags(const QString &badgesTag) const;
 	static QVector<ChatEmoteSpan> TwitchEmotesFromTag(const QString &emotesTag);
 	static QString TwitchEmoteImageUrl(const QString &emoteId);
-	QString FormatTwitchContentHtml(const QString &raw, const QVector<ChatEmoteSpan> &emotes) const;
-	void PrefetchTwitchEmotes(const QVector<ChatEmoteSpan> &emotes, QLabel *label);
-	void RefreshTwitchMessageLabel(QLabel *label);
 	QWidget *BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent);
 
 	void StartYouTubeChat();
@@ -220,7 +217,8 @@ private:
 	void SendYouTubeMessage(const QString &text);
 	bool AdoptYouTubeMessage(const ChatMessage &msg);
 	bool HandleYouTubeControlItem(const QJsonObject &obj);
-	void ReplayYouTubeDeletes();
+	bool BindYouTubeChat(const QString &chatId, const QString &videoId);
+	void ClearYouTubeMessages();
 	void ReportYouTubeHttpError(int status, const QByteArray &body);
 
 	void ConnectKickChat();
@@ -230,7 +228,6 @@ private:
 	void StartKickCentrifugoWs(const QString &wsUrl, const QString &token, const QStringList &channels);
 	void HandleKickCentrifugoFrame(const QByteArray &text);
 	void HandleKickChatPayload(const QJsonObject &data, const QString &eventName = QString());
-	void OnKickWsMessage(const QString &message);
 	void OnKickStreamOffline();
 	void SendKickMessage(const QString &text);
 	QVector<ChatBadge> KickBadgesFromIdentity(const QJsonObject &identity) const;
@@ -241,9 +238,6 @@ private:
 	void IngestKickSubscriberBadges(const QJsonArray &badges);
 	static QString KickEmoteImageUrl(const QString &emoteId);
 	static QVector<ChatEmoteSpan> KickEmotesFromText(const QString &raw);
-	QString FormatKickContentHtml(const QString &raw) const;
-	void PrefetchKickEmotes(const QString &raw, QLabel *label);
-	void RefreshKickMessageLabel(QLabel *label);
 	QWidget *BuildKickEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent);
 	void ApplyBadgeToLabel(const ChatBadge &badge, QLabel *target);
 
@@ -260,7 +254,6 @@ private:
 	void FetchBadgePixmap(const QString &url, QLabel *target);
 	void ApplyImageDataToLabel(QLabel *label, const QByteArray &body, int size);
 	void FetchImageToLabel(const QString &url, QLabel *target, int size, const QString &cacheKey = QString());
-	static QString PixmapDataUri(const QPixmap &pix);
 	static int MessageTextHeight(const QString &html, int width, const QFont &font);
 	bool DockIsOpen() const;
 	void SendChatMessage();
