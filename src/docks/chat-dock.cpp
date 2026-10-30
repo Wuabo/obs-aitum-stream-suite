@@ -3314,7 +3314,8 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 				detail = YouTubeRichText(renderer.value(QStringLiteral("headerSubtext")).toObject());
 			if (detail.isEmpty())
 				detail = YouTubeRichText(renderer.value(QStringLiteral("headerPrimaryText")).toObject());
-			alerts_dock->Push(int(YouTube), QString::fromUtf8(kind), user, detail);
+			const QString message = YouTubeRichText(renderer.value(QStringLiteral("message")).toObject());
+			alerts_dock->Push(int(YouTube), QString::fromUtf8(kind), user, detail, message);
 		}
 		return true;
 	};

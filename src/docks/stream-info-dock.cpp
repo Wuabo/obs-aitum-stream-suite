@@ -57,7 +57,8 @@ void save_current_profile_config(bool save_docks);
 static const int kRedirectPort = 17654;
 static const char *kTwitchScopes =
 	"channel:manage:broadcast chat:read chat:edit moderator:manage:chat_messages moderator:manage:banned_users "
-	"moderator:manage:chat_settings moderator:read:followers channel:read:subscriptions bits:read";
+	"moderator:manage:chat_settings moderator:read:followers channel:read:subscriptions bits:read "
+	"channel:read:redemptions";
 static const QSize kCategoryIconSize(24, 32);
 
 /* liveBroadcasts.snippet.liveChatId — NOT activeLiveChatId (that is videos.liveStreamingDetails). */

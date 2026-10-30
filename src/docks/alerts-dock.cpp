@@ -10,14 +10,18 @@
 
 #include <QAbstractItemView>
 #include <QDateTime>
-#include <QIcon>
-#include <QList>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QList>
 #include <QListWidget>
 #include <QMetaObject>
 #include <QPointer>
+#include <QSizePolicy>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <curl/curl.h>
@@ -27,10 +31,13 @@
 
 extern obs_data_t *current_profile_config;
 extern StreamInfoDock *stream_info_dock;
+void save_current_profile_config(bool save_docks);
 
 AlertsDock *alerts_dock = nullptr;
 
 namespace {
+
+constexpr int kMaxEntries = 200;
 
 QString Tr(const char *key)
 {
@@ -103,32 +110,30 @@ bool CurlWsWait(CURL *curl, int timeoutMs)
 	tv.tv_usec = (timeoutMs % 1000) * 1000;
 	return select(0, &fds, nullptr, nullptr, &tv) >= 0;
 #else
+	UNUSED_PARAMETER(timeoutMs);
 	return false;
 #endif
 }
 
-QString PlatformName(int platform)
+bool IsWarmKind(const QString &kind)
 {
-	switch (platform) {
-	case 1:
-		return QStringLiteral("YouTube");
-	case 2:
-		return QStringLiteral("Kick");
-	default:
-		return QStringLiteral("Twitch");
-	}
+	return kind == QLatin1String("sub") || kind == QLatin1String("gift") || kind == QLatin1String("bits") ||
+	       kind == QLatin1String("superchat") || kind == QLatin1String("member");
 }
 
-QIcon PlatformIcon(int platform)
+QString KindIcon(const QString &kind)
 {
-	switch (platform) {
-	case 1:
-		return QIcon(QStringLiteral(":/aitum/media/youtube.png"));
-	case 2:
-		return QIcon(QStringLiteral(":/aitum/media/kick.png"));
-	default:
-		return QIcon(QStringLiteral(":/aitum/media/twitch.png"));
-	}
+	if (kind == QLatin1String("raid"))
+		return QStringLiteral("🚀");
+	if (kind == QLatin1String("superchat"))
+		return QStringLiteral("✦");
+	if (kind == QLatin1String("bits"))
+		return QStringLiteral("◆");
+	if (kind == QLatin1String("redeem"))
+		return QStringLiteral("◎");
+	if (kind == QLatin1String("follow"))
+		return QStringLiteral("♥");
+	return QStringLiteral("♥");
 }
 
 QString KindLabel(const QString &kind)
@@ -147,29 +152,163 @@ QString KindLabel(const QString &kind)
 		return Tr("AlertSuperChat");
 	if (kind == QLatin1String("member"))
 		return Tr("AlertMember");
+	if (kind == QLatin1String("redeem"))
+		return Tr("AlertRedeem");
 	return kind;
+}
+
+QString BadgeText(const QString &kind, const QString &detail)
+{
+	if (kind == QLatin1String("redeem"))
+		return detail.isEmpty() ? KindLabel(kind).toUpper() : detail.toUpper();
+	QString text = KindLabel(kind).toUpper();
+	if (!detail.isEmpty())
+		text += QStringLiteral(" - ") + detail.toUpper();
+	return text;
+}
+
+QString RelativeAge(qint64 atMs)
+{
+	if (atMs <= 0)
+		return QString();
+	const qint64 secs = qMax<qint64>(0, (QDateTime::currentMSecsSinceEpoch() - atMs) / 1000);
+	if (secs < 60)
+		return QStringLiteral("%1s").arg(qMax<qint64>(1, secs));
+	if (secs < 3600)
+		return QStringLiteral("%1m").arg(secs / 60);
+	if (secs < 86400)
+		return QStringLiteral("%1h").arg(secs / 3600);
+	return QStringLiteral("%1d").arg(secs / 86400);
+}
+
+QWidget *MakeActivityCard(int platform, const QString &kind, const QString &user, const QString &detail,
+			  const QString &message, qint64 atMs, QLabel **ageOut)
+{
+	const bool warm = IsWarmKind(kind);
+	const QString accent = warm ? QStringLiteral("#e11d48") : QStringLiteral("#8b5cf6");
+	const QString soft = warm ? QStringLiteral("#3f0d1a") : QStringLiteral("#2a1848");
+	const QString edge = warm ? QStringLiteral("#7f1d1d") : QStringLiteral("#4c1d95");
+	UNUSED_PARAMETER(platform);
+
+	auto *card = new QFrame;
+	card->setObjectName(QStringLiteral("activityCard"));
+	card->setStyleSheet(QStringLiteral(
+				    "QFrame#activityCard {"
+				    "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %1, stop:0.45 #141018, stop:1 #101010);"
+				    "  border: 1px solid %2;"
+				    "  border-radius: 8px;"
+				    "}")
+				    .arg(soft, edge));
+
+	auto *outer = new QVBoxLayout(card);
+	outer->setContentsMargins(10, 8, 10, 8);
+	outer->setSpacing(6);
+
+	auto *row = new QHBoxLayout;
+	row->setContentsMargins(0, 0, 0, 0);
+	row->setSpacing(8);
+
+	auto *icon = new QLabel(KindIcon(kind));
+	icon->setFixedSize(28, 28);
+	icon->setAlignment(Qt::AlignCenter);
+	icon->setStyleSheet(QStringLiteral("QLabel {"
+					   "  background: %1;"
+					   "  color: white;"
+					   "  border-radius: 6px;"
+					   "  font-size: 13px;"
+					   "  font-weight: 700;"
+					   "}")
+				    .arg(accent));
+	row->addWidget(icon, 0, Qt::AlignVCenter);
+
+	auto *name = new QLabel(user.isEmpty() ? QStringLiteral("—") : user);
+	name->setStyleSheet(
+		QStringLiteral("QLabel { color: #f5f5f5; font-weight: 700; font-size: 13px; background: transparent; border: none; }"));
+	row->addWidget(name, 0, Qt::AlignVCenter);
+	row->addStretch(1);
+
+	auto *badge = new QLabel(BadgeText(kind, detail));
+	badge->setStyleSheet(QStringLiteral("QLabel {"
+					    "  background: %1;"
+					    "  color: white;"
+					    "  border-radius: 4px;"
+					    "  padding: 3px 8px;"
+					    "  font-size: 10px;"
+					    "  font-weight: 700;"
+					    "}")
+				     .arg(accent));
+	row->addWidget(badge, 0, Qt::AlignVCenter);
+
+	auto *age = new QLabel(RelativeAge(atMs));
+	age->setStyleSheet(QStringLiteral("QLabel {"
+					  "  background: #1c1c1c;"
+					  "  color: #9a9a9a;"
+					  "  border-radius: 4px;"
+					  "  padding: 3px 6px;"
+					  "  font-size: 10px;"
+					  "  font-weight: 600;"
+					  "}"));
+	age->setProperty("atMs", atMs);
+	row->addWidget(age, 0, Qt::AlignVCenter);
+	if (ageOut)
+		*ageOut = age;
+
+	outer->addLayout(row);
+
+	if (!message.trimmed().isEmpty()) {
+		auto *msg = new QLabel(message.trimmed());
+		msg->setWordWrap(true);
+		msg->setStyleSheet(QStringLiteral("QLabel {"
+						  "  background: #0c0c0c;"
+						  "  color: #e8e8e8;"
+						  "  border-radius: 6px;"
+						  "  padding: 8px 10px;"
+						  "  font-size: 12px;"
+						  "}"));
+		outer->addWidget(msg);
+	}
+
+	return card;
 }
 
 } // namespace
 
 AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 {
-	setObjectName(QStringLiteral("AitumStreamSuiteAlerts"));
+	setObjectName(QStringLiteral("AitumStreamSuiteActivity"));
 	auto *layout = new QVBoxLayout(this);
-	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setContentsMargins(8, 8, 8, 8);
+	layout->setSpacing(0);
+
 	list = new QListWidget(this);
-	list->setObjectName(QStringLiteral("alertsList"));
+	list->setObjectName(QStringLiteral("activityList"));
 	list->setSelectionMode(QAbstractItemView::NoSelection);
+	list->setFocusPolicy(Qt::NoFocus);
 	list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+	list->setSpacing(8);
 	list->setStyleSheet(QStringLiteral(
-		"QListWidget#alertsList { background: #141414; border: none; color: #eee; outline: none; }"
-		"QListWidget#alertsList::item { padding: 6px 8px; }"));
+		"QListWidget#activityList { background: #0b0b0b; border: none; outline: none; }"
+		"QListWidget#activityList::item { background: transparent; border: none; margin: 0; padding: 0; }"));
 	layout->addWidget(list);
+
+	ageTimer = new QTimer(this);
+	ageTimer->setInterval(30000);
+	connect(ageTimer, &QTimer::timeout, this, &AlertsDock::RefreshAges);
+	ageTimer->start();
+
+	saveTimer = new QTimer(this);
+	saveTimer->setSingleShot(true);
+	saveTimer->setInterval(800);
+	connect(saveTimer, &QTimer::timeout, this, &AlertsDock::SaveHistory);
+
+	LoadHistory();
 }
 
 AlertsDock::~AlertsDock()
 {
 	StopEventSub();
+	SaveHistory();
 }
 
 void AlertsDock::LoadTwitchAccount()
@@ -188,6 +327,11 @@ void AlertsDock::LoadTwitchAccount()
 	}
 	obs_data_release(one);
 	obs_data_release(root);
+}
+
+void AlertsDock::ReloadHistory()
+{
+	LoadHistory();
 }
 
 void AlertsDock::ReloadAccounts()
@@ -329,6 +473,7 @@ void AlertsDock::SubscribeEventSub(const QString &sessionId)
 			{"channel.subscription.gift", "1", false, false},
 			{"channel.cheer", "1", false, false},
 			{"channel.raid", "1", true, false},
+			{"channel.channel_points_custom_reward_redemption.add", "1", false, false},
 		};
 		bool authFailed = false;
 		for (const Item &item : items) {
@@ -406,6 +551,7 @@ void AlertsDock::HandleEventSubMessage(const QByteArray &payload, int gen, bool 
 	if (user.isEmpty())
 		user = event.value(QStringLiteral("from_broadcaster_user_name")).toString();
 	QString detail;
+	QString message;
 	QString kind = QStringLiteral("follow");
 	if (subscription == QLatin1String("channel.subscribe") || subscription == QLatin1String("channel.subscription.message")) {
 		kind = QStringLiteral("sub");
@@ -421,32 +567,151 @@ void AlertsDock::HandleEventSubMessage(const QByteArray &payload, int gen, bool 
 		const int months = event.value(QStringLiteral("cumulative_months")).toInt(0);
 		if (months > 0)
 			detail = Tr("AlertMonths").arg(months);
+		message = event.value(QStringLiteral("message")).toObject().value(QStringLiteral("text")).toString();
+		if (message.isEmpty())
+			message = event.value(QStringLiteral("message")).toString();
 	} else if (subscription == QLatin1String("channel.subscription.gift")) {
 		kind = QStringLiteral("gift");
 		detail = Tr("AlertGiftCount").arg(event.value(QStringLiteral("total")).toInt(0));
 	} else if (subscription == QLatin1String("channel.cheer")) {
 		kind = QStringLiteral("bits");
 		detail = Tr("AlertBitsCount").arg(event.value(QStringLiteral("bits")).toInt(0));
+		message = event.value(QStringLiteral("message")).toString();
 	} else if (subscription == QLatin1String("channel.raid")) {
 		kind = QStringLiteral("raid");
 		detail = Tr("AlertRaidViewers").arg(event.value(QStringLiteral("viewers")).toInt(0));
+	} else if (subscription == QLatin1String("channel.channel_points_custom_reward_redemption.add")) {
+		kind = QStringLiteral("redeem");
+		detail = event.value(QStringLiteral("reward")).toObject().value(QStringLiteral("title")).toString();
+		message = event.value(QStringLiteral("user_input")).toString();
 	}
-	Push(0, kind, user, detail);
+	Push(0, kind, user, detail, message);
 }
 
-void AlertsDock::Push(int platform, const QString &kind, const QString &user, const QString &detail)
+void AlertsDock::InsertCard(const Entry &entry, bool atTop)
 {
 	if (!list)
 		return;
-	QString text = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"));
-	text += QStringLiteral("  ") + PlatformName(platform);
-	text += QStringLiteral("  ") + KindLabel(kind);
-	if (!user.isEmpty())
-		text += QStringLiteral("  ") + user;
-	if (!detail.isEmpty())
-		text += QStringLiteral("  ") + detail;
-	auto *item = new QListWidgetItem(PlatformIcon(platform), text);
-	list->insertItem(0, item);
-	while (list->count() > 100)
-		delete list->takeItem(list->count() - 1);
+	QLabel *age = nullptr;
+	QWidget *card = MakeActivityCard(entry.platform, entry.kind, entry.user, entry.detail, entry.message, entry.atMs, &age);
+	auto *item = new QListWidgetItem;
+	item->setFlags(Qt::NoItemFlags);
+	item->setSizeHint(card->sizeHint());
+	item->setData(Qt::UserRole, entry.atMs);
+	if (atTop)
+		list->insertItem(0, item);
+	else
+		list->addItem(item);
+	list->setItemWidget(item, card);
+	/* SizeHint before show can be short — force after layout. */
+	card->adjustSize();
+	item->setSizeHint(card->sizeHint() + QSize(0, 4));
+}
+
+void AlertsDock::Push(int platform, const QString &kind, const QString &user, const QString &detail, const QString &message,
+		      qint64 atMs)
+{
+	if (!list)
+		return;
+	Entry entry;
+	entry.platform = platform;
+	entry.kind = kind;
+	entry.user = user;
+	entry.detail = detail;
+	entry.message = message;
+	entry.atMs = atMs > 0 ? atMs : QDateTime::currentMSecsSinceEpoch();
+
+	if (!loadingHistory) {
+		entries.insert(entries.begin(), entry);
+		while (static_cast<int>(entries.size()) > kMaxEntries)
+			entries.pop_back();
+		InsertCard(entry, true);
+		while (list->count() > kMaxEntries) {
+			QListWidgetItem *old = list->takeItem(list->count() - 1);
+			delete old;
+		}
+		ScheduleSave();
+	} else {
+		entries.push_back(entry);
+		InsertCard(entry, false);
+	}
+}
+
+void AlertsDock::RefreshAges()
+{
+	if (!list)
+		return;
+	for (int i = 0; i < list->count(); ++i) {
+		QListWidgetItem *item = list->item(i);
+		QWidget *w = list->itemWidget(item);
+		if (!w)
+			continue;
+		const auto ages = w->findChildren<QLabel *>();
+		for (QLabel *lab : ages) {
+			if (!lab->property("atMs").isValid())
+				continue;
+			const qint64 atMs = lab->property("atMs").toLongLong();
+			lab->setText(RelativeAge(atMs));
+		}
+	}
+}
+
+void AlertsDock::ScheduleSave()
+{
+	if (loadingHistory || !saveTimer)
+		return;
+	saveTimer->start();
+}
+
+void AlertsDock::SaveHistory()
+{
+	if (!current_profile_config || loadingHistory)
+		return;
+	obs_data_array_t *arr = obs_data_array_create();
+	for (const Entry &entry : entries) {
+		obs_data_t *one = obs_data_create();
+		obs_data_set_int(one, "platform", entry.platform);
+		obs_data_set_string(one, "kind", entry.kind.toUtf8().constData());
+		obs_data_set_string(one, "user", entry.user.toUtf8().constData());
+		obs_data_set_string(one, "detail", entry.detail.toUtf8().constData());
+		obs_data_set_string(one, "message", entry.message.toUtf8().constData());
+		obs_data_set_int(one, "at", entry.atMs);
+		obs_data_array_push_back(arr, one);
+		obs_data_release(one);
+	}
+	obs_data_set_array(current_profile_config, "activity_feed", arr);
+	obs_data_array_release(arr);
+	save_current_profile_config(false);
+}
+
+void AlertsDock::LoadHistory()
+{
+	if (!list)
+		return;
+	loadingHistory = true;
+	list->clear();
+	entries.clear();
+	if (current_profile_config) {
+		obs_data_array_t *arr = obs_data_get_array(current_profile_config, "activity_feed");
+		const size_t count = arr ? obs_data_array_count(arr) : 0;
+		for (size_t i = 0; i < count && static_cast<int>(entries.size()) < kMaxEntries; ++i) {
+			obs_data_t *one = obs_data_array_item(arr, i);
+			if (!one)
+				continue;
+			Entry entry;
+			entry.platform = int(obs_data_get_int(one, "platform"));
+			entry.kind = QString::fromUtf8(obs_data_get_string(one, "kind"));
+			entry.user = QString::fromUtf8(obs_data_get_string(one, "user"));
+			entry.detail = QString::fromUtf8(obs_data_get_string(one, "detail"));
+			entry.message = QString::fromUtf8(obs_data_get_string(one, "message"));
+			entry.atMs = obs_data_get_int(one, "at");
+			obs_data_release(one);
+			if (entry.kind.isEmpty())
+				continue;
+			Push(entry.platform, entry.kind, entry.user, entry.detail, entry.message, entry.atMs);
+		}
+		obs_data_array_release(arr);
+	}
+	loadingHistory = false;
+	RefreshAges();
 }

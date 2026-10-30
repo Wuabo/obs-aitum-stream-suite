@@ -447,6 +447,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 				chat_dock->hide();
 		}
 		if (alerts_dock) {
+			alerts_dock->ReloadHistory();
 			alerts_dock->ReloadAccounts();
 			if (auto *dw = qobject_cast<QDockWidget *>(alerts_dock->parentWidget()))
 				dw->hide();
@@ -460,8 +461,10 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			stream_info_dock->ReloadAccounts();
 		if (chat_dock)
 			chat_dock->ReloadAccounts();
-		if (alerts_dock)
+		if (alerts_dock) {
+			alerts_dock->ReloadHistory();
 			alerts_dock->ReloadAccounts();
+		}
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
@@ -499,7 +502,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		chat_dock = nullptr;
 		if (alerts_dock) {
 			alerts_dock = nullptr;
-			obs_frontend_remove_dock("AitumStreamSuiteAlerts");
+			obs_frontend_remove_dock("AitumStreamSuiteActivity");
 		}
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
@@ -724,7 +727,7 @@ bool obs_module_load(void)
 	chat_dock = new ChatDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteChat", obs_module_text("AitumStreamSuiteChat"), chat_dock);
 	alerts_dock = new AlertsDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteAlerts", obs_module_text("AitumStreamSuiteAlerts"), alerts_dock);
+	obs_frontend_add_dock_by_id("AitumStreamSuiteActivity", obs_module_text("AitumStreamSuiteActivity"), alerts_dock);
 	/* Chat and alerts stay off until the user enables them in View → Docks. */
 	QTimer::singleShot(0, main_window, [] {
 		auto hideDock = [](QWidget *widget) {
@@ -790,7 +793,7 @@ void obs_module_unload()
 	}
 	if (alerts_dock) {
 		alerts_dock = nullptr;
-		obs_frontend_remove_dock("AitumStreamSuiteAlerts");
+		obs_frontend_remove_dock("AitumStreamSuiteActivity");
 	}
 }
 
