@@ -11,7 +11,6 @@ private:
 	QString path;
 	std::string extension;
 	QString filenameFormat;
-	//bool overwriteIfExists;
 	bool allowSpaces;
 	QString url;
 	std::string formatName;

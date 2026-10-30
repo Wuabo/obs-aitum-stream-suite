@@ -548,7 +548,6 @@ bool OutputWidget::StartOutput(bool automated)
 	std::vector<obs_encoder_t *> vencs;
 	std::vector<obs_encoder_t *> aencs;
 
-	//obs_encoder_t *venc = nullptr;
 	bool is_record = (strcmp(output_type, "record") == 0);
 	auto advanced = obs_data_get_bool(settings, "advanced");
 	auto video_encoders = obs_data_get_array(settings, "video_encoders");

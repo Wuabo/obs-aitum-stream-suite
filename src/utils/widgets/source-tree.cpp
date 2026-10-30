@@ -84,7 +84,6 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 		setStyleSheet("background: none");
 	}
 
-	//OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
 	const char *id = obs_source_get_id(source);
 
 	bool sourceVisible = obs_sceneitem_visible(sceneitem);
@@ -353,8 +352,6 @@ void SourceTreeItem::enterEvent(QEvent *event)
 {
 	QWidget::enterEvent(event);
 
-	//OBSBasicPreview *preview = OBSBasicPreview::Get();
-
 	std::lock_guard<std::mutex> l(*tree->selectMutex);
 	tree->hoveredPreviewItems->clear();
 	tree->hoveredPreviewItems->push_back(sceneitem);
@@ -511,7 +508,6 @@ void SourceTreeItem::VisibilityChanged(bool visible)
 void SourceTreeItem::LockedChanged(bool locked)
 {
 	lock->setChecked(locked);
-	//OBSBasic::Get()->UpdateEditMenu();
 }
 
 void SourceTreeItem::Renamed(const QString &name)
@@ -625,9 +621,6 @@ void SourceTreeModel::OBSFrontendEvent(enum obs_frontend_event event, void *ptr)
 	SourceTreeModel *stm = reinterpret_cast<SourceTreeModel *>(ptr);
 
 	switch (event) {
-	case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
-		//stm->SceneChanged();
-		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 	case OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN:
 		if (!stm->items.isEmpty())
@@ -1567,12 +1560,6 @@ void SourceTree::AddGroup()
 
 void SourceTree::UpdateNoSourcesMessage()
 {
-	std::string darkPath = ":res/images/no_sources.svg";
-	//GetDataFilePath("themes/Dark/no_sources.svg", darkPath);
-
-	QString file = !obs_frontend_is_theme_dark() ? ":res/images/no_sources.svg" : darkPath.c_str();
-	//iconNoSources.load(file);
-
 	QTextOption opt(Qt::AlignHCenter);
 	opt.setWrapMode(QTextOption::WordWrap);
 	textNoSources.setTextOption(opt);
@@ -1592,24 +1579,11 @@ void SourceTree::paintEvent(QPaintEvent *event)
 			textPrepared = true;
 		}
 
-		//QRectF iconRect = iconNoSources.viewBoxF();
-		//iconRect.setSize(QSizeF(32.0, 32.0));
-
-		//QSizeF iconSize = iconRect.size();
 		QSizeF textSize = textNoSources.size();
 		QSizeF thisSize = size();
-		//const qreal spacing = 16.0;
-
-		qreal totalHeight =
-			/*iconSize.height() + spacing + */ textSize.height();
-
-		//qreal x = thisSize.width() / 2.0 /* - iconSize.width() / 2.0*/;
+		qreal totalHeight = textSize.height();
 		qreal y = thisSize.height() / 2.0 - totalHeight / 2.0;
-		//iconRect.moveTo(std::round(x), std::round(y));
-		//iconNoSources.render(&p, iconRect);
-
 		qreal x = thisSize.width() / 2.0 - textSize.width() / 2.0;
-		//y += spacing + iconSize.height();
 		p.drawStaticText((int)x, (int)y, textNoSources);
 	} else {
 		QListView::paintEvent(event);

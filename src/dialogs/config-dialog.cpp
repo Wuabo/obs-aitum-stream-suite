@@ -636,7 +636,6 @@ void OBSBasicSettings::LoadSettings(obs_data_t *settings)
 				return;
 			auto d = (OBSBasicSettings *)param;
 			auto canvas2 = obs_data_get_array(d->main_settings, "canvas");
-			//auto c = obs_get_canvas_by_name(obs_data_get_string(data2, "name"));
 			d->AddCanvas(d->canvasLayout, data2, canvas2);
 			obs_data_array_release(canvas2);
 		},
@@ -1378,9 +1377,6 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 	canvasSubLayout->addStretch(1);
 	canvasLayout->addLayout(canvasSubLayout);
 	outputLayout->addRow(QString::fromUtf8(obs_module_text("Canvas")), canvasLayout);
-	//QList<QWidget *> canvasWidgets;
-
-	//outputLayout->insertRow
 
 	QWidget *hotkeyGroup = nullptr;
 
@@ -1522,14 +1518,6 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 	advancedTabWidget->setContentsMargins(0, 0, 0, 0);
 	advancedTabWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	advancedTabWidget->setStyleSheet(tabStyles);
-	//	advancedTabWidget->setStyleSheet("QTabWidget::tab-bar { border: 1px solid gray; }"
-	//									 "QTabBar::tab { background: gray; color: white; padding: 10px; }"
-	//									 "QTabBar::tab:selected { background: lightgray; }"
-	//									 "QTabWidget::pane { border: none; background: pink; }");
-
-	//	auto pageStyle = QString("QWidget[page=\"true\"] { border: 1px solid %1; padding-top: 0; margin-top: 0; }")
-	//					.arg(QPalette().color(QPalette::ColorRole::Mid).name(QColor::HexRgb));
-	//
 	if (add) {
 		connect(add, &QToolButton::clicked, [this, advancedTabWidget, settings, outputs, canvasLayout, canvasCombo] {
 			auto index = advancedTabWidget->count() - 1;
@@ -1690,8 +1678,6 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 
 	auto audioPage = new QWidget;
 	audioPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	//	audioPage->setStyleSheet(pageStyle);
-	//	audioPage->setProperty("page", true);
 	auto audioPageLayout = new QFormLayout;
 	audioPage->setLayout(audioPageLayout);
 
@@ -1887,7 +1873,6 @@ void OBSBasicSettings::LoadOutputLayout(obs_data_t *settings, QFormLayout *outpu
 	if (isNew) {
 		canvasCombo->show();
 		canvasCombo->setFocus();
-		//canvasCombo->setFocus(Qt::OtherFocusReason);
 	}
 }
 
@@ -1959,8 +1944,6 @@ void OBSBasicSettings::AddVideoEncoderPage(QTabWidget *tabWidget, obs_data_t *se
 {
 	auto videoPage = new QWidget;
 	videoPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	//	videoPage->setStyleSheet(pageStyle);
-	//	videoPage->setProperty("page", true);
 	auto videoPageLayout = new QFormLayout;
 	videoPage->setLayout(videoPageLayout);
 

@@ -706,7 +706,6 @@ void FfmpegOutputDialog::SaveSettings(obs_data_t *settings)
 	obs_data_set_string(settings, "directory", path.toUtf8().constData());
 	obs_data_set_string(settings, "extension", extension.c_str());
 	obs_data_set_string(settings, "format", filenameFormat.toUtf8().constData());
-	//obs_data_set_bool(settings, "overwrite_if_exists", overwriteIfExists);
 	obs_data_set_bool(settings, "allow_spaces", allowSpaces);
 
 	obs_data_set_string(settings, "url", url.toUtf8().constData());

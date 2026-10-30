@@ -210,7 +210,6 @@ QComboBox *StreamOutputDialog::generateOutputServerCombo(std::string service, QP
 	// If we're edit, look up the current value for outputServer and try to set the index
 	if (edit) {
 		auto selectionIndex = combo->findData(outputServer);
-		//		blog(LOG_WARNING, "[Aitum Stream Suite] edit selection %i for value %s", selectionIndex, outputServer.toStdString().c_str());
 		if (selectionIndex != -1) {
 			combo->setCurrentIndex(selectionIndex);
 		}
@@ -221,9 +220,6 @@ QComboBox *StreamOutputDialog::generateOutputServerCombo(std::string service, QP
 		outputServer = combo->currentData().toString();
 		validateOutputs(confirmButton);
 	});
-
-	// Set default value for server
-	//	outputServer = combo->currentData().toString();
 
 	return combo;
 }
@@ -338,8 +334,6 @@ obs_data_t *StreamOutputDialog::getService(std::string serviceName)
 
 	for (size_t idx = 0; idx < total; idx++) {
 		auto item = obs_data_array_item(servicesData, idx);
-		//		blog(LOG_WARNING, "[Aitum Stream Suite] %s", obs_data_get_string(item, "name"));
-
 		if (serviceName == obs_data_get_string(item, "name")) {
 			return item;
 		}
