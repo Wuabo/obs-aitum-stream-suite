@@ -2406,27 +2406,12 @@ void ChatDock::HandleTwitchLine(const QString &line)
 			MarkPlatformMessagesDeleted(Twitch, Tr("ChatDockChatCleared"));
 			AppendSystemMessage(Tr("ChatDockChatCleared"), Twitch);
 		} else {
-			const QString tip = Tr("ChatDockMessageRemovedUser").arg(targetUser);
-			MarkMessagesDeletedByUser(Twitch, targetUser, tip);
-			AppendSystemMessage(tip, Twitch);
 			const QString targetId = tagValue(QStringLiteral("target-user-id"));
 			const QString banDuration = tagValue(QStringLiteral("ban-duration"));
-			const QString loginKey = targetUser.toLower();
-			if (banDuration.isEmpty()) {
-				if (!targetId.isEmpty()) {
-					twitchBannedUsers.insert(targetId);
-					twitchTimedOutUsers.remove(targetId);
-				}
-				twitchBannedUsers.insert(loginKey);
-				twitchTimedOutUsers.remove(loginKey);
-			} else {
-				if (!targetId.isEmpty()) {
-					twitchTimedOutUsers.insert(targetId);
-					twitchBannedUsers.remove(targetId);
-				}
-				twitchTimedOutUsers.insert(loginKey);
-				twitchBannedUsers.remove(loginKey);
-			}
+			bool durationOk = false;
+			const int timeoutSecs = banDuration.isEmpty() ? 0 : banDuration.toInt(&durationOk);
+			ApplyExternalModeration(Twitch, targetId, targetUser, targetUser,
+						(!banDuration.isEmpty() && durationOk) ? timeoutSecs : 0);
 		}
 		return;
 	}
@@ -3777,8 +3762,11 @@ void ChatDock::ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor)
 	QAction *banAction = nullptr;
 	QAction *unbanAction = nullptr;
 	if (canModerate) {
-		banAction = menu.addAction(Tr("ChatDockBanUser"));
-		unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
+		const bool alreadyBanned = youtubeBannedUsers.contains(channelId) || ytBanIds.contains(channelId);
+		if (alreadyBanned)
+			unbanAction = menu.addAction(Tr("ChatDockUnbanUser"));
+		else
+			banAction = menu.addAction(Tr("ChatDockBanUser"));
 	}
 	if (menu.actions().isEmpty())
 		return;
@@ -4411,6 +4399,7 @@ void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayNa
 			     const QString banId = QJsonDocument::fromJson(body).object().value(QStringLiteral("id")).toString();
 			     if (!banId.isEmpty())
 				     ytBanIds.insert(channelId, banId);
+			     youtubeBannedUsers.insert(channelId);
 			     blog(LOG_INFO, "[Stream Suite] YouTube banned %s", channelId.toUtf8().constData());
 			     const QString tip = Tr("ChatDockMessageRemovedUser").arg(displayName);
 			     MarkMessagesDeletedByUser(YouTube, channelId, tip);
@@ -4502,12 +4491,14 @@ void ChatDock::RemoveYouTubeBan(const QString &banId, const QString &channelId, 
 		     [this, banId, channelId, displayName, listIfMissing](int status, const QByteArray &body, const QString &error) {
 			     if (status == 204 || (status >= 200 && status < 300)) {
 				     ytBanIds.remove(channelId);
+				     youtubeBannedUsers.remove(channelId);
 				     blog(LOG_INFO, "[Stream Suite] YouTube unbanned %s", channelId.toUtf8().constData());
 				     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), YouTube);
 				     return;
 			     }
 			     if (status == 404 && listIfMissing) {
 				     ytBanIds.remove(channelId);
+				     youtubeBannedUsers.remove(channelId);
 				     UnbanYouTubeUser(channelId, displayName);
 				     return;
 			     }
@@ -5091,21 +5082,81 @@ void ChatDock::HandleKickChatPayload(const QJsonObject &data, const QString &eve
 		AppendSystemMessage(Tr("ChatDockChatCleared"), Kick);
 		return;
 	}
-	if (resolvedEvent.contains(QStringLiteral("UserBanned"))) {
-		const QString user =
-			payload.value(QStringLiteral("username"))
-				.toString(payload.value(QStringLiteral("user"))
-						  .toObject()
-						  .value(QStringLiteral("username"))
-						  .toString(payload.value(QStringLiteral("user"))
-								    .toObject()
-								    .value(QStringLiteral("slug"))
-								    .toString()));
-		if (!user.isEmpty()) {
-			const QString tip = Tr("ChatDockMessageRemovedUser").arg(user);
-			MarkMessagesDeletedByUser(Kick, user, tip);
-			AppendSystemMessage(tip, Kick);
-		}
+	if (resolvedEvent.contains(QStringLiteral("UserBanned")) || resolvedEvent.contains(QStringLiteral("BannedEvent")) ||
+	    type == QLatin1String("user_banned") || type == QLatin1String("banned")) {
+		auto kickPerson = [](const QJsonObject &object, QString *outId, QString *outLogin, QString *outName) {
+			QJsonObject user = object.value(QStringLiteral("user")).toObject();
+			if (user.isEmpty())
+				user = object.value(QStringLiteral("banned_user")).toObject();
+			if (user.isEmpty())
+				user = object;
+			const QString id = JsonId(user.value(QStringLiteral("id")).isUndefined() ? user.value(QStringLiteral("user_id"))
+												: user.value(QStringLiteral("id")));
+			const QString login = user.value(QStringLiteral("slug"))
+						     .toString(user.value(QStringLiteral("username")).toString())
+						     .toLower();
+			const QString name = user.value(QStringLiteral("username"))
+						    .toString(user.value(QStringLiteral("slug")).toString(login));
+			if (outId)
+				*outId = id;
+			if (outLogin)
+				*outLogin = login;
+			if (outName)
+				*outName = name;
+		};
+		QString bannedId;
+		QString bannedLogin;
+		QString bannedName;
+		kickPerson(payload, &bannedId, &bannedLogin, &bannedName);
+		int timeoutSecs = payload.value(QStringLiteral("timeoutDurationSeconds")).toInt(0);
+		if (timeoutSecs <= 0)
+			timeoutSecs = payload.value(QStringLiteral("duration")).toInt(0) * 60;
+		if (timeoutSecs <= 0)
+			timeoutSecs = payload.value(QStringLiteral("timeout")).toInt(0);
+		bool permanent = true;
+		if (payload.contains(QStringLiteral("isPermanent")))
+			permanent = payload.value(QStringLiteral("isPermanent")).toBool();
+		else if (payload.contains(QStringLiteral("is_permanent")))
+			permanent = payload.value(QStringLiteral("is_permanent")).toBool();
+		else if (payload.contains(QStringLiteral("permanent")))
+			permanent = payload.value(QStringLiteral("permanent")).toBool();
+		else if (timeoutSecs > 0)
+			permanent = false;
+		else if (payload.contains(QStringLiteral("expires_at")) && !payload.value(QStringLiteral("expires_at")).isNull() &&
+			 !payload.value(QStringLiteral("expires_at")).toString().isEmpty())
+			permanent = false;
+		if (!bannedId.isEmpty() || !bannedLogin.isEmpty())
+			ApplyExternalModeration(Kick, bannedId, bannedLogin, bannedName, permanent ? 0 : qMax(1, timeoutSecs));
+		return;
+	}
+	if (resolvedEvent.contains(QStringLiteral("UserUnbanned")) || resolvedEvent.contains(QStringLiteral("UnbannedEvent")) ||
+	    type == QLatin1String("user_unbanned") || type == QLatin1String("unbanned")) {
+		auto kickPerson = [](const QJsonObject &object, QString *outId, QString *outLogin, QString *outName) {
+			QJsonObject user = object.value(QStringLiteral("user")).toObject();
+			if (user.isEmpty())
+				user = object.value(QStringLiteral("unbanned_user")).toObject();
+			if (user.isEmpty())
+				user = object;
+			const QString id = JsonId(user.value(QStringLiteral("id")).isUndefined() ? user.value(QStringLiteral("user_id"))
+												: user.value(QStringLiteral("id")));
+			const QString login = user.value(QStringLiteral("slug"))
+						     .toString(user.value(QStringLiteral("username")).toString())
+						     .toLower();
+			const QString name = user.value(QStringLiteral("username"))
+						    .toString(user.value(QStringLiteral("slug")).toString(login));
+			if (outId)
+				*outId = id;
+			if (outLogin)
+				*outLogin = login;
+			if (outName)
+				*outName = name;
+		};
+		QString unbannedId;
+		QString unbannedLogin;
+		QString unbannedName;
+		kickPerson(payload, &unbannedId, &unbannedLogin, &unbannedName);
+		if (!unbannedId.isEmpty() || !unbannedLogin.isEmpty())
+			ApplyExternalUnban(Kick, unbannedId, unbannedLogin, unbannedName);
 		return;
 	}
 
@@ -6293,6 +6344,95 @@ void ChatDock::MarkMessageDeleted(const QString &messageId, const QString &toolt
 	}
 }
 
+void ChatDock::ApplyExternalModeration(Platform platform, const QString &userId, const QString &login,
+				       const QString &displayName, int timeoutSeconds)
+{
+	const QString loginKey = login.toLower();
+	const QString name = !displayName.isEmpty() ? displayName : (!login.isEmpty() ? login : userId);
+	if (name.isEmpty() && userId.isEmpty())
+		return;
+
+	if (platform == YouTube) {
+		if (!userId.isEmpty())
+			youtubeBannedUsers.insert(userId);
+		if (!loginKey.isEmpty())
+			youtubeBannedUsers.insert(loginKey);
+		const QString tip = Tr("ChatDockMessageRemovedUser").arg(name);
+		if (!userId.isEmpty())
+			MarkMessagesDeletedByUser(YouTube, userId, tip);
+		if (!loginKey.isEmpty())
+			MarkMessagesDeletedByUser(YouTube, loginKey, tip);
+		AppendSystemMessage(Tr("ChatDockUserBanned").arg(name), YouTube);
+		return;
+	}
+
+	QSet<QString> &banned = platform == Twitch ? twitchBannedUsers : kickBannedUsers;
+	QSet<QString> &timed = platform == Twitch ? twitchTimedOutUsers : kickTimedOutUsers;
+	const bool already =
+		timeoutSeconds > 0
+			? ((!userId.isEmpty() && timed.contains(userId)) || (!loginKey.isEmpty() && timed.contains(loginKey)))
+			: ((!userId.isEmpty() && banned.contains(userId)) || (!loginKey.isEmpty() && banned.contains(loginKey)));
+	auto remember = [&](QSet<QString> &into, QSet<QString> &outOf) {
+		if (!userId.isEmpty()) {
+			into.insert(userId);
+			outOf.remove(userId);
+		}
+		if (!loginKey.isEmpty()) {
+			into.insert(loginKey);
+			outOf.remove(loginKey);
+		}
+	};
+	if (timeoutSeconds > 0)
+		remember(timed, banned);
+	else
+		remember(banned, timed);
+
+	const QString tip = timeoutSeconds > 0 ? Tr("ChatDockUserTimedOut").arg(name)
+					       : Tr("ChatDockMessageRemovedUser").arg(name);
+	if (!userId.isEmpty())
+		MarkMessagesDeletedByUser(platform, userId, tip);
+	if (!loginKey.isEmpty())
+		MarkMessagesDeletedByUser(platform, loginKey, tip);
+	if (!already)
+		AppendSystemMessage(timeoutSeconds > 0 ? Tr("ChatDockUserTimedOut").arg(name)
+						       : Tr("ChatDockUserBanned").arg(name),
+				    platform);
+}
+
+void ChatDock::ApplyExternalUnban(Platform platform, const QString &userId, const QString &login, const QString &displayName)
+{
+	const QString loginKey = login.toLower();
+	const QString name = !displayName.isEmpty() ? displayName : (!login.isEmpty() ? login : userId);
+	if (platform == YouTube) {
+		const bool had = (!userId.isEmpty() && (youtubeBannedUsers.contains(userId) || ytBanIds.contains(userId))) ||
+				 (!loginKey.isEmpty() && youtubeBannedUsers.contains(loginKey));
+		if (!userId.isEmpty()) {
+			youtubeBannedUsers.remove(userId);
+			ytBanIds.remove(userId);
+		}
+		if (!loginKey.isEmpty())
+			youtubeBannedUsers.remove(loginKey);
+		if (had || (!userId.isEmpty() || !loginKey.isEmpty()))
+			AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(name.isEmpty() ? QStringLiteral("user") : name),
+					    YouTube);
+		return;
+	}
+	QSet<QString> &banned = platform == Twitch ? twitchBannedUsers : kickBannedUsers;
+	QSet<QString> &timed = platform == Twitch ? twitchTimedOutUsers : kickTimedOutUsers;
+	const bool had = (!userId.isEmpty() && (banned.contains(userId) || timed.contains(userId))) ||
+			 (!loginKey.isEmpty() && (banned.contains(loginKey) || timed.contains(loginKey)));
+	if (!userId.isEmpty()) {
+		banned.remove(userId);
+		timed.remove(userId);
+	}
+	if (!loginKey.isEmpty()) {
+		banned.remove(loginKey);
+		timed.remove(loginKey);
+	}
+	if (had)
+		AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(name.isEmpty() ? QStringLiteral("user") : name), platform);
+}
+
 void ChatDock::MarkMessagesDeletedByUser(Platform platform, const QString &userLogin, const QString &tooltip)
 {
 	if (userLogin.isEmpty() || !messageList)
@@ -6306,7 +6446,8 @@ void ChatDock::MarkMessagesDeletedByUser(Platform platform, const QString &userL
 		if (item->data(Qt::UserRole + 4).toInt() != int(platform))
 			continue;
 		const QString login = item->data(Qt::UserRole + 3).toString();
-		if (login != want && login.toLower() != want)
+		const QString actor = item->data(Qt::UserRole + 8).toString();
+		if (login != want && login.toLower() != want && actor != userLogin && actor.toLower() != want)
 			continue;
 		ApplyDeletedStyleToRow(messageList->itemWidget(item), item, tip);
 	}

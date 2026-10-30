@@ -68,6 +68,11 @@ public:
 	void EndYouTubeBroadcastNow();
 	void PersistYouTubeIds();
 	void DebugYouTube(const QString &text);
+	enum Platform { Twitch = 0, YouTube = 1, Kick = 2 };
+	/* Sync ban/timeout/unban that arrived from the platform (site, another mod, EventSub). */
+	void ApplyExternalModeration(Platform platform, const QString &userId, const QString &login, const QString &displayName,
+				     int timeoutSeconds);
+	void ApplyExternalUnban(Platform platform, const QString &userId, const QString &login, const QString &displayName);
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -75,7 +80,6 @@ protected:
 	bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
-	enum Platform { Twitch = 0, YouTube = 1, Kick = 2 };
 
 	struct Account {
 		QString clientId;
@@ -210,6 +214,7 @@ private:
 	/* Permanent bans we know about (user id and/or login lowercased). */
 	QSet<QString> twitchBannedUsers;
 	QSet<QString> kickBannedUsers;
+	QSet<QString> youtubeBannedUsers;
 	/* Active timeouts — Unban clears these via the same API as unban. */
 	QSet<QString> twitchTimedOutUsers;
 	QSet<QString> kickTimedOutUsers;

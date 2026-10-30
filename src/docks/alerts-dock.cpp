@@ -3,6 +3,7 @@
 #endif
 
 #include "alerts-dock.hpp"
+#include "chat-dock.hpp"
 #include "stream-info-dock.hpp"
 
 #include <obs-module.h>
@@ -31,6 +32,7 @@
 
 extern obs_data_t *current_profile_config;
 extern StreamInfoDock *stream_info_dock;
+extern ChatDock *chat_dock;
 void save_current_profile_config(bool save_docks);
 
 AlertsDock *alerts_dock = nullptr;
@@ -470,7 +472,7 @@ void AlertsDock::SubscribeEventSub(const QString &sessionId)
 			const char *type;
 			const char *version;
 			bool raid;
-			bool follow;
+			bool moderator;
 		};
 		const Item items[] = {
 			{"channel.follow", "2", false, true},
@@ -480,6 +482,8 @@ void AlertsDock::SubscribeEventSub(const QString &sessionId)
 			{"channel.cheer", "1", false, false},
 			{"channel.raid", "1", true, false},
 			{"channel.channel_points_custom_reward_redemption.add", "1", false, false},
+			{"channel.ban", "1", false, true},
+			{"channel.unban", "1", false, true},
 		};
 		bool authFailed = false;
 		for (const Item &item : items) {
@@ -488,7 +492,7 @@ void AlertsDock::SubscribeEventSub(const QString &sessionId)
 				condition.insert(QStringLiteral("to_broadcaster_user_id"), QString::fromUtf8(user));
 			else
 				condition.insert(QStringLiteral("broadcaster_user_id"), QString::fromUtf8(user));
-			if (item.follow)
+			if (item.moderator)
 				condition.insert(QStringLiteral("moderator_user_id"), QString::fromUtf8(user));
 			QJsonObject body;
 			body.insert(QStringLiteral("type"), QString::fromUtf8(item.type));
@@ -590,6 +594,28 @@ void AlertsDock::HandleEventSubMessage(const QByteArray &payload, int gen, bool 
 		kind = QStringLiteral("redeem");
 		detail = event.value(QStringLiteral("reward")).toObject().value(QStringLiteral("title")).toString();
 		message = event.value(QStringLiteral("user_input")).toString();
+	} else if (subscription == QLatin1String("channel.ban")) {
+		if (chat_dock) {
+			const QString id = event.value(QStringLiteral("user_id")).toString();
+			const QString login = event.value(QStringLiteral("user_login")).toString();
+			const QString name = event.value(QStringLiteral("user_name")).toString(user);
+			const QString ends = event.value(QStringLiteral("ends_at")).toString();
+			int timeoutSecs = 0;
+			if (!ends.isEmpty()) {
+				const QDateTime endAt = QDateTime::fromString(ends, Qt::ISODate);
+				if (endAt.isValid())
+					timeoutSecs = qMax(1, int(QDateTime::currentDateTimeUtc().secsTo(endAt.toUTC())));
+			}
+			chat_dock->ApplyExternalModeration(ChatDock::Twitch, id, login, name, timeoutSecs);
+		}
+		return;
+	} else if (subscription == QLatin1String("channel.unban")) {
+		if (chat_dock) {
+			chat_dock->ApplyExternalUnban(ChatDock::Twitch, event.value(QStringLiteral("user_id")).toString(),
+						      event.value(QStringLiteral("user_login")).toString(),
+						      event.value(QStringLiteral("user_name")).toString(user));
+		}
+		return;
 	}
 	Push(0, kind, user, detail, message);
 }
