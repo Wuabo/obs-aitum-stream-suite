@@ -10,6 +10,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QDockWidget>
 #include <QKeySequence>
@@ -574,6 +575,36 @@ static QSet<QDockWidget *> PreviewDocksWithVisibleRegion(const QList<QDockWidget
 }
 
 static bool swappingSoloPreview = false;
+/* Set while a new canvas is being added. Untabify must not close docks that were already open. */
+static bool preserveDockVisibility = false;
+static QHash<QString, bool> dockVisibilitySnapshot;
+
+static void ReapplyPreservedDockVisibility()
+{
+	if (!preserveDockVisibility) {
+		return;
+	}
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main) {
+		return;
+	}
+	for (auto it = dockVisibilitySnapshot.cbegin(); it != dockVisibilitySnapshot.cend(); ++it) {
+		if (!it.value()) {
+			continue;
+		}
+		auto *dock = main->findChild<QDockWidget *>(it.key(), Qt::FindDirectChildrenOnly);
+		if (dock && !dock->isVisible()) {
+			dock->setVisible(true);
+		}
+	}
+}
+
+static void FinishPreservedDockVisibility()
+{
+	ReapplyPreservedDockVisibility();
+	preserveDockVisibility = false;
+	dockVisibilitySnapshot.clear();
+}
 
 /* Preview docks must never stay tabbed with each other. addDockWidget into an
  * occupied area auto-tabifies in Qt — always split beside a visible peer. */
@@ -727,8 +758,21 @@ void EnsurePreviewDocksNotTabbed()
 		return;
 	}
 	BindPreviewDockVisibilityWatchers(mainWin);
+	QSet<QDockWidget *> keep;
+	if (preserveDockVisibility) {
+		/* Keep every preview that was open before the new canvas, plus the new one. */
+		for (QDockWidget *dock : CollectPreviewDocks(mainWin)) {
+			if (!dock) {
+				continue;
+			}
+			const QString id = dock->objectName();
+			if (!dockVisibilitySnapshot.contains(id) || dockVisibilitySnapshot.value(id)) {
+				keep.insert(dock);
+			}
+		}
+	}
 	/* Startup/restore: no keep set → only the active tab stays visible. */
-	UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), {});
+	UntabifyPreviewDocksFromEachOther(mainWin, CollectPreviewDocks(mainWin), keep);
 }
 
 /* With exactly one preview visible, Scenes tab switches which canvas preview
@@ -736,7 +780,8 @@ void EnsurePreviewDocksNotTabbed()
  * hide() the old dock (OBS DockState owns open/closed — never removeDockWidget). */
 void SyncSoloPreviewToScenesTab(int index)
 {
-	if (nativeTabsStopped || swappingSoloPreview || untabifyingPreviews) {
+	/* Adding a canvas must not swap the open preview for another one. */
+	if (preserveDockVisibility || nativeTabsStopped || swappingSoloPreview || untabifyingPreviews) {
 		return;
 	}
 	auto *mainWin = static_cast<QMainWindow *>(obs_frontend_get_main_window());
@@ -1073,6 +1118,22 @@ void BindNative()
 
 bool nativeTabsStopped = false;
 
+void begin_preserve_open_docks()
+{
+	preserveDockVisibility = true;
+	dockVisibilitySnapshot.clear();
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main) {
+		return;
+	}
+	const auto docks = main->findChildren<QDockWidget *>(QString(), Qt::FindDirectChildrenOnly);
+	for (QDockWidget *dock : docks) {
+		if (!dock->objectName().isEmpty()) {
+			dockVisibilitySnapshot.insert(dock->objectName(), dock->isVisible());
+		}
+	}
+}
+
 void detach_native_canvas_tabs()
 {
 	ClearPages();
@@ -1319,6 +1380,13 @@ static void restore_obs_dock_layout()
 	if (!main || nativeTabsStopped || !main->isVisible()) {
 		return;
 	}
+	/* Replaying DockState after a new canvas closes docks that were open
+	 * and are not in that saved blob. Leave the current layout alone. */
+	if (preserveDockVisibility) {
+		ensure_preview_docks_independent();
+		EnsurePreviewDocksNotTabbed();
+		return;
+	}
 	static bool restoring = false;
 	if (restoring) {
 		return;
@@ -1343,6 +1411,7 @@ static void restore_obs_dock_layout()
 void schedule_restore_obs_dock_layout()
 {
 	if (nativeTabsStopped) {
+		FinishPreservedDockVisibility();
 		return;
 	}
 	/* One delayed pass after canvas docks + preview rebuild finish. */
@@ -1355,10 +1424,13 @@ void schedule_restore_obs_dock_layout()
 		restore_obs_dock_layout();
 		/* Layout can settle after restoreState — break preview tabs once more. */
 		QTimer::singleShot(0, qApp, [gen] {
-			if (nativeTabsStopped || gen != generation) {
+			if (gen != generation) {
 				return;
 			}
-			EnsurePreviewDocksNotTabbed();
+			if (!nativeTabsStopped) {
+				EnsurePreviewDocksNotTabbed();
+			}
+			FinishPreservedDockVisibility();
 		});
 	});
 }

@@ -634,6 +634,7 @@ void open_config_dialog(int tab, const char *create_type)
 
 		save_current_profile_config(true);
 		if (canvas_changed) {
+			begin_preserve_open_docks();
 			load_canvas(true);
 			if (vendor) {
 				obs_websocket_vendor_emit_event(vendor, "canvas_changed", nullptr);

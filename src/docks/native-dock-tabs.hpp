@@ -9,3 +9,5 @@ void shutdown_native_canvas_tabs();
 /* Canvas docks are created after OBS restoreState. Re-apply the saved
  * BasicWindow DockState so bottom strip sizes stick. */
 void schedule_restore_obs_dock_layout();
+/* Remember which docks are open before a new canvas is added, and put them back. */
+void begin_preserve_open_docks();
