@@ -51,7 +51,14 @@ Se aparecer **exceeded your quota**: o projeto Google tem um limite diário (por
 
 1. Abre as definições de developer da Kick (https://kick.com/settings/developer) e cria uma app.
 2. No redirect, cola `http://127.0.0.1:17654/callback`.
-3. Inclui os scopes `user:read`, `channel:read`, `channel:write` e `chat:write`.
+3. Inclui estes scopes (nomes da consola Kick):
+   - Ler informações do usuário (incluindo endereço de e-mail) — `user:read`
+   - Ler informações do canal — `channel:read`
+   - Atualizar informações do canal — `channel:write`
+   - Escrever no feed do Chat — `chat:write`
+   - Executar ações de moderação nas mensagens do chat — `moderation:chat_message:manage`
+   - Executar ações de moderação para moderadores — `moderation:ban`
+   Não marques os outros (stream key, eventos, recompensas, anúncios, KICKs).
 4. Copia o **Client ID** e o **client secret**.
 5. Na dock, abre as definições e cola-os nos campos Kick.
 
