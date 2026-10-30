@@ -1778,10 +1778,8 @@ void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	gs_technique_end_pass(tech);
 	gs_technique_end(tech);
 
-	if (window->drawSpacingHelpers) {
-		window->DrawSpacingHelpers(window->scene, (float)x, (float)y, float(previewCX), float(previewCY), scale,
-					   float(sourceCX), float(sourceCY));
-	}
+	window->DrawSpacingHelpers(window->scene, (float)x, (float)y, float(previewCX), float(previewCY), scale,
+				   float(sourceCX), float(sourceCY));
 
 	gs_projection_pop();
 	gs_viewport_pop();

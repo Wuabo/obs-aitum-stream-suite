@@ -2100,7 +2100,6 @@ void OBSBasicSettings::AddVideoEncoderPage(QTabWidget *tabWidget, obs_data_t *se
 		[fpsDivisor, settings] { obs_data_set_int(settings, "frame_rate_divisor", fpsDivisor->currentData().toInt()); });
 
 	videoEncoderGroupLayout->addRow(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Video.FPS")), fpsDivisor);
-	//obs_encoder_get_frame_rate_divisor
 
 	auto scale = new QGroupBox(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Settings.Output.Adv.Rescale")));
 	scale->setCheckable(true);

@@ -167,8 +167,6 @@ class SourceTree : public QListView {
 	bool textPrepared = false;
 	QStaticText textNoSources;
 
-	bool iconsVisible = true;
-
 	void UpdateNoSourcesMessage();
 
 	void ResetWidgets();

@@ -80,7 +80,6 @@ private:
 	std::vector<obs_sceneitem_t *> hoveredPreviewItems;
 	std::vector<obs_sceneitem_t *> selectedItems;
 	std::mutex selectMutex;
-	bool drawSpacingHelpers = true;
 
 	vec2 startPos{};
 	vec2 mousePos{};

@@ -88,25 +88,21 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 
 	bool sourceVisible = obs_sceneitem_visible(sceneitem);
 
-	if (tree->iconsVisible) {
-		QIcon icon;
+	QIcon icon;
+	if (strcmp(id, "scene") == 0)
+		icon = GetSceneIcon();
+	else if (strcmp(id, "group") == 0)
+		icon = GetGroupIcon();
+	else
+		icon = GetIconFromType(obs_source_get_icon_type(id), id);
 
-		if (strcmp(id, "scene") == 0)
-			icon = GetSceneIcon();
-		else if (strcmp(id, "group") == 0)
-			icon = GetGroupIcon();
-		else
-			icon = GetIconFromType(obs_source_get_icon_type(id), id);
-
-		QPixmap pixmap = icon.pixmap(QSize(16, 16));
-
-		iconLabel = new QLabel();
-		iconLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
-		iconLabel->setProperty("suiteIcon", pixmap);
-		iconLabel->setStyleSheet(QString::fromUtf8("background: none"));
-		iconLabel->setProperty("class", sourceVisible ? QString::fromUtf8("source-icon")
-							      : QString::fromUtf8("source-icon text-muted"));
-	}
+	QPixmap pixmap = icon.pixmap(QSize(16, 16));
+	iconLabel = new QLabel();
+	iconLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+	iconLabel->setProperty("suiteIcon", pixmap);
+	iconLabel->setStyleSheet(QString::fromUtf8("background: none"));
+	iconLabel->setProperty("class", sourceVisible ? QString::fromUtf8("source-icon")
+						      : QString::fromUtf8("source-icon text-muted"));
 
 	vis = new VisibilityCheckBox();
 	vis->setProperty("class", QString::fromUtf8("checkbox-icon indicator-visibility"));
