@@ -63,19 +63,21 @@ void OutputDock::UpdateMainStreamStats(bool active)
 	if (!mainStreamStatsLabel)
 		return;
 	if (!active) {
-		if (!mainStreamStatsLabel->text().isEmpty())
-			mainStreamStatsLabel->clear();
+		mainStreamStatsLabel->clear();
+		mainStreamStatsLabel->setVisible(false);
 		mainStreamStatsHave = false;
 		return;
 	}
 	obs_output_t *output = obs_frontend_get_streaming_output();
 	if (!output) {
 		mainStreamStatsLabel->clear();
+		mainStreamStatsLabel->setVisible(false);
 		mainStreamStatsHave = false;
 		return;
 	}
 	if (obs_output_reconnecting(output)) {
 		mainStreamStatsLabel->setText(QString::fromUtf8(obs_module_text("OutputReconnecting")));
+		mainStreamStatsLabel->setVisible(true);
 		mainStreamStatsHave = false;
 		obs_output_release(output);
 		return;
@@ -97,6 +99,7 @@ void OutputDock::UpdateMainStreamStats(bool active)
 	mainStreamStatsBytes = bytes;
 	mainStreamStatsNs = now;
 	mainStreamStatsLabel->setText(QString::fromUtf8(obs_module_text("OutputStats")).arg(qRound(kbps)).arg(dropped));
+	mainStreamStatsLabel->setVisible(true);
 }
 
 OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
@@ -218,10 +221,6 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	l2->addWidget(mainStreamCanvasLabel, 1, Qt::AlignVCenter);
 	mainStreamTimerLabel = MakeTimerLabel(this);
 	l2->addWidget(mainStreamTimerLabel, 0, Qt::AlignVCenter);
-	mainStreamStatsLabel = new QLabel;
-	mainStreamStatsLabel->setMinimumWidth(148);
-	mainStreamStatsLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-	l2->addWidget(mainStreamStatsLabel, 0, Qt::AlignVCenter);
 	mainStreamButton = new QPushButton;
 	mainStreamButton->setObjectName(QStringLiteral("canvasStream"));
 	styleActionButton(mainStreamButton);
@@ -275,8 +274,21 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	mainStreamButton->setToolTip(QString::fromUtf8(obs_module_text("Stream")));
 	l2->addWidget(mainStreamButton, 0, Qt::AlignVCenter);
 
+	mainStreamStatsLabel = new QLabel;
+	mainStreamStatsLabel->setVisible(false);
+	mainStreamStatsLabel->setContentsMargins(40, 0, 12, 4);
+	mainStreamStatsLabel->setStyleSheet(QStringLiteral("color: #bdbdbd; font-size: 11px;"));
+
+	auto *streamColumn = new QVBoxLayout;
+	streamColumn->setContentsMargins(0, 0, 0, 0);
+	streamColumn->setSpacing(0);
+	auto *streamRow = new QWidget;
+	streamRow->setLayout(l2);
+	streamColumn->addWidget(streamRow);
+	streamColumn->addWidget(mainStreamStatsLabel);
+
 	mainStreamGroup = new QFrame;
-	mainStreamGroup->setLayout(l2);
+	mainStreamGroup->setLayout(streamColumn);
 
 	mainLayout->addWidget(mainStreamGroup);
 

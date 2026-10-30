@@ -3,6 +3,7 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QLabel>
 #include <QSizePolicy>
 #include <QStyle>
@@ -233,16 +234,21 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 	timerLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	timerLabel->setText(QString());
 	outputLayout->addWidget(timerLabel, 0, Qt::AlignVCenter);
-	if (IsStream()) {
-		statsLabel = new QLabel;
-		statsLabel->setMinimumWidth(148);
-		statsLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-		statsLabel->setText(QString());
-		outputLayout->addWidget(statsLabel, 0, Qt::AlignVCenter);
-	}
 	outputLayout->addWidget(outputButton, 0, Qt::AlignVCenter);
 
-	setLayout(outputLayout);
+	auto *column = new QVBoxLayout(this);
+	column->setContentsMargins(0, 0, 0, 0);
+	column->setSpacing(0);
+	auto *row = new QWidget(this);
+	row->setLayout(outputLayout);
+	column->addWidget(row);
+	if (IsStream()) {
+		statsLabel = new QLabel(this);
+		statsLabel->setVisible(false);
+		statsLabel->setContentsMargins(40, 0, 12, 4);
+		statsLabel->setStyleSheet(QStringLiteral("color: #bdbdbd; font-size: 11px;"));
+		column->addWidget(statsLabel);
+	}
 
 	std::string startName = "AitumStreamSuiteStartOutput";
 	startName += nameChars;
@@ -1249,13 +1255,14 @@ void OutputWidget::UpdateStats()
 		return;
 	const bool live = output && (obs_output_active(output) || obs_output_reconnecting(output));
 	if (!live) {
-		if (!statsLabel->text().isEmpty())
-			statsLabel->clear();
+		statsLabel->clear();
+		statsLabel->setVisible(false);
 		statsHaveSample = false;
 		return;
 	}
 	if (obs_output_reconnecting(output)) {
 		statsLabel->setText(QString::fromUtf8(obs_module_text("OutputReconnecting")));
+		statsLabel->setVisible(true);
 		statsHaveSample = false;
 		return;
 	}
@@ -1275,6 +1282,7 @@ void OutputWidget::UpdateStats()
 	statsLastNs = now;
 	const long long dropped = (long long)obs_output_get_frames_dropped(output);
 	statsLabel->setText(QString::fromUtf8(obs_module_text("OutputStats")).arg(qRound(kbps)).arg(dropped));
+	statsLabel->setVisible(true);
 }
 
 void OutputWidget::SaveSettings()
