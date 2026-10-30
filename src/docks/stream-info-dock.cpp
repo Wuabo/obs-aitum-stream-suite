@@ -761,6 +761,7 @@ void StreamInfoDock::SwitchPlatform(int index)
 {
 	SavePlatform();
 	authGeneration++;
+	authInProgress = false;
 	pollTimer->stop();
 	platform = Platform(platformCombo->itemData(index).toInt());
 	titleEdit->clear();
@@ -1058,6 +1059,8 @@ void StreamInfoDock::EnsureToken(std::function<void(bool)> done)
 
 void StreamInfoDock::RequestModerationAuth(int platformId)
 {
+	if (authInProgress)
+		return;
 	const int idx = platformCombo->findData(platformId);
 	if (idx < 0) {
 		SetStatus(Tr("StreamInfoUnavailable"));
@@ -1070,7 +1073,6 @@ void StreamInfoDock::RequestModerationAuth(int platformId)
 
 void StreamInfoDock::BeginConnect()
 {
-	SavePlatform();
 	if (!current_profile_config) {
 		SetStatus(Tr("StreamInfoNoProfile"));
 		return;
@@ -1079,6 +1081,8 @@ void StreamInfoDock::BeginConnect()
 		SetStatus(Tr("StreamInfoUnavailable"));
 		return;
 	}
+	authInProgress = true;
+	SavePlatform();
 	authGeneration++;
 	pollTimer->stop();
 	connectButton->setEnabled(false);
@@ -1101,6 +1105,7 @@ void StreamInfoDock::BeginTwitchDevice()
 				 return;
 			 const QJsonObject json = QJsonDocument::fromJson(body).object();
 			 if (status < 200 || status >= 300 || !json.contains("device_code")) {
+				 authInProgress = false;
 				 const QString message = JsonError(body);
 				 SetStatus(message.isEmpty() ? err : message);
 				 blog(LOG_WARNING, "[Stream Suite] Twitch device login failed (%d)", status);
@@ -1140,6 +1145,7 @@ void StreamInfoDock::PollTwitchDevice()
 			     return;
 		     }
 		     if (status < 200 || status >= 300 || !json.contains("access_token")) {
+			     authInProgress = false;
 			     const QString message = JsonError(body);
 			     SetStatus(message.isEmpty() ? err : message);
 			     SetConnected(false);
@@ -1179,6 +1185,7 @@ void StreamInfoDock::BeginAuthCode()
 	if (authServer->isListening())
 		authServer->close();
 	if (!authServer->listen(QHostAddress::LocalHost, kRedirectPort)) {
+		authInProgress = false;
 		connectButton->setEnabled(true);
 		SetResult(Tr("StreamInfoAuthFailed"));
 		return;
@@ -1214,6 +1221,7 @@ void StreamInfoDock::FinishAuthCode(const QString &code)
 	if (authServer)
 		authServer->close();
 	if (code.isEmpty()) {
+		authInProgress = false;
 		SetResult(Tr("StreamInfoAuthFailed"));
 		return;
 	}
@@ -1242,6 +1250,7 @@ void StreamInfoDock::ExchangeAuthCode(const QString &code)
 			     return;
 		     const QJsonObject json = QJsonDocument::fromJson(body).object();
 		     if (status < 200 || status >= 300 || !json.contains("access_token")) {
+			     authInProgress = false;
 			     SetResult(JsonError(body));
 			     return;
 		     }
@@ -1267,6 +1276,7 @@ void StreamInfoDock::AcceptToken(const QJsonObject &json)
 		blog(LOG_INFO, "[Stream Suite] OAuth scopes: %s", granted.join(' ').toUtf8().constData());
 	const int expiresIn = json.value("expires_in").toInt(0);
 	expiresAt = expiresIn > 0 ? QDateTime::currentSecsSinceEpoch() + expiresIn : 0;
+	authInProgress = false;
 	SavePlatform();
 	SetConnected(true);
 }
@@ -2605,6 +2615,7 @@ void StreamInfoDock::ApplyKick()
 void StreamInfoDock::DisconnectAccount()
 {
 	authGeneration++;
+	authInProgress = false;
 	pollTimer->stop();
 	accessToken.clear();
 	refreshToken.clear();

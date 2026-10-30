@@ -192,9 +192,13 @@ void AlertsDock::LoadTwitchAccount()
 
 void AlertsDock::ReloadAccounts()
 {
+	const QString previousToken = accessToken;
+	const QString previousUser = userId;
+	LoadTwitchAccount();
+	if (accessToken == previousToken && userId == previousUser && (session || accessToken.isEmpty()))
+		return;
 	StopEventSub();
 	askedReconnect = false;
-	LoadTwitchAccount();
 	if (accessToken.isEmpty() || clientId.isEmpty())
 		return;
 	if (!userId.isEmpty()) {

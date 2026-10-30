@@ -90,6 +90,7 @@ private:
 	QTimer *searchTimer = nullptr;
 	QTimer *liveLockTimer = nullptr;
 	bool accountConnected = false;
+	bool authInProgress = false;
 
 	struct CategoryEntry {
 		QString id;
