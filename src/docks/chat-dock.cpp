@@ -2876,7 +2876,7 @@ static QString YouTubePageContinuation(const QByteArray &html, QString *clientVe
 	return token;
 }
 
-static QJsonObject YouTubeNextContinuation(const QJsonArray &continuations, int *timeoutMs)
+static QJsonObject YouTubeNextContinuation(const QJsonArray &continuations, int *timeoutMs, QString *kind)
 {
 	const QStringList keys = {QStringLiteral("invalidationContinuationData"), QStringLiteral("timedContinuationData"),
 				  QStringLiteral("reloadContinuationData")};
@@ -2887,6 +2887,8 @@ static QJsonObject YouTubeNextContinuation(const QJsonArray &continuations, int 
 				continue;
 			if (timeoutMs)
 				*timeoutMs = data.value(QStringLiteral("timeoutMs")).toInt(1000);
+			if (kind)
+				*kind = key;
 			return data;
 		}
 	}
@@ -3185,8 +3187,9 @@ void ChatDock::PollYouTubeInnertube()
 				     return;
 			     }
 			     int timeoutMs = 1000;
+			     QString continuationKind;
 			     const QString token = YouTubeNextContinuation(live.value(QStringLiteral("continuations")).toArray(),
-									    &timeoutMs)
+									    &timeoutMs, &continuationKind)
 							    .value(QStringLiteral("continuation"))
 							    .toString();
 			     if (!token.isEmpty())
@@ -3207,8 +3210,15 @@ void ChatDock::PollYouTubeInnertube()
 			     for (const QJsonValue &value : actions)
 				     IngestYouTubeLiveAction(value.toObject());
 			     const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - started;
-			     /* Invalidation requests stay open until a new line arrives. Do not wait again. */
-			     const int wait = elapsed >= 1500 ? 250 : qBound(800, timeoutMs > 0 ? timeoutMs : 1000, 3000);
+			     /* invalidationContinuationData already blocks until the next line. A client wait
+			      * after a fast reply is the delay versus Twitch and Kick. */
+			     int wait = 250;
+			     if (continuationKind == QLatin1String("invalidationContinuationData"))
+				     wait = (elapsed < 400 && actions.isEmpty()) ? 700 : 200;
+			     else if (actions.isEmpty())
+				     wait = qBound(400, timeoutMs > 0 ? timeoutMs : 800, 1000);
+			     else
+				     wait = 200;
 			     if (ytContinuation.isEmpty())
 				     schedule(3000);
 			     else
