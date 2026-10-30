@@ -173,6 +173,8 @@ private:
 	bool youtubeCatchingUp = true;
 	int youtubeCatchupPages = 0;
 	QSet<QString> ytPendingDeletes;
+	/* channel id -> liveChatBan id, so Unban can call liveChatBans.delete */
+	QHash<QString, QString> ytBanIds;
 	bool twitchConnectStarted = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
@@ -231,6 +233,14 @@ private:
 	void PollYouTubeInnertube();
 	void IngestYouTubeLiveAction(const QJsonObject &action);
 	void SendYouTubeMessage(const QString &text);
+	void ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor);
+	void DeleteYouTubeMessage(const QStringList &ids, int index, const QString &uiId, const QString &channelId,
+				  const QString &text, qint64 publishedMs);
+	void FindYouTubeMessageToDelete(const QString &uiId, const QString &channelId, const QString &text, qint64 publishedMs,
+					const QString &pageToken, int pagesLeft);
+	void BanYouTubeUser(const QString &channelId, const QString &displayName);
+	void UnbanYouTubeUser(const QString &channelId, const QString &displayName);
+	void RemoveYouTubeBan(const QString &banId, const QString &channelId, const QString &displayName, bool listIfMissing);
 	bool AdoptYouTubeMessage(const ChatMessage &msg);
 	bool HandleYouTubeControlItem(const QJsonObject &obj);
 	void RefreshYouTubeDeletes();
