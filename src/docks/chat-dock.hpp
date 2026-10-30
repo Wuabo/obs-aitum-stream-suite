@@ -64,6 +64,8 @@ public:
 	void OnStreamingStarted();
 	/* OBS is closing while YouTube is live. Transition the broadcast to complete before the process exits. */
 	void EndYouTubeLiveOnExit();
+	/* End the YouTube broadcast now. Safe to call more than once while a stop is in progress. */
+	void EndYouTubeBroadcastNow();
 	void PersistYouTubeIds();
 	void DebugYouTube(const QString &text);
 
@@ -185,6 +187,7 @@ private:
 	qint64 youtubeLastFullDiscoverMs = 0;
 	qint64 youtubeLastViewerFetchMs = 0;
 	qint64 youtubeLastTransitionMs = 0;
+	qint64 youtubeEndRequestedMs = 0;
 	/* Messages published before this are history from a previous poll/live — never render them. */
 	qint64 youtubeIgnoreBeforeMs = 0;
 	QSet<QString> ytPendingDeletes;

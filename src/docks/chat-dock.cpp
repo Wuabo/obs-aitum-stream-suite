@@ -791,6 +791,66 @@ void ChatDock::EndYouTubeLiveOnExit()
 	}
 }
 
+void ChatDock::EndYouTubeBroadcastNow()
+{
+	Account &acc = accounts[YouTube];
+	if (acc.accessToken.isEmpty() && acc.refreshToken.isEmpty())
+		return;
+	const qint64 now = QDateTime::currentMSecsSinceEpoch();
+	if (now - youtubeEndRequestedMs < 8000)
+		return;
+	youtubeEndRequestedMs = now;
+	const QString knownId = ytVideoId;
+	EnsureToken(YouTube, [this, knownId](bool ok) {
+		if (!ok)
+			return;
+		auto transition = [this](const QString &id) {
+			if (id.isEmpty())
+				return;
+			QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"));
+			QUrlQuery query;
+			query.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("complete"));
+			query.addQueryItem(QStringLiteral("id"), id);
+			query.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
+			url.setQuery(query);
+			const Account &token = accounts[YouTube];
+			Http(QString::fromUtf8(url.toEncoded()),
+			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token.accessToken.toUtf8()},
+			      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}},
+			     QByteArrayLiteral("{}"), "POST", [id](int status, const QByteArray &body, const QString &) {
+				     if (status >= 200 && status < 300)
+					     blog(LOG_INFO, "[Stream Suite] YouTube live ended (%s)",
+						  id.left(16).toUtf8().constData());
+				     else
+					     blog(LOG_WARNING, "[Stream Suite] YouTube end live HTTP %d: %s", status,
+						  body.left(180).constData());
+			     });
+		};
+		transition(knownId);
+		QUrl listUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
+		QUrlQuery listQuery;
+		listQuery.addQueryItem(QStringLiteral("part"), QStringLiteral("id"));
+		listQuery.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("active"));
+		listQuery.addQueryItem(QStringLiteral("broadcastType"), QStringLiteral("all"));
+		listQuery.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("5"));
+		listUrl.setQuery(listQuery);
+		const Account &token = accounts[YouTube];
+		Http(QString::fromUtf8(listUrl.toEncoded()),
+		     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token.accessToken.toUtf8()}}, {},
+		     "GET", [knownId, transition](int status, const QByteArray &body, const QString &) {
+			     if (status < 200 || status >= 300)
+				     return;
+			     const QJsonArray items =
+				     QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
+			     for (const QJsonValue &value : items) {
+				     const QString id = value.toObject().value(QStringLiteral("id")).toString();
+				     if (!id.isEmpty() && id != knownId)
+					     transition(id);
+			     }
+		     });
+	});
+}
+
 const char *ChatDock::PlatformKey(Platform platform)
 {
 	switch (platform) {

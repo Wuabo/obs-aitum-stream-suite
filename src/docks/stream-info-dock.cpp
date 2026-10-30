@@ -2484,75 +2484,14 @@ void StreamInfoDock::EndYouTubeBroadcast()
 						  QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 	if (answer != QMessageBox::Yes)
 		return;
-	EnsureToken([this](bool ok) {
-		if (!ok) {
-			SetResult(Tr("StreamInfoNotConnected"));
-			return;
-		}
-		QStringList ids;
-		if (!ytBroadcastId.isEmpty())
-			ids << ytBroadcastId;
-		QUrl listUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
-		QUrlQuery listQuery;
-		listQuery.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
-		listQuery.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("active"));
-		listQuery.addQueryItem(QStringLiteral("broadcastType"), QStringLiteral("all"));
-		listQuery.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("5"));
-		listUrl.setQuery(listQuery);
-		QNetworkRequest listReq(listUrl);
-		listReq.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-		Http(listReq, {}, "GET", [this, ids](int status, const QByteArray &body, const QString &) mutable {
-			if (status >= 200 && status < 300) {
-				const QJsonArray items =
-					QJsonDocument::fromJson(body).object().value(QStringLiteral("items")).toArray();
-				for (const QJsonValue &value : items) {
-					const QString id = value.toObject().value(QStringLiteral("id")).toString();
-					if (!id.isEmpty() && !ids.contains(id))
-						ids << id;
-				}
-			}
-			if (ids.isEmpty()) {
-				SetResult(Tr("StreamInfoNoBroadcast"));
-				return;
-			}
-			auto left = std::make_shared<int>(ids.size());
-			auto error = std::make_shared<QString>();
-			auto finish = [this, left, error] {
-				if (--(*left) > 0)
-					return;
-				if (output_dock) {
-					output_dock->StopStreamsMatching([](const QString &endpoint) {
-						return DetectStreamPlatformFromEndpoint(endpoint) == StreamPlatformKind::YouTube;
-					});
-				}
-				SetResult(error->isEmpty() ? Tr("StreamInfoYouTubeEnded") : *error);
-			};
-			for (const QString &id : ids) {
-				QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"));
-				QUrlQuery query;
-				query.addQueryItem(QStringLiteral("broadcastStatus"), QStringLiteral("complete"));
-				query.addQueryItem(QStringLiteral("id"), id);
-				query.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
-				url.setQuery(query);
-				QNetworkRequest req(url);
-				req.setRawHeader("Authorization", QByteArray("Bearer ") + accessToken.toUtf8());
-				req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-				Http(req, QByteArrayLiteral("{}"), "POST",
-				     [this, id, error, finish](int code, const QByteArray &payload, const QString &) {
-					     if (code >= 200 && code < 300) {
-						     blog(LOG_INFO, "[Stream Suite] YouTube live ended from Stream Info (%s)",
-							  id.left(16).toUtf8().constData());
-					     } else {
-						     blog(LOG_WARNING, "[Stream Suite] YouTube end live HTTP %d: %s", code,
-							  payload.left(180).constData());
-						     if (error->isEmpty())
-							     *error = JsonError(payload);
-					     }
-					     finish();
-				     });
-			}
+	if (chat_dock)
+		chat_dock->EndYouTubeBroadcastNow();
+	if (output_dock) {
+		output_dock->StopStreamsMatching([](const QString &endpoint) {
+			return DetectStreamPlatformFromEndpoint(endpoint) == StreamPlatformKind::YouTube;
 		});
-	});
+	}
+	SetResult(Tr("StreamInfoYouTubeEnded"));
 }
 
 void StreamInfoDock::ApplyKick()

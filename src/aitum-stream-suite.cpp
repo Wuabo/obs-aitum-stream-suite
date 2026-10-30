@@ -513,6 +513,15 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (stream_info_dock)
 			stream_info_dock->OnStreamingStarted();
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STOPPING || event == OBS_FRONTEND_EVENT_STREAMING_STOPPED) {
+		if (event == OBS_FRONTEND_EVENT_STREAMING_STOPPING && chat_dock) {
+			QString server;
+			if (obs_service_t *service = obs_frontend_get_streaming_service()) {
+				const char *url = obs_service_get_connect_info(service, OBS_SERVICE_CONNECT_INFO_SERVER_URL);
+				server = QString::fromUtf8(url ? url : "");
+			}
+			if (DetectStreamPlatformFromEndpoint(server) == StreamPlatformKind::YouTube)
+				chat_dock->EndYouTubeBroadcastNow();
+		}
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(false);
 		}

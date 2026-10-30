@@ -11,12 +11,14 @@
 #include <QRegularExpression>
 #include <QTime>
 #include <src/utils/icon.hpp>
+#include <src/docks/chat-dock.hpp>
 #include <src/utils/obs-websocket-api.h>
 #include <util/config-file.h>
 #include <util/platform.h>
 
 extern obs_data_t *current_profile_config;
 extern bool isTwitchServer(QString outputServer);
+extern ChatDock *chat_dock;
 
 OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(parent), settings(output_data)
 {
@@ -211,6 +213,9 @@ OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(pa
 			if (stop) {
 				blog(LOG_INFO, "[Aitum Stream Suite] stop %s output clicked '%s'", output_type,
 				     obs_data_get_string(settings, "name"));
+				if ((output_type[0] == '\0' || strcmp(output_type, "stream") == 0) && chat_dock &&
+				    DetectStreamPlatformFromEndpoint(GetStreamServer()) == StreamPlatformKind::YouTube)
+					chat_dock->EndYouTubeBroadcastNow();
 
 				obs_queue_task(
 					OBS_TASK_GRAPHICS, [](void *param) { obs_output_stop((obs_output_t *)param); }, output,
@@ -346,8 +351,8 @@ extern obs_websocket_vendor vendor;
 
 void OutputWidget::output_stop(void *data, calldata_t *calldata)
 {
-	UNUSED_PARAMETER(calldata);
 	auto this_ = (OutputWidget *)data;
+	const bool failedStart = this_->onStarted != nullptr;
 	if (this_->onStarted) {
 		const char *last_error = (const char *)calldata_ptr(calldata, "last_error");
 		if (last_error) {
@@ -363,6 +368,16 @@ void OutputWidget::output_stop(void *data, calldata_t *calldata)
 	if (this_->outputButton->isChecked()) {
 		QMetaObject::invokeMethod(
 			this_->outputButton, [this_] { this_->outputButton->setChecked(false); }, Qt::QueuedConnection);
+	}
+	if (!failedStart && this_->IsStream() &&
+	    DetectStreamPlatformFromEndpoint(this_->GetStreamServer()) == StreamPlatformKind::YouTube) {
+		QMetaObject::invokeMethod(
+			this_,
+			[] {
+				if (chat_dock)
+					chat_dock->EndYouTubeBroadcastNow();
+			},
+			Qt::QueuedConnection);
 	}
 
 	if (this_->output) {
@@ -1421,6 +1436,10 @@ void OutputWidget::StopOutput()
 	if (!output || !obs_output_active(output)) {
 		return;
 	}
+
+	if (IsStream() && chat_dock &&
+	    DetectStreamPlatformFromEndpoint(GetStreamServer()) == StreamPlatformKind::YouTube)
+		chat_dock->EndYouTubeBroadcastNow();
 
 	if (obs_output_get_active_delay(output) > 0) {
 		obs_output_stop(output);
