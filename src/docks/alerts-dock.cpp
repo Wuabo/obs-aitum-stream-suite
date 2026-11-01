@@ -18,6 +18,9 @@
 #include <QLabel>
 #include <QList>
 #include <QListWidget>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QMetaObject>
 #include <QPointer>
 #include <QTimer>
@@ -26,6 +29,7 @@
 #include <curl/curl.h>
 #include <curl/websockets.h>
 
+#include <cmath>
 #include <thread>
 
 extern obs_data_t *current_profile_config;
@@ -115,33 +119,6 @@ bool CurlWsWait(CURL *curl, int timeoutMs)
 #endif
 }
 
-bool IsWarmKind(const QString &kind)
-{
-	return kind == QLatin1String("sub") || kind == QLatin1String("gift") || kind == QLatin1String("bits") ||
-	       kind == QLatin1String("superchat") || kind == QLatin1String("member");
-}
-
-QString KindIcon(const QString &kind)
-{
-	if (kind == QLatin1String("raid"))
-		return QStringLiteral("R");
-	if (kind == QLatin1String("superchat"))
-		return QStringLiteral("S");
-	if (kind == QLatin1String("bits"))
-		return QStringLiteral("B");
-	if (kind == QLatin1String("redeem"))
-		return QStringLiteral("P");
-	if (kind == QLatin1String("follow"))
-		return QStringLiteral("F");
-	if (kind == QLatin1String("gift"))
-		return QStringLiteral("G");
-	if (kind == QLatin1String("member"))
-		return QStringLiteral("M");
-	if (kind == QLatin1String("sub"))
-		return QStringLiteral("S");
-	return QStringLiteral("A");
-}
-
 QString KindLabel(const QString &kind)
 {
 	if (kind == QLatin1String("follow"))
@@ -163,14 +140,138 @@ QString KindLabel(const QString &kind)
 	return kind;
 }
 
-QString BadgeText(const QString &kind, const QString &detail)
+QColor EventColor(const QString &kind)
 {
+	if (kind == QLatin1String("follow"))
+		return QColor(QStringLiteral("#a78bfa"));
+	if (kind == QLatin1String("sub") || kind == QLatin1String("member"))
+		return QColor(QStringLiteral("#fbbf24"));
+	if (kind == QLatin1String("gift"))
+		return QColor(QStringLiteral("#f472b6"));
+	if (kind == QLatin1String("bits"))
+		return QColor(QStringLiteral("#c084fc"));
+	if (kind == QLatin1String("raid"))
+		return QColor(QStringLiteral("#4ade80"));
+	if (kind == QLatin1String("superchat"))
+		return QColor(QStringLiteral("#f87171"));
 	if (kind == QLatin1String("redeem"))
-		return detail.isEmpty() ? KindLabel(kind).toUpper() : detail.toUpper();
-	QString text = KindLabel(kind).toUpper();
-	if (!detail.isEmpty())
-		text += QStringLiteral(" - ") + detail.toUpper();
-	return text;
+		return QColor(QStringLiteral("#38bdf8"));
+	return QColor(QStringLiteral("#d4d4d4"));
+}
+
+QString PlatformIconPath(int platform)
+{
+	if (platform == 1)
+		return QStringLiteral(":/aitum/media/youtube.png");
+	if (platform == 2)
+		return QStringLiteral(":/aitum/media/kick.png");
+	return QStringLiteral(":/aitum/media/twitch.png");
+}
+
+void PaintEventGlyph(QPainter &p, const QString &kind, const QRectF &box)
+{
+	p.setPen(Qt::NoPen);
+	p.setBrush(Qt::white);
+	const QPointF c = box.center();
+	if (kind == QLatin1String("sub") || kind == QLatin1String("member")) {
+		QPainterPath star;
+		const qreal outer = box.width() * 0.48;
+		const qreal inner = outer * 0.42;
+		for (int i = 0; i < 10; ++i) {
+			const qreal ang = -1.5708 + i * 0.6283;
+			const qreal rad = (i % 2 == 0) ? outer : inner;
+			const QPointF pt(c.x() + std::cos(ang) * rad, c.y() + std::sin(ang) * rad);
+			if (i == 0)
+				star.moveTo(pt);
+			else
+				star.lineTo(pt);
+		}
+		star.closeSubpath();
+		p.drawPath(star);
+		return;
+	}
+	if (kind == QLatin1String("gift")) {
+		const QRectF body(box.left() + 2, box.top() + box.height() * 0.38, box.width() - 4, box.height() * 0.58);
+		p.drawRoundedRect(body, 3, 3);
+		p.setBrush(QColor(QStringLiteral("#111111")));
+		p.drawRect(QRectF(c.x() - 2, body.top(), 4, body.height()));
+		p.drawRect(QRectF(body.left(), body.top() + 4, body.width(), 4));
+		p.setBrush(Qt::white);
+		p.drawRoundedRect(QRectF(box.left() + 4, box.top() + 2, box.width() * 0.34, box.height() * 0.28), 3, 3);
+		p.drawRoundedRect(QRectF(c.x() + 1, box.top() + 2, box.width() * 0.34, box.height() * 0.28), 3, 3);
+		return;
+	}
+	if (kind == QLatin1String("bits")) {
+		QPolygonF diamond;
+		diamond << QPointF(c.x(), box.top()) << QPointF(box.right(), c.y()) << QPointF(c.x(), box.bottom())
+			<< QPointF(box.left(), c.y());
+		p.drawPolygon(diamond);
+		return;
+	}
+	if (kind == QLatin1String("raid")) {
+		QPainterPath arrow;
+		arrow.moveTo(box.left(), box.top() + 4);
+		arrow.lineTo(box.right() - 8, c.y());
+		arrow.lineTo(box.left(), box.bottom() - 4);
+		arrow.lineTo(box.left() + 8, c.y());
+		arrow.closeSubpath();
+		p.drawPath(arrow);
+		return;
+	}
+	if (kind == QLatin1String("superchat")) {
+		p.drawRoundedRect(QRectF(box.left(), box.top(), box.width(), box.height() * 0.72), 6, 6);
+		QPainterPath tail;
+		tail.moveTo(box.left() + 8, box.top() + box.height() * 0.68);
+		tail.lineTo(box.left() + 6, box.bottom());
+		tail.lineTo(box.left() + 18, box.top() + box.height() * 0.68);
+		p.drawPath(tail);
+		return;
+	}
+	if (kind == QLatin1String("redeem")) {
+		p.drawEllipse(box.adjusted(2, 2, -2, -2));
+		p.setBrush(QColor(QStringLiteral("#111111")));
+		p.drawEllipse(QRectF(c.x() - 4, c.y() - 4, 8, 8));
+		return;
+	}
+	QPainterPath heart;
+	heart.moveTo(c.x(), box.bottom() - 1);
+	heart.cubicTo(box.left() - 2, c.y(), box.left() + 2, box.top() - 1, c.x(), box.top() + box.height() * 0.32);
+	heart.cubicTo(box.right() - 2, box.top() - 1, box.right() + 2, c.y(), c.x(), box.bottom() - 1);
+	p.drawPath(heart);
+}
+
+QPixmap EventBadge(int platform, const QString &kind)
+{
+	constexpr int size = 72;
+	QPixmap pm(size, size);
+	pm.fill(Qt::transparent);
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor color = EventColor(kind);
+	QColor fill = color;
+	fill.setAlpha(46);
+	p.setPen(QPen(color, 3));
+	p.setBrush(fill);
+	p.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), 18, 18);
+	PaintEventGlyph(p, kind, QRectF(18, 14, 36, 32));
+
+	const QPixmap platformIcon = QIcon(PlatformIconPath(platform)).pixmap(26, 26);
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor(QStringLiteral("#111111")));
+	p.drawEllipse(QRectF(size - 32, size - 32, 30, 30));
+	if (!platformIcon.isNull())
+		p.drawPixmap(size - 30, size - 30, platformIcon);
+	return pm;
+}
+
+QString EventSubtitle(const QString &kind, const QString &detail)
+{
+	const QString extra = detail.trimmed();
+	if (extra.isEmpty())
+		return KindLabel(kind);
+	if (kind == QLatin1String("sub") || kind == QLatin1String("member") || kind == QLatin1String("follow"))
+		return KindLabel(kind) + QStringLiteral(" · ") + extra;
+	return extra;
 }
 
 QString RelativeAge(qint64 atMs)
@@ -190,72 +291,48 @@ QString RelativeAge(qint64 atMs)
 QWidget *MakeActivityCard(int platform, const QString &kind, const QString &user, const QString &detail,
 			  const QString &message, qint64 atMs, QLabel **ageOut)
 {
-	const bool warm = IsWarmKind(kind);
-	const QString accent = warm ? QStringLiteral("#e11d48") : QStringLiteral("#8b5cf6");
-	const QString soft = warm ? QStringLiteral("#3f0d1a") : QStringLiteral("#2a1848");
-	const QString edge = warm ? QStringLiteral("#7f1d1d") : QStringLiteral("#4c1d95");
-	UNUSED_PARAMETER(platform);
-
+	const QColor accent = EventColor(kind);
 	auto *card = new QFrame;
 	card->setObjectName(QStringLiteral("activityCard"));
-	card->setStyleSheet(QStringLiteral(
-				    "QFrame#activityCard {"
-				    "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %1, stop:0.45 #141018, stop:1 #101010);"
-				    "  border: 1px solid %2;"
-				    "  border-radius: 8px;"
-				    "}")
-				    .arg(soft, edge));
+	card->setStyleSheet(QStringLiteral("QFrame#activityCard {"
+					   "  background: #141414;"
+					   "  border: 1px solid #2a2a2a;"
+					   "  border-left: 3px solid %1;"
+					   "  border-radius: 10px;"
+					   "}"
+					   "QFrame#activityCard QLabel { background: transparent; border: none; }")
+				    .arg(accent.name()));
 
 	auto *outer = new QVBoxLayout(card);
-	outer->setContentsMargins(10, 8, 10, 8);
-	outer->setSpacing(6);
+	outer->setContentsMargins(10, 8, 12, 8);
+	outer->setSpacing(4);
 
 	auto *row = new QHBoxLayout;
 	row->setContentsMargins(0, 0, 0, 0);
-	row->setSpacing(8);
+	row->setSpacing(10);
 
-	auto *icon = new QLabel(KindIcon(kind));
-	icon->setFixedSize(28, 28);
-	icon->setAlignment(Qt::AlignCenter);
-	icon->setStyleSheet(QStringLiteral("QLabel {"
-					   "  background: %1;"
-					   "  color: white;"
-					   "  border-radius: 6px;"
-					   "  font-size: 13px;"
-					   "  font-weight: 700;"
-					   "}")
-				    .arg(accent));
-	row->addWidget(icon, 0, Qt::AlignVCenter);
+	auto *icon = new QLabel;
+	icon->setFixedSize(36, 36);
+	icon->setPixmap(EventBadge(platform, kind));
+	icon->setScaledContents(true);
+	row->addWidget(icon, 0, Qt::AlignTop);
 
+	auto *textCol = new QVBoxLayout;
+	textCol->setContentsMargins(0, 0, 0, 0);
+	textCol->setSpacing(1);
 	auto *name = new QLabel(user.isEmpty() ? QStringLiteral("—") : user);
-	name->setStyleSheet(
-		QStringLiteral("QLabel { color: #f5f5f5; font-weight: 700; font-size: 13px; background: transparent; border: none; }"));
-	row->addWidget(name, 0, Qt::AlignVCenter);
-	row->addStretch(1);
-
-	auto *badge = new QLabel(BadgeText(kind, detail));
-	badge->setStyleSheet(QStringLiteral("QLabel {"
-					    "  background: %1;"
-					    "  color: white;"
-					    "  border-radius: 4px;"
-					    "  padding: 3px 8px;"
-					    "  font-size: 10px;"
-					    "  font-weight: 700;"
-					    "}")
-				     .arg(accent));
-	row->addWidget(badge, 0, Qt::AlignVCenter);
+	name->setStyleSheet(QStringLiteral("color: #f4f4f5; font-weight: 700; font-size: 13px;"));
+	auto *subtitle = new QLabel(EventSubtitle(kind, detail));
+	subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; font-weight: 600;").arg(accent.name()));
+	subtitle->setWordWrap(true);
+	textCol->addWidget(name);
+	textCol->addWidget(subtitle);
+	row->addLayout(textCol, 1);
 
 	auto *age = new QLabel(RelativeAge(atMs));
-	age->setStyleSheet(QStringLiteral("QLabel {"
-					  "  background: #1c1c1c;"
-					  "  color: #9a9a9a;"
-					  "  border-radius: 4px;"
-					  "  padding: 3px 6px;"
-					  "  font-size: 10px;"
-					  "  font-weight: 600;"
-					  "}"));
+	age->setStyleSheet(QStringLiteral("color: #737373; font-size: 11px; font-weight: 600;"));
 	age->setProperty("atMs", atMs);
-	row->addWidget(age, 0, Qt::AlignVCenter);
+	row->addWidget(age, 0, Qt::AlignTop);
 	if (ageOut)
 		*ageOut = age;
 
@@ -264,13 +341,7 @@ QWidget *MakeActivityCard(int platform, const QString &kind, const QString &user
 	if (!message.trimmed().isEmpty()) {
 		auto *msg = new QLabel(message.trimmed());
 		msg->setWordWrap(true);
-		msg->setStyleSheet(QStringLiteral("QLabel {"
-						  "  background: #0c0c0c;"
-						  "  color: #e8e8e8;"
-						  "  border-radius: 6px;"
-						  "  padding: 8px 10px;"
-						  "  font-size: 12px;"
-						  "}"));
+		msg->setStyleSheet(QStringLiteral("color: #d4d4d4; font-size: 12px; padding-left: 46px;"));
 		outer->addWidget(msg);
 	}
 
