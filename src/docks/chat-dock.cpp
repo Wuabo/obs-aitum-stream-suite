@@ -912,33 +912,24 @@ ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 	connect(youtubeTimer, &QTimer::timeout, this, &ChatDock::PollYouTubeChat);
 
 	youtubeDiscoverTimer = new QTimer(this);
-	/* Slow on purpose — each live chat poll costs quota. */
-	youtubeDiscoverTimer->setInterval(30000);
+	/* 12s while waiting on a live stream, 2 min otherwise. The 3s videos.list loop is gone. */
+	youtubeDiscoverTimer->setInterval(120000);
 	connect(youtubeDiscoverTimer, &QTimer::timeout, this, [this] {
-		if (!connectionsActive || !availablePlatforms.contains(YouTube))
+		if (!YouTubeUiActive())
 			return;
 		if (ytLiveChatId.isEmpty()) {
-			const qint64 now = QDateTime::currentMSecsSinceEpoch();
-			const bool streaming = obs_frontend_streaming_active();
-			EnsureYouTubeWaitLiveTimer();
-			/* While streaming (ready→live lag), rediscover often; otherwise every 2 min. */
-			const qint64 fullEvery = streaming ? 12000 : 120000;
-			if (!ytVideoId.isEmpty()) {
-				ResolveYouTubeLiveChatId(ytVideoId, [this, now, fullEvery](bool ok) {
-					if (!ok && now - youtubeLastFullDiscoverMs >= fullEvery)
-						StartYouTubeChat();
-				});
-				return;
-			}
-			if (now - youtubeLastFullDiscoverMs >= fullEvery)
+			if (!ytVideoId.isEmpty())
+				ResolveYouTubeLiveChatId(ytVideoId);
+			else
 				StartYouTubeChat();
-			return;
+		} else {
+			if (youtubeWaitLiveTimer)
+				youtubeWaitLiveTimer->stop();
+			/* Keep polling alive if the single-shot timer was lost; never restart while in flight. */
+			if (!youtubePollInFlight && !youtubeTimer->isActive())
+				PollYouTubeChat();
 		}
-		if (youtubeWaitLiveTimer)
-			youtubeWaitLiveTimer->stop();
-		/* Keep polling alive if the single-shot timer was lost; never restart while in flight. */
-		if (!youtubePollInFlight && !youtubeTimer->isActive())
-			PollYouTubeChat();
+		ArmYouTubeDiscover();
 	});
 
 	youtubeWaitLiveTimer = new QTimer(this);
@@ -1092,20 +1083,20 @@ void ChatDock::showEvent(QShowEvent *event)
 	RefreshAvailablePlatforms();
 	if (!connectionsActive)
 		StartConnections();
-	else
+	else {
 		EnsurePlatformConnections();
+		ResumeYouTube();
+	}
 	RefreshViewers();
-	/* If OBS is already live, STREAMING_STARTED already fired — rediscover YouTube chat now. */
-	if (obs_frontend_streaming_active())
-		QTimer::singleShot(1500, this, &ChatDock::OnStreamingStarted);
 	QTimer::singleShot(0, this, &ChatDock::RelayoutMessageItems);
 }
 
 void ChatDock::hideEvent(QHideEvent *event)
 {
 	QFrame::hideEvent(event);
-	/* Keep sockets alive while the dock exists. Stopping on hide caused
-	 * connect/disconnect spam when OBS toggled visibility. */
+	/* Twitch and Kick stay connected. YouTube Data API and the site chat
+	 * poll stop until the dock is visible again. */
+	PauseYouTube();
 }
 
 void ChatDock::ReloadAccounts()
@@ -1684,6 +1675,8 @@ void ChatDock::TryStartPlatform(Platform platform)
 	}
 
 	notLinked = false;
+	if (platform == YouTube && !DockIsOpen())
+		return;
 	if (started)
 		return;
 	started = true;
@@ -1692,8 +1685,7 @@ void ChatDock::TryStartPlatform(Platform platform)
 		ConnectTwitchIrc();
 	} else if (platform == YouTube) {
 		StartYouTubeChat();
-		if (!youtubeDiscoverTimer->isActive())
-			youtubeDiscoverTimer->start();
+		ArmYouTubeDiscover();
 	} else {
 		ResolveKickChatroom();
 	}
@@ -1719,8 +1711,11 @@ void ChatDock::StartConnections()
 	connectionsActive = true;
 	EnsurePlatformConnections();
 	RefreshViewers();
+	if (!DockIsOpen())
+		return;
 	if (!ytLiveChatId.isEmpty() && !youtubePollInFlight)
 		PollYouTubeChat();
+	/* First open while already live: STREAMING_STARTED ran before this dock existed. */
 	if (obs_frontend_streaming_active())
 		QTimer::singleShot(2000, this, &ChatDock::OnStreamingStarted);
 }
@@ -1850,12 +1845,16 @@ void ChatDock::FetchTwitchViewers()
 
 void ChatDock::FetchYouTubeViewers()
 {
+	if (!DockIsOpen())
+		return;
 	/* Cap viewer polls — each videos.list costs quota; 5s was burning the daily budget. */
 	const qint64 now = QDateTime::currentMSecsSinceEpoch();
 	if (now - youtubeLastViewerFetchMs < 20000 && youtubeLastViewerFetchMs > 0)
 		return;
 	youtubeLastViewerFetchMs = now;
 	EnsureToken(YouTube, [this](bool ok) {
+		if (!DockIsOpen())
+			return;
 		if (!ok) {
 			SetViewerCount(YouTube, 0, false);
 			return;
@@ -2548,16 +2547,60 @@ void ChatDock::ReportYouTubeHttpError(int status, const QByteArray &body)
 	}
 }
 
-void ChatDock::EnsureYouTubeWaitLiveTimer()
+bool ChatDock::YouTubeUiActive() const
 {
-	if (!youtubeWaitLiveTimer)
+	return connectionsActive && DockIsOpen() && availablePlatforms.contains(YouTube);
+}
+
+void ChatDock::ArmYouTubeDiscover()
+{
+	if (!youtubeDiscoverTimer || !YouTubeUiActive())
 		return;
-	if (!connectionsActive || youtubeConnectedAnnounced || ytVideoId.isEmpty() || !ytLiveChatId.isEmpty()) {
+	const int interval = ytLiveChatId.isEmpty() && obs_frontend_streaming_active() ? 12000 : ytLiveChatId.isEmpty() ? 120000
+															     : 30000;
+	youtubeDiscoverTimer->setInterval(interval);
+	if (!youtubeDiscoverTimer->isActive())
+		youtubeDiscoverTimer->start();
+}
+
+void ChatDock::PauseYouTube()
+{
+	if (youtubeTimer)
+		youtubeTimer->stop();
+	if (youtubeDiscoverTimer)
+		youtubeDiscoverTimer->stop();
+	if (youtubeWaitLiveTimer)
 		youtubeWaitLiveTimer->stop();
+}
+
+void ChatDock::ResumeYouTube()
+{
+	if (!YouTubeUiActive() || accounts[YouTube].accessToken.isEmpty())
+		return;
+	if (!youtubeConnectStarted) {
+		TryStartPlatform(YouTube);
 		return;
 	}
-	if (!youtubeWaitLiveTimer->isActive())
-		youtubeWaitLiveTimer->start();
+	ArmYouTubeDiscover();
+	if (!ytLiveChatId.isEmpty()) {
+		if (!youtubePollInFlight && youtubeTimer && !youtubeTimer->isActive())
+			PollYouTubeChat();
+	} else if (!ytVideoId.isEmpty()) {
+		ResolveYouTubeLiveChatId(ytVideoId);
+	} else {
+		StartYouTubeChat();
+	}
+}
+
+void ChatDock::EnsureYouTubeWaitLiveTimer()
+{
+	/* The 3s videos.list loop burned quota while waiting for activeLiveChatId.
+	 * Discover already retries: 12s on stream, 2 min otherwise. */
+	if (youtubeWaitLiveTimer)
+		youtubeWaitLiveTimer->stop();
+	if (!YouTubeUiActive() || youtubeConnectedAnnounced || ytVideoId.isEmpty() || !ytLiveChatId.isEmpty())
+		return;
+	ArmYouTubeDiscover();
 }
 
 void ChatDock::TickYouTubeWaitLive()
@@ -2609,10 +2652,11 @@ void ChatDock::OnStreamingStarted()
 	ytBanIdList.clear();
 	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
 	ClearYouTubeMessages();
+	PauseYouTube();
+	if (!DockIsOpen())
+		return;
 	StartYouTubeChat();
-	EnsureYouTubeWaitLiveTimer();
-	if (!youtubeDiscoverTimer->isActive())
-		youtubeDiscoverTimer->start();
+	ArmYouTubeDiscover();
 }
 
 void ChatDock::RememberYouTubeChatId(const QString &chatId)
@@ -2714,20 +2758,21 @@ void ChatDock::NotifyYouTubeVideo(const QString &videoId, const QString &liveCha
 		youtubeWaitingAnnounced = false;
 		youtubeQuotaAnnounced = false;
 		PersistYouTubeIds();
+		if (!DockIsOpen())
+			return;
 		if (connectionsActive && !youtubePollInFlight && (changed || !youtubeTimer->isActive())) {
 			PollYouTubeChat();
 		} else if (!connectionsActive && DockIsOpen()) {
 			StartConnections();
 		}
-		if (!youtubeDiscoverTimer->isActive() && connectionsActive)
-			youtubeDiscoverTimer->start();
+		if (connectionsActive)
+			ArmYouTubeDiscover();
 		return;
 	}
 	PersistYouTubeIds();
-	if (!connectionsActive || !ytLiveChatId.isEmpty())
+	if (!DockIsOpen() || !connectionsActive || !ytLiveChatId.isEmpty())
 		return;
-	if (!youtubeDiscoverTimer->isActive())
-		youtubeDiscoverTimer->start();
+	ArmYouTubeDiscover();
 	if (!ytVideoId.isEmpty()) {
 		EnsureYouTubeWaitLiveTimer();
 		ResolveYouTubeLiveChatId(ytVideoId);
@@ -2742,6 +2787,11 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 		return;
 	}
 	ytVideoId = videoId;
+	if (!DockIsOpen()) {
+		if (done)
+			done(false);
+		return;
+	}
 	if (!ytLiveChatId.isEmpty()) {
 		if (!youtubePollInFlight && !youtubeTimer->isActive())
 			PollYouTubeChat();
@@ -2750,6 +2800,11 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 		return;
 	}
 	EnsureToken(YouTube, [this, videoId, done](bool ok) {
+		if (!DockIsOpen()) {
+			if (done)
+				done(false);
+			return;
+		}
 		if (!ok || !ytLiveChatId.isEmpty()) {
 			if (done)
 				done(!ytLiveChatId.isEmpty());
@@ -2815,68 +2870,15 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 					     done(false);
 			     });
 		};
-		/* liveBroadcasts.snippet.liveChatId is available for most scheduled/live events. */
-		QUrl burl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
-		QUrlQuery bq;
-		bq.addQueryItem("part", "snippet,status");
-		bq.addQueryItem("id", videoId);
-		burl.setQuery(bq);
-		Http(QString::fromUtf8(burl.toEncoded()), authHdr(), {}, "GET",
-		     [this, videoId, tryVideos, finishOk, done](int code, const QByteArray &body, const QString &) {
-			     if (!ytLiveChatId.isEmpty()) {
-				     finishOk();
-				     return;
-			     }
-			     if (code >= 200 && code < 300) {
-				     const QJsonArray items =
-					     QJsonDocument::fromJson(body).object().value("items").toArray();
-				     if (!items.isEmpty()) {
-					     const QJsonObject snip = items.at(0).toObject().value("snippet").toObject();
-					     const QString chatId = YouTubeBroadcastChatId(snip);
-					     const QString life = items.at(0)
-									 .toObject()
-									 .value("status")
-									 .toObject()
-									 .value("lifeCycleStatus")
-									 .toString();
-					     /* Ended streams keep a dead liveChatId — never poll it (404 loop). */
-					     if (YouTubeBroadcastLifeDead(life)) {
-						     if (ytVideoId == videoId) {
-							     ytVideoId.clear();
-							     PersistYouTubeIds();
-						     }
-						     if (done)
-							     done(false);
-						     return;
-					     }
-					     /* snippet.liveChatId exists from ready onward. Poll it; 404 just means
-					      * chat is not open yet and we retry the same id. */
-					     if (!chatId.isEmpty()) {
-						     BindYouTubeChat(chatId, videoId);
-						     finishOk();
-						     return;
-					     }
-					     if (!videoId.isEmpty())
-						     ytVideoId = videoId;
-					     EnsureYouTubeWaitLiveTimer();
-				     } else {
-				     }
-				     tryVideos();
-				     return;
-			     }
-			     ReportYouTubeHttpError(code, body);
-			     if (YouTubeBodyLooksLikeQuota(body)) {
-				     if (done)
-					     done(false);
-				     return;
-			     }
-			     tryVideos();
-		     });
+		/* videos.list alone returns activeLiveChatId. A liveBroadcasts.list on the same id was a second unit. */
+		tryVideos();
 	});
 }
 
 void ChatDock::StartYouTubeChat()
 {
+	if (!DockIsOpen())
+		return;
 	youtubeLastFullDiscoverMs = QDateTime::currentMSecsSinceEpoch();
 	EnsureToken(YouTube, [this](bool ok) {
 		if (!ok) {
@@ -2884,6 +2886,8 @@ void ChatDock::StartYouTubeChat()
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
 			return;
 		}
+		if (!DockIsOpen())
+			return;
 		if (!ytLiveChatId.isEmpty()) {
 			youtubeWaitingAnnounced = false;
 			if (!youtubePollInFlight && !youtubeTimer->isActive())
@@ -3071,14 +3075,14 @@ void ChatDock::StartYouTubeChat()
 
 void ChatDock::TryYouTubeGoLive()
 {
-	if (ytVideoId.isEmpty())
+	if (!DockIsOpen() || ytVideoId.isEmpty())
 		return;
 	const qint64 now = QDateTime::currentMSecsSinceEpoch();
 	if (now - youtubeLastTransitionMs < 12000)
 		return;
 	youtubeLastTransitionMs = now;
 	EnsureToken(YouTube, [this](bool ok) {
-		if (!ok || ytVideoId.isEmpty())
+		if (!DockIsOpen() || !ok || ytVideoId.isEmpty())
 			return;
 		auto authHdr = [this] {
 			return QList<QPair<QByteArray, QByteArray>>{
@@ -3450,7 +3454,7 @@ void ChatDock::PollYouTubeInnertube()
 	const QByteArray cookie = QByteArrayLiteral("SOCS=CAI; CONSENT=YES+cb");
 
 	auto schedule = [this](int ms) {
-		if (connectionsActive && !ytVideoId.isEmpty() && youtubeTimer)
+		if (YouTubeUiActive() && !ytVideoId.isEmpty() && youtubeTimer)
 			youtubeTimer->start(qBound(250, ms, 4000));
 	};
 
@@ -3591,7 +3595,7 @@ void ChatDock::PollYouTubeInnertube()
 
 void ChatDock::PollYouTubeChat()
 {
-	if (youtubePollInFlight || ytVideoId.isEmpty())
+	if (!DockIsOpen() || youtubePollInFlight || ytVideoId.isEmpty())
 		return;
 	/* liveChat/messages has neither emoji images nor a delete event.
 	 * The site feed (get_live_chat) is what the YouTube chat window reads. */

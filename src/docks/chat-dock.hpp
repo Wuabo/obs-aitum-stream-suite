@@ -273,6 +273,10 @@ private:
 	QWidget *BuildTwitchEmoteBody(const ChatMessage &msg, const QString &prefixHtml, QWidget *parent);
 
 	void StartYouTubeChat();
+	bool YouTubeUiActive() const;
+	void ArmYouTubeDiscover();
+	void PauseYouTube();
+	void ResumeYouTube();
 	void ResolveYouTubeLiveChatId(const QString &videoId, std::function<void(bool)> done = {});
 	void TryYouTubeGoLive();
 	void EnsureYouTubeWaitLiveTimer();
