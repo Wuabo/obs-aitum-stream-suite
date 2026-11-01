@@ -15,8 +15,10 @@
 #include <obs-module.h>
 #include <QApplication>
 #include <QDockWidget>
+#include <QEvent>
 #include <QLabel>
 #include <QMainWindow>
+#include <QSizePolicy>
 #include <QTimer>
 #include <util/dstr.h>
 
@@ -37,6 +39,66 @@ extern obs_websocket_vendor vendor;
 
 static bool finished_loading = false;
 static bool scene_collection_changing = false;
+
+namespace {
+
+constexpr int kActivityDockWidth = 300;
+constexpr int kChatDockWidth = 360;
+
+/* Width stays put. The splitter cannot grow or shrink the dock sideways. */
+class FixedDockWidth : public QObject {
+public:
+	FixedDockWidth(QDockWidget *dock, int width) : QObject(dock), dock(dock), width(width)
+	{
+		dock->installEventFilter(this);
+		Apply();
+	}
+
+protected:
+	bool eventFilter(QObject *obj, QEvent *event) override
+	{
+		if (obj == dock && event->type() == QEvent::Resize)
+			Apply();
+		return QObject::eventFilter(obj, event);
+	}
+
+private:
+	void Apply()
+	{
+		if (!dock || applying)
+			return;
+		applying = true;
+		dock->setFixedWidth(width);
+		if (QWidget *content = dock->widget()) {
+			content->setFixedWidth(width);
+			content->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+		}
+		applying = false;
+	}
+
+	QDockWidget *dock = nullptr;
+	int width = 0;
+	bool applying = false;
+};
+
+void LockSideDock(QWidget *content, int width)
+{
+	if (!content)
+		return;
+	content->setFixedWidth(width);
+	content->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+	auto *dock = qobject_cast<QDockWidget *>(content->parentWidget());
+	if (!dock)
+		return;
+	if (!dock->property("suiteFixedWidth").toBool()) {
+		dock->setProperty("suiteFixedWidth", true);
+		new FixedDockWidth(dock, width);
+	} else {
+		dock->setFixedWidth(width);
+	}
+}
+
+} // namespace
 
 static const QString kDefaultMode = QStringLiteral("default");
 
@@ -441,6 +503,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			stream_info_dock->ReloadAccounts();
 		if (chat_dock) {
 			chat_dock->ReloadAccounts();
+			LockSideDock(chat_dock, kChatDockWidth);
 			if (auto *dw = qobject_cast<QDockWidget *>(chat_dock->parentWidget()))
 				dw->hide();
 			else
@@ -449,11 +512,16 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (alerts_dock) {
 			alerts_dock->ReloadHistory();
 			alerts_dock->ReloadAccounts();
+			LockSideDock(alerts_dock, kActivityDockWidth);
 			if (auto *dw = qobject_cast<QDockWidget *>(alerts_dock->parentWidget()))
 				dw->hide();
 			else
 				alerts_dock->hide();
 		}
+		QTimer::singleShot(800, [] {
+			LockSideDock(chat_dock, kChatDockWidth);
+			LockSideDock(alerts_dock, kActivityDockWidth);
+		});
 		install_main_canvas_context_bar_fix();
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGED) {
 		load_current_profile_config();
@@ -730,16 +798,17 @@ bool obs_module_load(void)
 	obs_frontend_add_dock_by_id("AitumStreamSuiteActivity", obs_module_text("AitumStreamSuiteActivity"), alerts_dock);
 	/* Chat and alerts stay off until the user enables them in View → Docks. */
 	QTimer::singleShot(0, main_window, [] {
-		auto hideDock = [](QWidget *widget) {
+		auto hideDock = [](QWidget *widget, int width) {
 			if (!widget)
 				return;
+			LockSideDock(widget, width);
 			if (auto *dw = qobject_cast<QDockWidget *>(widget->parentWidget()))
 				dw->hide();
 			else
 				widget->hide();
 		};
-		hideDock(chat_dock);
-		hideDock(alerts_dock);
+		hideDock(chat_dock, kChatDockWidth);
+		hideDock(alerts_dock, kActivityDockWidth);
 	});
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */

@@ -1023,6 +1023,7 @@ void ChatDock::BuildUi()
 	clearSystemButton = new QPushButton(Tr("ChatDockClearSystem"), viewerBar);
 	clearSystemButton->setCursor(Qt::PointingHandCursor);
 	clearSystemButton->setFlat(true);
+	clearSystemButton->setMinimumWidth(0);
 	clearSystemButton->setStyleSheet(QStringLiteral(
 		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
 		" border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
@@ -1033,6 +1034,7 @@ void ChatDock::BuildUi()
 	roomButton = new QPushButton(Tr("ChatRoom"), viewerBar);
 	roomButton->setCursor(Qt::PointingHandCursor);
 	roomButton->setFlat(true);
+	roomButton->setMinimumWidth(0);
 	roomButton->setCheckable(true);
 	roomButton->setStyleSheet(clearSystemButton->styleSheet());
 	barLayout->addWidget(roomButton);
