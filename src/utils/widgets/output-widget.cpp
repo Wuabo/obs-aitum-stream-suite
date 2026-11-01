@@ -675,6 +675,8 @@ bool OutputWidget::StartOutput(bool automated)
 				return false;
 			}
 			aencs.push_back(aenc);
+			if (!is_record)
+				AppendDefaultVodTrack(aencs, settings, name);
 		} else {
 			auto streamServer = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
 			if (is_record || streamServer.startsWith("srt://", Qt::CaseInsensitive) ||
@@ -1273,6 +1275,16 @@ static void ApplyOutputScale(obs_encoder_t *encoder, video_t *video, bool record
 	obs_encoder_set_gpu_scale_type(encoder, filter);
 }
 
+static void WarnEncoderFallback(const char *wantedId)
+{
+	if (!wantedId || !wantedId[0] || strcmp(wantedId, "obs_x264") == 0)
+		return;
+	blog(LOG_WARNING, "[Aitum Stream Suite] encoder %s unavailable, using obs_x264", wantedId);
+	QWidget *parent = static_cast<QWidget *>(obs_frontend_get_main_window());
+	QMessageBox::warning(parent, QString::fromUtf8(obs_module_text("EncoderFallbackTitle")),
+			     QString::fromUtf8(obs_module_text("EncoderFallback")).arg(QString::fromUtf8(wantedId)));
+}
+
 static int ClosestListedBitrate(const char *id, int bitrate)
 {
 	if (!id || !id[0] || bitrate <= 0)
@@ -1290,14 +1302,17 @@ static int ClosestListedBitrate(const char *id, int bitrate)
 		if (step < 1)
 			step = 1;
 		int snapped = bitrate;
-		if (snapped < minValue)
+		if (snapped <= minValue)
 			snapped = minValue;
-		else if (snapped > maxValue)
+		else if (snapped >= maxValue)
 			snapped = maxValue;
-		else if (step > 1)
-			snapped = minValue + ((snapped - minValue + step / 2) / step) * step;
-		if (snapped > maxValue)
-			snapped = maxValue;
+		else if (step > 1) {
+			/* Same rule as OBS: the next listed step at or above the value. */
+			const int steps = (snapped - minValue + step - 1) / step;
+			snapped = minValue + steps * step;
+			if (snapped > maxValue)
+				snapped = maxValue;
+		}
 		obs_properties_destroy(props);
 		return snapped;
 	}
@@ -1507,12 +1522,15 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 	}
 
 	if (!EncoderAvailable(encoderId)) {
+		const char *requestedId = encoderId;
 		if (strcmp(encoderId, "obs_nvenc_h264_tex") == 0 && EncoderAvailable("ffmpeg_nvenc"))
 			encoderId = "ffmpeg_nvenc";
 		else if (strcmp(encoderId, "obs_nvenc_hevc_tex") == 0 && EncoderAvailable("ffmpeg_hevc_nvenc"))
 			encoderId = "ffmpeg_hevc_nvenc";
-		else
+		else {
 			encoderId = "obs_x264";
+			WarnEncoderFallback(requestedId);
+		}
 	}
 
 	if (pendingPreset && pendingPreset[0]) {
@@ -1541,12 +1559,8 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 		obs_data_set_int(fallback, "bitrate", bitrate > 0 ? bitrate : 2500);
 		encoder = obs_video_encoder_create("obs_x264", name, fallback, nullptr);
 		obs_data_release(fallback);
-		if (encoder && strcmp(wantedId, "obs_x264") != 0) {
-			blog(LOG_WARNING, "[Aitum Stream Suite] encoder %s unavailable, using obs_x264", wantedId);
-			QWidget *parent = static_cast<QWidget *>(obs_frontend_get_main_window());
-			QMessageBox::warning(parent, QString::fromUtf8(obs_module_text("EncoderFallbackTitle")),
-					     QString::fromUtf8(obs_module_text("EncoderFallback")).arg(QString::fromUtf8(wantedId)));
-		}
+		if (encoder)
+			WarnEncoderFallback(wantedId);
 		encoderId = "obs_x264";
 	}
 	obs_data_release(settings);
