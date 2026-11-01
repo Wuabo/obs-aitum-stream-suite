@@ -1024,18 +1024,14 @@ static const char *SimplePresetKey(const char *simple)
 	return "Preset";
 }
 
-static int SimpleRecordingCrf(config_t *config, video_t *video, bool lowCpu)
+static int SimpleRecordingCrf(config_t *config, bool lowCpu)
 {
 	const char *quality = config ? config_get_string(config, "SimpleOutput", "RecQuality") : nullptr;
 	int crf = (quality && strcmp(quality, "HQ") == 0) ? 16 : 23;
 	if (lowCpu)
 		crf -= 2;
-	uint32_t cx = video ? video_output_get_width(video) : 0;
-	uint32_t cy = video ? video_output_get_height(video) : 0;
-	if ((cx == 0 || cy == 0) && config) {
-		cx = (uint32_t)config_get_uint(config, "Video", "OutputCX");
-		cy = (uint32_t)config_get_uint(config, "Video", "OutputCY");
-	}
+	const uint32_t cx = config ? (uint32_t)config_get_uint(config, "Video", "OutputCX") : 0;
+	const uint32_t cy = config ? (uint32_t)config_get_uint(config, "Video", "OutputCY") : 0;
 	const double cross = std::sqrt(double(cx) * double(cx) + double(cy) * double(cy));
 	const double capped = cross < 2000.0 ? cross : 2000.0;
 	const double reduction = (1.0 - capped / 2000.0) * 10.0;
@@ -1084,29 +1080,31 @@ static void ApplyObsStreamServiceSettings(config_t *config, obs_data_t *video, o
 {
 	if (!config)
 		return;
-	if (advanced && !config_get_bool(config, "AdvOut", "ApplyServiceSettings"))
-		return;
 
-	obs_service_t *service = obs_frontend_get_streaming_service();
-	if (!service)
-		return;
+	const bool apply = !advanced || config_get_bool(config, "AdvOut", "ApplyServiceSettings");
+	if (apply) {
+		obs_service_t *service = obs_frontend_get_streaming_service();
+		if (service) {
+			const int videoBitrate = video ? (int)obs_data_get_int(video, "bitrate") : 0;
+			const int audioBitrate = audio ? (int)obs_data_get_int(audio, "bitrate") : 0;
+			const int keyint = video ? (int)obs_data_get_int(video, "keyint_sec") : 0;
+			obs_service_apply_encoder_settings(service, video, audio);
 
-	const int videoBitrate = video ? (int)obs_data_get_int(video, "bitrate") : 0;
-	const int audioBitrate = audio ? (int)obs_data_get_int(audio, "bitrate") : 0;
-	const int keyint = video ? (int)obs_data_get_int(video, "keyint_sec") : 0;
-	obs_service_apply_encoder_settings(service, video, audio);
-
-	const bool enforce = !config_get_bool(config, "Stream1", "IgnoreRecommended");
-	if (!enforce) {
-		if (video)
-			obs_data_set_int(video, "bitrate", videoBitrate);
-		if (audio)
-			obs_data_set_int(audio, "bitrate", audioBitrate);
+			const bool enforce = !config_get_bool(config, "Stream1", "IgnoreRecommended");
+			if (!enforce) {
+				if (video)
+					obs_data_set_int(video, "bitrate", videoBitrate);
+				if (audio)
+					obs_data_set_int(audio, "bitrate", audioBitrate);
+			}
+			if (advanced && video) {
+				const int enforced = (int)obs_data_get_int(video, "keyint_sec");
+				if (keyint != 0 && keyint < enforced)
+					obs_data_set_int(video, "keyint_sec", keyint);
+			}
+		}
 	}
 	if (advanced && video) {
-		const int enforced = (int)obs_data_get_int(video, "keyint_sec");
-		if (keyint != 0 && keyint < enforced)
-			obs_data_set_int(video, "keyint_sec", keyint);
 		const char *streamEncoder = config_get_string(config, "AdvOut", "Encoder");
 		if (config_get_bool(config, "Output", "DynamicBitrate") && streamEncoder && strstr(streamEncoder, "nvenc"))
 			obs_data_set_bool(video, "lookahead", false);
@@ -1128,21 +1126,24 @@ static obs_encoder_t *CloneActiveObsVideoEncoder(const char *name, video_t *vide
 		return nullptr;
 
 	obs_encoder_t *source = obs_output_get_video_encoder(output);
-	const char *encoderId = source ? obs_encoder_get_id(source) : nullptr;
-	obs_data_t *settings = source ? obs_encoder_get_settings(source) : nullptr;
+	if (source)
+		obs_encoder_get_ref(source);
 	obs_output_release(output);
-	if (!encoderId || !encoderId[0] || !settings) {
+	std::string encoderId = source && obs_encoder_get_id(source) ? obs_encoder_get_id(source) : "";
+	obs_data_t *settings = source ? obs_encoder_get_settings(source) : nullptr;
+	obs_encoder_release(source);
+	if (encoderId.empty() || !settings) {
 		obs_data_release(settings);
 		return nullptr;
 	}
 
-	obs_encoder_t *encoder = obs_video_encoder_create(encoderId, name, settings, nullptr);
+	obs_encoder_t *encoder = obs_video_encoder_create(encoderId.c_str(), name, settings, nullptr);
 	obs_data_release(settings);
 	if (!encoder)
 		return nullptr;
 	obs_encoder_set_video(encoder, video);
 	ApplyCanvasVideoFormat(encoder, video);
-	blog(LOG_INFO, "[Aitum Stream Suite] video encoder %s copied from the active OBS %s encoder", encoderId,
+	blog(LOG_INFO, "[Aitum Stream Suite] video encoder %s copied from the active OBS %s encoder", encoderId.c_str(),
 	     recording ? "recording" : "stream");
 	return encoder;
 }
@@ -1202,7 +1203,7 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 			}
 		} else {
 			const bool lowCpu = simple && strcmp(simple, "x264_lowcpu") == 0;
-			simpleCrf = SimpleRecordingCrf(config, video, lowCpu);
+			simpleCrf = SimpleRecordingCrf(config, lowCpu);
 			simpleQsvRecording = simple && strcmp(simple, "qsv") == 0;
 			if (!simple || strcmp(simple, "x264") == 0 || lowCpu) {
 				obs_data_set_int(settings, "crf", simpleCrf);
@@ -1245,6 +1246,14 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 			obs_data_set_string(settings, "preset2", pendingPreset);
 		else
 			obs_data_set_string(settings, "preset", pendingPreset);
+	}
+	if (advanced) {
+		obs_data_t *defaults = obs_encoder_defaults(encoderId);
+		if (defaults) {
+			obs_data_apply(defaults, settings);
+			obs_data_release(settings);
+			settings = defaults;
+		}
 	}
 	if (applyService)
 		ApplyObsStreamServiceSettings(config, settings, nullptr, advanced);
@@ -1298,8 +1307,14 @@ obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size
 			encoderId = chosen;
 		static const char *tracks[] = {"Track1Bitrate", "Track2Bitrate", "Track3Bitrate",
 						"Track4Bitrate", "Track5Bitrate", "Track6Bitrate"};
-		const size_t index = mix < 6 ? mix : 0;
+		size_t index = mix < 6 ? mix : 0;
+		if (!recording) {
+			const int track = (int)config_get_int(config, "AdvOut", "TrackIndex");
+			if (track >= 1 && track <= 6)
+				index = (size_t)(track - 1);
+		}
 		bitrate = (int)config_get_uint(config, "AdvOut", tracks[index]);
+		mix = index;
 	} else if (config) {
 		const char *which = config_get_string(config, "SimpleOutput", recording ? "RecAudioEncoder" : "StreamAudioEncoder");
 		if (which && strcmp(which, "opus") == 0 && EncoderAvailable("ffmpeg_opus"))
@@ -1310,9 +1325,14 @@ obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size
 			encoderId = "libfdk_aac";
 		if (recording) {
 			const char *quality = config_get_string(config, "SimpleOutput", "RecQuality");
-			bitrate = (quality && strcmp(quality, "Stream") == 0)
-					  ? (int)config_get_uint(config, "SimpleOutput", "ABitrate")
-					  : 192;
+			if (quality && strcmp(quality, "Stream") == 0) {
+				bitrate = (int)config_get_uint(config, "SimpleOutput", "ABitrate");
+			} else {
+				int channels = (int)audio_output_get_channels(obs_get_audio());
+				if (channels < 1)
+					channels = 2;
+				bitrate = 192 * channels / 2;
+			}
 		} else {
 			bitrate = (int)config_get_uint(config, "SimpleOutput", "ABitrate");
 		}
