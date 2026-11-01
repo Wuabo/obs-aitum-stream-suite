@@ -10,26 +10,28 @@
 #include <util/config-file.h>
 
 #include <QAbstractItemView>
+#include <QButtonGroup>
 #include <QDateTime>
+#include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QList>
 #include <QListWidget>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPixmap>
 #include <QMetaObject>
 #include <QPointer>
+#include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include <curl/curl.h>
 #include <curl/websockets.h>
 
-#include <cmath>
 #include <thread>
 
 extern obs_data_t *current_profile_config;
@@ -168,76 +170,23 @@ QString PlatformIconPath(int platform)
 	return QStringLiteral(":/aitum/media/twitch.png");
 }
 
-void PaintEventGlyph(QPainter &p, const QString &kind, const QRectF &box)
+QString EventGlyph(const QString &kind)
 {
-	p.setPen(Qt::NoPen);
-	p.setBrush(Qt::white);
-	const QPointF c = box.center();
-	if (kind == QLatin1String("sub") || kind == QLatin1String("member")) {
-		QPainterPath star;
-		const qreal outer = box.width() * 0.48;
-		const qreal inner = outer * 0.42;
-		for (int i = 0; i < 10; ++i) {
-			const qreal ang = -1.5708 + i * 0.6283;
-			const qreal rad = (i % 2 == 0) ? outer : inner;
-			const QPointF pt(c.x() + std::cos(ang) * rad, c.y() + std::sin(ang) * rad);
-			if (i == 0)
-				star.moveTo(pt);
-			else
-				star.lineTo(pt);
-		}
-		star.closeSubpath();
-		p.drawPath(star);
-		return;
-	}
-	if (kind == QLatin1String("gift")) {
-		const QRectF body(box.left() + 2, box.top() + box.height() * 0.38, box.width() - 4, box.height() * 0.58);
-		p.drawRoundedRect(body, 3, 3);
-		p.setBrush(QColor(QStringLiteral("#111111")));
-		p.drawRect(QRectF(c.x() - 2, body.top(), 4, body.height()));
-		p.drawRect(QRectF(body.left(), body.top() + 4, body.width(), 4));
-		p.setBrush(Qt::white);
-		p.drawRoundedRect(QRectF(box.left() + 4, box.top() + 2, box.width() * 0.34, box.height() * 0.28), 3, 3);
-		p.drawRoundedRect(QRectF(c.x() + 1, box.top() + 2, box.width() * 0.34, box.height() * 0.28), 3, 3);
-		return;
-	}
-	if (kind == QLatin1String("bits")) {
-		QPolygonF diamond;
-		diamond << QPointF(c.x(), box.top()) << QPointF(box.right(), c.y()) << QPointF(c.x(), box.bottom())
-			<< QPointF(box.left(), c.y());
-		p.drawPolygon(diamond);
-		return;
-	}
-	if (kind == QLatin1String("raid")) {
-		QPainterPath arrow;
-		arrow.moveTo(box.left(), box.top() + 4);
-		arrow.lineTo(box.right() - 8, c.y());
-		arrow.lineTo(box.left(), box.bottom() - 4);
-		arrow.lineTo(box.left() + 8, c.y());
-		arrow.closeSubpath();
-		p.drawPath(arrow);
-		return;
-	}
-	if (kind == QLatin1String("superchat")) {
-		p.drawRoundedRect(QRectF(box.left(), box.top(), box.width(), box.height() * 0.72), 6, 6);
-		QPainterPath tail;
-		tail.moveTo(box.left() + 8, box.top() + box.height() * 0.68);
-		tail.lineTo(box.left() + 6, box.bottom());
-		tail.lineTo(box.left() + 18, box.top() + box.height() * 0.68);
-		p.drawPath(tail);
-		return;
-	}
-	if (kind == QLatin1String("redeem")) {
-		p.drawEllipse(box.adjusted(2, 2, -2, -2));
-		p.setBrush(QColor(QStringLiteral("#111111")));
-		p.drawEllipse(QRectF(c.x() - 4, c.y() - 4, 8, 8));
-		return;
-	}
-	QPainterPath heart;
-	heart.moveTo(c.x(), box.bottom() - 1);
-	heart.cubicTo(box.left() - 2, c.y(), box.left() + 2, box.top() - 1, c.x(), box.top() + box.height() * 0.32);
-	heart.cubicTo(box.right() - 2, box.top() - 1, box.right() + 2, c.y(), c.x(), box.bottom() - 1);
-	p.drawPath(heart);
+	if (kind == QLatin1String("follow"))
+		return QStringLiteral("♥");
+	if (kind == QLatin1String("sub") || kind == QLatin1String("member"))
+		return QStringLiteral("★");
+	if (kind == QLatin1String("gift"))
+		return QStringLiteral("🎁");
+	if (kind == QLatin1String("bits"))
+		return QStringLiteral("◆");
+	if (kind == QLatin1String("raid"))
+		return QStringLiteral("➤");
+	if (kind == QLatin1String("superchat"))
+		return QStringLiteral("💬");
+	if (kind == QLatin1String("redeem"))
+		return QStringLiteral("◎");
+	return QStringLiteral("•");
 }
 
 QPixmap EventBadge(int platform, const QString &kind)
@@ -247,13 +196,20 @@ QPixmap EventBadge(int platform, const QString &kind)
 	pm.fill(Qt::transparent);
 	QPainter p(&pm);
 	p.setRenderHint(QPainter::Antialiasing, true);
+	p.setRenderHint(QPainter::TextAntialiasing, true);
 	const QColor color = EventColor(kind);
 	QColor fill = color;
 	fill.setAlpha(46);
 	p.setPen(QPen(color, 3));
 	p.setBrush(fill);
 	p.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), 18, 18);
-	PaintEventGlyph(p, kind, QRectF(18, 14, 36, 32));
+
+	QFont font(QStringLiteral("Segoe UI Emoji"));
+	font.setPixelSize(kind == QLatin1String("gift") || kind == QLatin1String("superchat") ? 26 : 30);
+	font.setBold(true);
+	p.setFont(font);
+	p.setPen(Qt::white);
+	p.drawText(QRectF(6, 4, 46, 44), Qt::AlignCenter, EventGlyph(kind));
 
 	const QPixmap platformIcon = QIcon(PlatformIconPath(platform)).pixmap(26, 26);
 	p.setPen(Qt::NoPen);
@@ -355,7 +311,54 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 	setObjectName(QStringLiteral("AitumStreamSuiteActivity"));
 	auto *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(8, 8, 8, 8);
-	layout->setSpacing(0);
+	layout->setSpacing(6);
+
+	auto *bar = new QHBoxLayout;
+	bar->setContentsMargins(0, 0, 0, 0);
+	bar->setSpacing(2);
+	auto *filters = new QButtonGroup(this);
+	filters->setExclusive(true);
+	const auto addFilter = [&](int id, const QString &text, const QString &iconPath) {
+		auto *button = new QPushButton(this);
+		button->setCheckable(true);
+		button->setFlat(true);
+		button->setMinimumWidth(0);
+		button->setFixedHeight(24);
+		button->setToolTip(text);
+		if (!iconPath.isEmpty()) {
+			button->setIcon(QIcon(iconPath));
+			button->setIconSize(QSize(16, 16));
+			button->setFixedWidth(28);
+		} else {
+			button->setText(text);
+		}
+		button->setStyleSheet(QStringLiteral(
+			"QPushButton { color: #a3a3a3; background: transparent; border: none; border-radius: 6px; padding: 0 6px; font-size: 11px; }"
+			"QPushButton:checked { color: #f4f4f5; background: #242424; font-weight: 700; }"));
+		filters->addButton(button, id);
+		bar->addWidget(button);
+		if (id == 3)
+			button->setChecked(true);
+	};
+	addFilter(3, Tr("ActivityFilterAll"), QString());
+	addFilter(0, QStringLiteral("Twitch"), PlatformIconPath(0));
+	addFilter(1, QStringLiteral("YouTube"), PlatformIconPath(1));
+	addFilter(2, QStringLiteral("Kick"), PlatformIconPath(2));
+	bar->addStretch(1);
+	auto *clear = new QPushButton(Tr("ActivityClear"), this);
+	clear->setFlat(true);
+	clear->setMinimumWidth(0);
+	clear->setFixedHeight(24);
+	clear->setStyleSheet(QStringLiteral(
+		"QPushButton { color: #a3a3a3; background: transparent; border: none; padding: 0 6px; font-size: 11px; }"
+		"QPushButton:hover { color: #f4f4f5; }"));
+	bar->addWidget(clear);
+	layout->addLayout(bar);
+	connect(filters, &QButtonGroup::idClicked, this, [this](int id) {
+		platformFilter = id == 3 ? -1 : id;
+		RebuildVisible();
+	});
+	connect(clear, &QPushButton::clicked, this, &AlertsDock::ClearHistory);
 
 	list = new QListWidget(this);
 	list->setObjectName(QStringLiteral("activityList"));
@@ -693,6 +696,8 @@ void AlertsDock::InsertCard(const Entry &entry, bool atTop)
 {
 	if (!list)
 		return;
+	if (platformFilter >= 0 && entry.platform != platformFilter)
+		return;
 	QLabel *age = nullptr;
 	QWidget *card = MakeActivityCard(entry.platform, entry.kind, entry.user, entry.detail, entry.message, entry.atMs, &age);
 	auto *item = new QListWidgetItem;
@@ -736,6 +741,24 @@ void AlertsDock::Push(int platform, const QString &kind, const QString &user, co
 		entries.push_back(entry);
 		InsertCard(entry, false);
 	}
+}
+
+void AlertsDock::RebuildVisible()
+{
+	if (!list)
+		return;
+	list->clear();
+	for (const Entry &entry : entries)
+		InsertCard(entry, false);
+	RefreshAges();
+}
+
+void AlertsDock::ClearHistory()
+{
+	entries.clear();
+	if (list)
+		list->clear();
+	SaveHistory();
 }
 
 void AlertsDock::RefreshAges()

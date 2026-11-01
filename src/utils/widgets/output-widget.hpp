@@ -54,6 +54,10 @@ public:
 
 	obs_output_t *GetOutput() const { return output; }
 
+	/* New encoder using the type and settings from OBS Settings → Output. */
+	static obs_encoder_t *CreateObsDefaultVideoEncoder(const char *name, video_t *video, bool recording);
+	static obs_encoder_t *CreateObsDefaultAudioEncoder(const char *name, size_t mix, bool recording);
+
 	void CheckActive();
 	void UpdateStats();
 	void SaveSettings();

@@ -892,44 +892,21 @@ bool OutputDock::StartCanvasRecord(const QString &filenameOverride)
 		return false;
 	}
 
-	const char *encoderIds[] = {"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc", "obs_qsv11_v2", "h264_texture_amf",
-				    "obs_x264"};
-	const char *vencId = "obs_x264";
-	for (const char *id : encoderIds) {
-		const char *val = nullptr;
-		for (int i = 0; obs_enum_encoder_types(i, &val); i++) {
-			if (val && strcmp(val, id) == 0) {
-				vencId = id;
-				break;
-			}
-		}
-		if (strcmp(vencId, id) == 0) {
-			break;
-		}
-	}
-
 	std::string vencName = "Aitum Stream Suite Builtin Record ";
 	vencName += canvasName;
-	obs_encoder_t *venc = obs_video_encoder_create(vencId, vencName.c_str(), nullptr, nullptr);
+	obs_encoder_t *venc = OutputWidget::CreateObsDefaultVideoEncoder(vencName.c_str(), video, true);
 	if (!venc) {
 		obs_canvas_release(canvas);
 		return false;
 	}
-	obs_encoder_set_video(venc, video);
-	obs_data_t *videoSettings = obs_data_create();
-	obs_data_set_string(videoSettings, "rate_control", "CBR");
-	obs_data_set_int(videoSettings, "bitrate", 6000);
-	obs_encoder_update(venc, videoSettings);
-	obs_data_release(videoSettings);
 
 	std::string aencName = vencName + " Audio";
-	obs_encoder_t *aenc = obs_audio_encoder_create("ffmpeg_aac", aencName.c_str(), nullptr, 0, nullptr);
+	obs_encoder_t *aenc = OutputWidget::CreateObsDefaultAudioEncoder(aencName.c_str(), 0, true);
 	if (!aenc) {
 		obs_encoder_release(venc);
 		obs_canvas_release(canvas);
 		return false;
 	}
-	obs_encoder_set_audio(aenc, obs_get_audio());
 
 	config_t *config = obs_frontend_get_profile_config();
 	const char *mode = config ? config_get_string(config, "Output", "Mode") : nullptr;

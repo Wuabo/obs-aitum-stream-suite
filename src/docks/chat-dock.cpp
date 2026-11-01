@@ -712,7 +712,6 @@ void ChatDock::EndYouTubeLiveOnExit()
 {
 	Account &acc = accounts[YouTube];
 	if (acc.accessToken.isEmpty() && acc.refreshToken.isEmpty()) {
-		blog(LOG_WARNING, "[Stream Suite] OBS closed during a YouTube live, but no YouTube account is linked");
 		return;
 	}
 
@@ -734,8 +733,6 @@ void ChatDock::EndYouTubeLiveOnExit()
 				acc.refreshToken = json.value(QStringLiteral("refresh_token")).toString();
 			const int expiresIn = json.value(QStringLiteral("expires_in")).toInt(0);
 			acc.expiresAt = expiresIn > 0 ? now + expiresIn : 0;
-		} else {
-			blog(LOG_WARNING, "[Stream Suite] YouTube token refresh on exit HTTP %d", refreshed.status);
 		}
 	}
 	if (acc.accessToken.isEmpty())
@@ -764,12 +761,9 @@ void ChatDock::EndYouTubeLiveOnExit()
 			if (!id.isEmpty() && !ids.contains(id))
 				ids << id;
 		}
-	} else if (ids.isEmpty()) {
-		blog(LOG_WARNING, "[Stream Suite] YouTube active broadcasts on exit HTTP %d", listed.status);
 	}
 
 	if (ids.isEmpty()) {
-		blog(LOG_WARNING, "[Stream Suite] YouTube output is live, but no broadcast id was found to end");
 		return;
 	}
 
@@ -780,14 +774,7 @@ void ChatDock::EndYouTubeLiveOnExit()
 		query.addQueryItem(QStringLiteral("id"), id);
 		query.addQueryItem(QStringLiteral("part"), QStringLiteral("id,status"));
 		url.setQuery(query);
-		const HttpResult ended = SyncHttp(url.toEncoded(), auth, QByteArrayLiteral("{}"), "POST", 8);
-		if (ended.status >= 200 && ended.status < 300) {
-			blog(LOG_INFO, "[Stream Suite] YouTube live ended because OBS closed (%s)",
-			     id.left(16).toUtf8().constData());
-		} else {
-			blog(LOG_WARNING, "[Stream Suite] YouTube end live HTTP %d: %s", ended.status,
-			     ended.body.left(180).constData());
-		}
+		SyncHttp(url.toEncoded(), auth, QByteArrayLiteral("{}"), "POST", 8);
 	}
 }
 
@@ -817,14 +804,7 @@ void ChatDock::EndYouTubeBroadcastNow()
 			Http(QString::fromUtf8(url.toEncoded()),
 			     {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token.accessToken.toUtf8()},
 			      {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}},
-			     QByteArrayLiteral("{}"), "POST", [id](int status, const QByteArray &body, const QString &) {
-				     if (status >= 200 && status < 300)
-					     blog(LOG_INFO, "[Stream Suite] YouTube live ended (%s)",
-						  id.left(16).toUtf8().constData());
-				     else
-					     blog(LOG_WARNING, "[Stream Suite] YouTube end live HTTP %d: %s", status,
-						  body.left(180).constData());
-			     });
+			     QByteArrayLiteral("{}"), "POST", [](int, const QByteArray &, const QString &) {});
 		};
 		transition(knownId);
 		QUrl listUrl(QStringLiteral("https://www.googleapis.com/youtube/v3/liveBroadcasts"));
@@ -2560,12 +2540,6 @@ void ChatDock::ReportYouTubeHttpError(int status, const QByteArray &body)
 	}
 }
 
-void ChatDock::DebugYouTube(const QString &text)
-{
-	/* Chat stays clean — diagnostics only go to the OBS log (Help → Log Files). */
-	blog(LOG_INFO, "[Stream Suite] YT-debug: %s", text.toUtf8().constData());
-}
-
 void ChatDock::EnsureYouTubeWaitLiveTimer()
 {
 	if (!youtubeWaitLiveTimer)
@@ -2627,7 +2601,6 @@ void ChatDock::OnStreamingStarted()
 	ytBanIdList.clear();
 	youtubeIgnoreBeforeMs = QDateTime::currentMSecsSinceEpoch() - 15000;
 	ClearYouTubeMessages();
-	DebugYouTube(QStringLiteral("streaming-started fresh discover"));
 	StartYouTubeChat();
 	EnsureYouTubeWaitLiveTimer();
 	if (!youtubeDiscoverTimer->isActive())
@@ -2639,7 +2612,6 @@ void ChatDock::RememberYouTubeChatId(const QString &chatId)
 	if (chatId.isEmpty() || ytLiveChatIds.contains(chatId))
 		return;
 	ytLiveChatIds.append(chatId);
-	blog(LOG_INFO, "[Stream Suite] YouTube moderation chat ids: %d", ytLiveChatIds.size());
 }
 
 QStringList ChatDock::YouTubeModerationChatIds() const
@@ -2665,8 +2637,6 @@ bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
 		RememberYouTubeChatId(ytLiveChatId);
 		RememberYouTubeChatId(chatId);
 		ytLiveChatId = chatId;
-		blog(LOG_INFO, "[Stream Suite] YouTube chat id updated for the same video (%d chars, %d kept)",
-		     chatId.size(), ytLiveChatIds.size());
 		return false;
 	}
 	ytLiveChatIds.clear();
@@ -2686,7 +2656,6 @@ bool ChatDock::BindYouTubeChat(const QString &chatId, const QString &videoId)
 		youtubeTimer->stop();
 	if (switching)
 		ClearYouTubeMessages();
-	blog(LOG_INFO, "[Stream Suite] YouTube chat bound, history before this session is ignored");
 	return true;
 }
 
@@ -2730,10 +2699,6 @@ void ChatDock::NotifyYouTubeVideo(const QString &videoId, const QString &liveCha
 {
 	if (videoId.isEmpty() && liveChatId.isEmpty())
 		return;
-	DebugYouTube(QStringLiteral("notify video=%1 chat=%2 conn=%3")
-			     .arg(videoId.isEmpty() ? QStringLiteral("-") : videoId.left(11),
-				  liveChatId.isEmpty() ? QStringLiteral("no") : QStringLiteral("yes(%1)").arg(liveChatId.size()),
-				  connectionsActive ? QStringLiteral("on") : QStringLiteral("off")));
 	if (!videoId.isEmpty())
 		ytVideoId = videoId;
 	if (!liveChatId.isEmpty()) {
@@ -2741,15 +2706,10 @@ void ChatDock::NotifyYouTubeVideo(const QString &videoId, const QString &liveCha
 		youtubeWaitingAnnounced = false;
 		youtubeQuotaAnnounced = false;
 		PersistYouTubeIds();
-		blog(LOG_INFO, "[Stream Suite] YouTube liveChatId from Stream Info (%d chars)", liveChatId.size());
 		if (connectionsActive && !youtubePollInFlight && (changed || !youtubeTimer->isActive())) {
-			DebugYouTube(QStringLiteral("notify → PollYouTubeChat"));
 			PollYouTubeChat();
 		} else if (!connectionsActive && DockIsOpen()) {
-			DebugYouTube(QStringLiteral("notify → StartConnections"));
 			StartConnections();
-		} else {
-			DebugYouTube(QStringLiteral("notify: chat id stored (poll deferred)"));
 		}
 		if (!youtubeDiscoverTimer->isActive() && connectionsActive)
 			youtubeDiscoverTimer->start();
@@ -2824,7 +2784,6 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 											.toObject();
 						     const QString chatId = YouTubeVideoActiveChatId(details);
 						     if (!details.value(QStringLiteral("actualEndTime")).toString().isEmpty()) {
-							     DebugYouTube(QStringLiteral("videos.list: live já terminou"));
 							     if (ytVideoId == videoId) {
 								     ytVideoId.clear();
 								     PersistYouTubeIds();
@@ -2834,22 +2793,14 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 							     return;
 						     }
 						     if (!chatId.isEmpty()) {
-							     DebugYouTube(QStringLiteral("videos.list → chat id OK"));
 							     BindYouTubeChat(chatId, videoId);
 							     finishOk();
 							     return;
 						     }
-						     DebugYouTube(QStringLiteral("videos.list: sem activeLiveChatId ainda"));
-						     blog(LOG_INFO,
-							  "[Stream Suite] YouTube video has no activeLiveChatId yet "
-							  "(stream may still be starting)");
 						     EnsureYouTubeWaitLiveTimer();
 					     } else {
-						     DebugYouTube(QStringLiteral("videos.list: items vazio"));
 					     }
 				     } else {
-					     DebugYouTube(QStringLiteral("videos.list HTTP %1").arg(st));
-					     blog(LOG_WARNING, "[Stream Suite] YouTube videos.list HTTP %d", st);
 					     ReportYouTubeHttpError(st, payload);
 				     }
 				     if (done)
@@ -2880,14 +2831,8 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 									 .toObject()
 									 .value("lifeCycleStatus")
 									 .toString();
-					     DebugYouTube(QStringLiteral("broadcast status=%1 chatField=%2")
-								  .arg(life.isEmpty() ? QStringLiteral("?") : life,
-								       chatId.isEmpty() ? QStringLiteral("empty")
-											: QStringLiteral("ok")));
 					     /* Ended streams keep a dead liveChatId — never poll it (404 loop). */
 					     if (YouTubeBroadcastLifeDead(life)) {
-						     DebugYouTube(QStringLiteral("broadcast %1 → discard video")
-									  .arg(life));
 						     if (ytVideoId == videoId) {
 							     ytVideoId.clear();
 							     PersistYouTubeIds();
@@ -2907,12 +2852,10 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 						     ytVideoId = videoId;
 					     EnsureYouTubeWaitLiveTimer();
 				     } else {
-					     DebugYouTube(QStringLiteral("liveBroadcasts by id: items vazio"));
 				     }
 				     tryVideos();
 				     return;
 			     }
-			     DebugYouTube(QStringLiteral("liveBroadcasts by id HTTP %1").arg(code));
 			     ReportYouTubeHttpError(code, body);
 			     if (YouTubeBodyLooksLikeQuota(body)) {
 				     if (done)
@@ -2927,17 +2870,13 @@ void ChatDock::ResolveYouTubeLiveChatId(const QString &videoId, std::function<vo
 void ChatDock::StartYouTubeChat()
 {
 	youtubeLastFullDiscoverMs = QDateTime::currentMSecsSinceEpoch();
-	DebugYouTube(QStringLiteral("StartYouTubeChat video=%1")
-			     .arg(ytVideoId.isEmpty() ? QStringLiteral("-") : ytVideoId.left(11)));
 	EnsureToken(YouTube, [this](bool ok) {
 		if (!ok) {
 			youtubeConnectStarted = false;
-			DebugYouTube(QStringLiteral("token FAILED"));
 			AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(YouTube)), YouTube);
 			return;
 		}
 		if (!ytLiveChatId.isEmpty()) {
-			DebugYouTube(QStringLiteral("já tenho chat id → poll"));
 			youtubeWaitingAnnounced = false;
 			if (!youtubePollInFlight && !youtubeTimer->isActive())
 				PollYouTubeChat();
@@ -2949,7 +2888,6 @@ void ChatDock::StartYouTubeChat()
 				 QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()}};
 		};
 		auto markWaiting = [this] {
-			DebugYouTube(QStringLiteral("discover esgotado → Waiting"));
 			if (!youtubeWaitingAnnounced && !youtubeConnectedAnnounced) {
 				youtubeWaitingAnnounced = true;
 				AppendSystemMessage(Tr("ChatDockYouTubeWaiting"), YouTube);
@@ -2974,7 +2912,6 @@ void ChatDock::StartYouTubeChat()
 				return;
 			}
 			if (YouTubeBroadcastLifeDead(life)) {
-				DebugYouTube(QStringLiteral("skip %1 (%2)").arg(videoId.left(11), life));
 				if (ytVideoId == videoId) {
 					ytVideoId.clear();
 					PersistYouTubeIds();
@@ -2985,7 +2922,6 @@ void ChatDock::StartYouTubeChat()
 			}
 			if (!hintChatId.isEmpty()) {
 				BindYouTubeChat(hintChatId, videoId);
-				DebugYouTube(QStringLiteral("trust chat hint (%1)").arg(life.isEmpty() ? QStringLiteral("?") : life));
 				beginPoll();
 				return;
 			}
@@ -3049,16 +2985,12 @@ void ChatDock::StartYouTubeChat()
 					     return;
 				     }
 				     if (code < 200 || code >= 300) {
-					     DebugYouTube(QStringLiteral("liveBroadcasts list HTTP %1").arg(code));
-					     blog(LOG_WARNING, "[Stream Suite] YouTube liveBroadcasts HTTP %d", code);
 					     if (next)
 						     next();
 					     return;
 				     }
 				     const auto cands =
 					     pickBroadcastIds(QJsonDocument::fromJson(body).object().value("items").toArray());
-				     DebugYouTube(QStringLiteral("liveBroadcasts list → %1 candidatos")
-							  .arg(cands.size()));
 				     /* Try candidates in score order until one yields a liveChatId. */
 				     auto tryAt = std::make_shared<std::function<void(int)>>();
 				     *tryAt = [this, cands, resolveVideoChat, next, tryAt](int idx) {
@@ -3067,11 +2999,6 @@ void ChatDock::StartYouTubeChat()
 							     next();
 						     return;
 					     }
-					     DebugYouTube(QStringLiteral("try broadcast[%1] id=%2 life=%3 chatHint=%4")
-								  .arg(idx)
-								  .arg(cands.at(idx).id.left(11), cands.at(idx).life,
-								       cands.at(idx).chatId.isEmpty() ? QStringLiteral("no")
-												      : QStringLiteral("yes")));
 					     resolveVideoChat(cands.at(idx).id, cands.at(idx).chatId, cands.at(idx).life,
 							      [tryAt, idx] { (*tryAt)(idx + 1); });
 				     };
@@ -3158,7 +3085,6 @@ void ChatDock::TryYouTubeGoLive()
 		Http(QString::fromUtf8(url.toEncoded()), authHdr(), {}, "GET",
 		     [this, authHdr](int code, const QByteArray &body, const QString &) {
 			     if (code < 200 || code >= 300) {
-				     DebugYouTube(QStringLiteral("go-live status HTTP %1").arg(code));
 				     return;
 			     }
 			     const QJsonArray items = QJsonDocument::fromJson(body).object().value("items").toArray();
@@ -3166,7 +3092,6 @@ void ChatDock::TryYouTubeGoLive()
 				     return;
 			     const QJsonObject item = items.at(0).toObject();
 			     const QString life = item.value("status").toObject().value("lifeCycleStatus").toString();
-			     DebugYouTube(QStringLiteral("go-live check status=%1").arg(life.isEmpty() ? QStringLiteral("?") : life));
 			     if (life == QLatin1String("live") || life == QLatin1String("liveStarting")) {
 				     if (!ytLiveChatId.isEmpty() && !youtubePollInFlight && !youtubeTimer->isActive())
 					     PollYouTubeChat();
@@ -3188,7 +3113,6 @@ void ChatDock::TryYouTubeGoLive()
 			     tq.addQueryItem("id", ytVideoId);
 			     tq.addQueryItem("part", "status");
 			     turl.setQuery(tq);
-			     DebugYouTube(QStringLiteral("transition → %1").arg(target));
 			     auto headers = authHdr();
 			     headers.append({QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")});
 			     Http(QString::fromUtf8(turl.toEncoded()), headers, QByteArray("{}"), "POST",
@@ -3200,15 +3124,9 @@ void ChatDock::TryYouTubeGoLive()
 								      .value("message")
 								      .toString();
 					  if (st >= 200 && st < 300) {
-						  DebugYouTube(QStringLiteral("transition %1 OK").arg(target));
 						  if (!youtubePollInFlight && !ytLiveChatId.isEmpty())
 							  QTimer::singleShot(2000, this, &ChatDock::PollYouTubeChat);
 					  } else {
-						  DebugYouTube(QStringLiteral("transition %1 HTTP %2: %3")
-								       .arg(target)
-								       .arg(st)
-								       .arg(msg.isEmpty() ? QString::fromUtf8(payload.left(120))
-											  : msg.left(140)));
 					  }
 				  });
 		     });
@@ -3341,7 +3259,6 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 						.value(QStringLiteral("externalChannelId"))
 						.toString();
 		if (!channel.isEmpty()) {
-			blog(LOG_INFO, "[Stream Suite] YouTube delete author=%s", channel.toUtf8().constData());
 			MarkMessagesDeletedByUser(YouTube, channel, Tr("ChatDockMessageRemoved"));
 		}
 		return;
@@ -3363,7 +3280,6 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 		const QString low = text.toLower();
 		if (!id.isEmpty() && (low.contains(QLatin1String("delet")) || low.contains(QLatin1String("remov")) ||
 				      low.contains(QLatin1String("elimin")) || low.contains(QLatin1String("retract")))) {
-			blog(LOG_INFO, "[Stream Suite] YouTube delete type=replace id=%s", id.left(48).toUtf8().constData());
 			MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
 		}
 		return;
@@ -3375,8 +3291,6 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 		const QString id = action.value(key).toObject().value(QStringLiteral("targetItemId")).toString();
 		if (id.isEmpty())
 			continue;
-		blog(LOG_INFO, "[Stream Suite] YouTube delete type=%s id=%s", key.toUtf8().constData(),
-		     id.left(48).toUtf8().constData());
 		MarkMessageDeleted(id, Tr("ChatDockMessageRemoved"));
 		return;
 	}
@@ -3479,7 +3393,6 @@ void ChatDock::IngestYouTubeLiveAction(const QJsonObject &action)
 		static bool loggedEmoji = false;
 		if (!loggedEmoji) {
 			loggedEmoji = true;
-			blog(LOG_INFO, "[Stream Suite] YouTube emoji image %s", url.left(140).toUtf8().constData());
 		}
 		msg.text += alt;
 		ChatRun image;
@@ -3579,11 +3492,6 @@ void ChatDock::PollYouTubeInnertube()
 				     return;
 			     if (status < 200 || status >= 300) {
 				     ytContinuation.clear();
-				     DebugYouTube(QStringLiteral("innertube HTTP %1 (%2 bytes)")
-							  .arg(status)
-							  .arg(body.size()));
-				     blog(LOG_WARNING, "[Stream Suite] YouTube site chat HTTP %d: %s", status,
-					  error.isEmpty() ? body.left(180).constData() : error.toUtf8().constData());
 				     schedule(4000);
 				     return;
 			     }
@@ -3595,9 +3503,6 @@ void ChatDock::PollYouTubeInnertube()
 							       .toObject();
 			     if (live.isEmpty()) {
 				     ytContinuation.clear();
-				     DebugYouTube(QStringLiteral("innertube sem liveChatContinuation (%1 bytes) %2")
-							  .arg(body.size())
-							  .arg(QString::fromUtf8(body.left(140))));
 				     schedule(4000);
 				     return;
 			     }
@@ -3614,9 +3519,6 @@ void ChatDock::PollYouTubeInnertube()
 			     if (!youtubeConnectedAnnounced) {
 				     youtubeConnectedAnnounced = true;
 				     youtubeWaitingAnnounced = false;
-				     const int actions = live.value(QStringLiteral("actions")).toArray().size();
-				     blog(LOG_INFO, "[Stream Suite] YouTube site chat HTTP 200 (%d actions)", actions);
-				     DebugYouTube(QStringLiteral("innertube HTTP 200 → Connected"));
 				     AppendSystemMessage(Tr("ChatDockConnected").arg(PlatformLabel(YouTube)), YouTube);
 			     }
 			     if (youtubeIgnoreBeforeMs <= 0)
@@ -3670,11 +3572,6 @@ void ChatDock::PollYouTubeInnertube()
 			     ytInnertubeClientVersion = QStringLiteral("2.20261030.01.00");
 		     if (token.isEmpty()) {
 			     youtubePollInFlight = false;
-			     DebugYouTube(QStringLiteral("live_chat sem continuation HTTP %1 (%2 bytes)")
-						  .arg(status)
-						  .arg(body.size()));
-			     blog(LOG_WARNING, "[Stream Suite] YouTube live_chat page HTTP %d, no continuation (%d bytes)",
-				  status, int(body.size()));
 			     TryYouTubeGoLive();
 			     schedule(5000);
 			     return;
@@ -3760,8 +3657,6 @@ void ChatDock::SendYouTubeMessage(const QString &text)
 				     }
 				     return;
 			     }
-			     blog(LOG_WARNING, "[Stream Suite] YouTube send HTTP %d: %s", status,
-				  error.isEmpty() ? resp.left(200).constData() : error.toUtf8().constData());
 			     QString reason = QString::number(status);
 			     const QJsonObject err = QJsonDocument::fromJson(resp).object().value("error").toObject();
 			     if (!err.isEmpty())
@@ -4368,7 +4263,6 @@ void ChatDock::DeleteYouTubeMessage(const QStringList &ids, int index, const QSt
 		     [this, ids, index, id, uiId, channelId, text, publishedMs](int status, const QByteArray &body,
 										 const QString &error) {
 			     if (status == 204 || (status >= 200 && status < 300)) {
-				     blog(LOG_INFO, "[Stream Suite] YouTube message deleted");
 				     MarkMessageDeleted(uiId.isEmpty() ? id : uiId, Tr("ChatDockMessageRemoved"));
 				     return;
 			     }
@@ -4382,8 +4276,6 @@ void ChatDock::DeleteYouTubeMessage(const QStringList &ids, int index, const QSt
 				     return;
 			     }
 			     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
-			     blog(LOG_WARNING, "[Stream Suite] YouTube delete HTTP %d: %s", status,
-				  reason.toUtf8().constData());
 			     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), reason), YouTube);
 		     });
 	});
@@ -4427,8 +4319,6 @@ void ChatDock::FindYouTubeMessageToDelete(const QString &uiId, const QString &ch
 			     int status, const QByteArray &body, const QString &error) {
 			     if (status < 200 || status >= 300) {
 				     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
-				     blog(LOG_WARNING, "[Stream Suite] YouTube delete lookup HTTP %d: %s", status,
-					  reason.toUtf8().constData());
 				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockDeleteMessage"), reason),
 							 YouTube);
 				     return;
@@ -4464,8 +4354,6 @@ void ChatDock::FindYouTubeMessageToDelete(const QString &uiId, const QString &ch
 				     }
 			     }
 			     if (!bestId.isEmpty()) {
-				     blog(LOG_INFO, "[Stream Suite] YouTube delete matched API id (%d chars) chat %d",
-					  bestId.size(), chatSlot);
 				     DeleteYouTubeMessage(QStringList{bestId}, 0, uiId, QString(), QString(), 0);
 				     if (chatSlot + 1 < YouTubeModerationChatIds().size())
 					     FindYouTubeMessageToDelete(uiId, channelId, text, publishedMs, QString(), 6,
@@ -4484,7 +4372,6 @@ void ChatDock::FindYouTubeMessageToDelete(const QString &uiId, const QString &ch
 								reportMiss);
 				     return;
 			     }
-			     blog(LOG_INFO, "[Stream Suite] YouTube delete lookup missed (%d items)", items.size());
 			     if (reportMiss)
 				     AppendSystemMessage(Tr("ChatDockDeleteNotFound"), YouTube);
 		     });
@@ -4525,8 +4412,6 @@ void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayNa
 					youtubeBannedUsers.insert(channelId);
 					youtubeTimedOutUsers.remove(channelId);
 					done = Tr("ChatDockYouTubeHidden").arg(displayName);
-					blog(LOG_INFO, "[Stream Suite] YouTube hid %s on %d chat(s)", channelId.toUtf8().constData(),
-					     chats.size());
 				} else {
 					youtubeTimedOutUsers.insert(channelId);
 					const char *labelKey = "ChatDockYouTubeBlock5m";
@@ -4543,8 +4428,6 @@ void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayNa
 					else
 						labelKey = "ChatDockYouTubeBlock24h";
 					done = Tr("ChatDockYouTubeBlocked").arg(displayName, Tr(labelKey));
-					blog(LOG_INFO, "[Stream Suite] YouTube blocked %s for %ds on %d chat(s)",
-					     channelId.toUtf8().constData(), durationSeconds, chats.size());
 				}
 				MarkMessagesDeletedByUser(YouTube, channelId, done);
 				AppendSystemMessage(done, YouTube);
@@ -4567,8 +4450,6 @@ void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayNa
 			QUrlQuery query;
 			query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
 			url.setQuery(query);
-			blog(LOG_INFO, "[Stream Suite] YouTube %s %s chat %d/%d", hide ? "hide" : "block",
-			     channelId.toUtf8().constData(), index + 1, chats.size());
 			Http(QString::fromUtf8(url.toEncoded()),
 			     {{QByteArrayLiteral("Authorization"),
 			       QByteArrayLiteral("Bearer ") + accounts[YouTube].accessToken.toUtf8()},
@@ -4589,8 +4470,6 @@ void ChatDock::BanYouTubeUser(const QString &channelId, const QString &displayNa
 					     return;
 				     }
 				     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
-				     blog(LOG_WARNING, "[Stream Suite] YouTube ban HTTP %d: %s", status,
-					  reason.toUtf8().constData());
 				     (*step)(index + 1, anyOk, reason);
 			     });
 		};
@@ -4655,8 +4534,6 @@ void ChatDock::UnbanYouTubeUser(const QString &channelId, const QString &display
 		     {}, "GET", [this, channelId, displayName](int status, const QByteArray &body, const QString &error) {
 			     if (status < 200 || status >= 300) {
 				     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
-				     blog(LOG_WARNING, "[Stream Suite] YouTube ban list HTTP %d: %s", status,
-					  reason.toUtf8().constData());
 				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockUnbanUser"), reason),
 							 YouTube);
 				     return;
@@ -4716,7 +4593,6 @@ void ChatDock::RemoveYouTubeBan(const QString &banId, const QString &channelId, 
 					     youtubeBannedUsers.remove(channelId);
 					     youtubeTimedOutUsers.remove(channelId);
 				     }
-				     blog(LOG_INFO, "[Stream Suite] YouTube unbanned %s", channelId.toUtf8().constData());
 				     if (!displayName.isEmpty())
 					     AppendSystemMessage(Tr("ChatDockUserUnbanned").arg(displayName), YouTube);
 				     return;
@@ -4729,7 +4605,6 @@ void ChatDock::RemoveYouTubeBan(const QString &banId, const QString &channelId, 
 				     return;
 			     }
 			     const QString reason = error.isEmpty() ? YouTubeApiErrorText(body, status) : error;
-			     blog(LOG_WARNING, "[Stream Suite] YouTube unban HTTP %d: %s", status, reason.toUtf8().constData());
 			     AppendSystemMessage(Tr("ChatDockActionFailed").arg(Tr("ChatDockUnbanUser"), reason), YouTube);
 		     });
 	});

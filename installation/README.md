@@ -1,8 +1,13 @@
-# Apps das plataformas
+# Aitum Stream Suite
 
-A dock **Info da transmissão** altera título, categoria e tags na conta ligada. Cada plataforma exige uma app criada por ti.
+Plugin para o OBS Studio. As docks ficam em **Docks**:
 
-O Client ID e o client secret não ficam na dock. No fundo da dock há um botão de definições, igual ao das saídas. Aí colas as credenciais. Os campos começam ocultos; o botão à direita mostra ou esconde o valor.
+- **Outputs** — cada saída (stream ou gravação) escolhe o canvas, o servidor e a chave. No canvas principal, com o stream ou a gravação nativa do OBS já a correr, o vídeo usa o encoder do OBS. Nos outros canvas cria um encoder novo com o **mesmo tipo e as mesmas definições** de Definições → Saída (encoder, bitrate, preset, qualidade). Não fica preso a 6000 kbps. Se a saída tiver **Custom Encoder Settings** ligado e um encoder escolhido, usa essas definições em vez das do OBS.
+- **Stream Info** — título, categoria e tags na conta ligada.
+- **Chat** — chat unificado das saídas configuradas. Moderação (apagar, banir, timeout) na Twitch, no YouTube e na Kick. Slow mode, só seguidores, só subscritores e só emojis existem na Twitch; a API pública da Kick e a Data API do YouTube não expõem esses interruptores.
+- **Activity Feed** — follow, sub, gift, bits, raid, resgate, Super Chat e membro. A Twitch chega pelo EventSub mesmo com o canal offline, desde que a conta esteja ligada. A Kick chega pela ligação do chat. O YouTube (Super Chat e membro) chega pelo chat da live. No topo da dock filtras por plataforma e podes limpar o histórico.
+
+O Client ID e o client secret não ficam na dock. No fundo da dock **Stream Info** há um botão de definições. Aí colas as credenciais. Os campos começam ocultos; o botão à direita mostra ou esconde o valor.
 
 O OBS grava isso no `aitum.json` do perfil atual, em `%APPDATA%\obs-studio\basic\profiles\<perfil>\aitum.json`. Não é preciso editar esse ficheiro à mão.
 
@@ -19,7 +24,19 @@ Redirect usado pelo plugin no YouTube e na Kick, exatamente assim:
 5. Copia o **Client ID**.
 6. Na dock, abre as definições e cola-o no campo Twitch.
 
-Permissões pedidas no login: `channel:manage:broadcast`, `chat:read`, `chat:edit` (título/categoria + chat unificado).
+Permissões pedidas no login. Marca estas na app, se a consola as mostrar, e volta a **Ligar** no OBS se a conta já estava ligada com menos permissões:
+
+- `channel:manage:broadcast` — gerir a transmissão (título, categoria, tags)
+- `chat:read` — ler o chat
+- `chat:edit` — escrever no chat
+- `moderator:manage:chat_messages` — apagar mensagens
+- `moderator:manage:banned_users` — banir, timeout e desbanir
+- `moderator:manage:chat_settings` — slow mode, só seguidores, só subscritores, só emojis
+- `moderator:read:followers` — follows no Activity Feed
+- `channel:read:subscriptions` — subscrições
+- `bits:read` — bits
+- `channel:read:redemptions` — resgates de pontos do canal
+- `channel:moderate` — bans e unbans que chegam ao chat
 
 ## YouTube
 
@@ -41,7 +58,7 @@ Nomes conforme a Consola Google atual (**Google Auth Platform** / **APIs e servi
 9. Copia o **ID do cliente** e o **Segredo do cliente**.
 10. Na dock, abre as definições e cola-os nos campos YouTube.
 
-A dock atualiza a transmissão ativa ou a próxima agendada.
+A dock atualiza a transmissão ativa ou a próxima agendada. O chat da live lê a página do YouTube; não há chave de API no código do plugin.
 
 Para o erro de testadores: vai a **Google Auth Platform → Público-alvo → Utilizadores de teste**, adiciona a tua conta, guarda, e volta a **Ligar** no OBS.
 
@@ -67,3 +84,5 @@ A API pública da Kick aceita título e categoria. Tags podem ser recusadas; nes
 ## Depois de guardar
 
 Escolhe a plataforma na dock e carrega em **Ligar**. O login abre no browser. Na Twitch, o OBS mostra um código para introduzires em https://www.twitch.tv/activate.
+
+Fecha o OBS por completo antes de substituir a DLL. Um reload não chega: o processo tem de sair.

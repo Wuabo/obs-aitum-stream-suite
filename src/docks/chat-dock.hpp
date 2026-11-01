@@ -69,7 +69,6 @@ public:
 	/* End the YouTube broadcast now. Safe to call more than once while a stop is in progress. */
 	void EndYouTubeBroadcastNow();
 	void PersistYouTubeIds();
-	void DebugYouTube(const QString &text);
 	enum Platform { Twitch = 0, YouTube = 1, Kick = 2 };
 	/* Sync ban/timeout/unban that arrived from the platform (site, another mod, EventSub). */
 	void ApplyExternalModeration(Platform platform, const QString &userId, const QString &login, const QString &displayName,

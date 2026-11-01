@@ -16,9 +16,13 @@
 #include <util/config-file.h>
 #include <util/platform.h>
 
+#include <cmath>
+
 extern obs_data_t *current_profile_config;
 extern bool isTwitchServer(QString outputServer);
 extern ChatDock *chat_dock;
+
+static obs_output_t *ActiveFrontendOutput(bool is_record);
 
 OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(parent), settings(output_data)
 {
@@ -575,28 +579,8 @@ bool OutputWidget::StartOutput(bool automated)
 	if (advanced) {
 		auto aenc_name = obs_data_get_string(settings, "audio_encoder");
 		if (!aenc_name || aenc_name[0] == '\0') {
-			//use main encoder
-			obs_output_t *main_output = nullptr;
-			if (is_record) {
-				main_output = obs_frontend_get_replay_buffer_output();
-				if (main_output && !obs_output_active(main_output)) {
-					obs_output_release(main_output);
-					main_output = nullptr;
-				}
-				if (!main_output) {
-					main_output = obs_frontend_get_recording_output();
-				}
-				if (main_output && !obs_output_active(main_output)) {
-					obs_output_release(main_output);
-					main_output = nullptr;
-				}
-			}
+			obs_output_t *main_output = ActiveFrontendOutput(is_record);
 			if (!main_output) {
-				main_output = obs_frontend_get_streaming_output();
-			}
-
-			if (!obs_output_active(main_output)) {
-				obs_output_release(main_output);
 				blog(LOG_WARNING, "[Aitum Stream Suite] failed to start output '%s' because main was not started",
 				     name);
 				if (!automated) {
@@ -606,6 +590,8 @@ bool OutputWidget::StartOutput(bool automated)
 				return false;
 			}
 			auto aenc = obs_output_get_audio_encoder(main_output, 0);
+			if (aenc)
+				obs_encoder_get_ref(aenc);
 			obs_output_release(main_output);
 			if (!aenc) {
 				blog(LOG_WARNING,
@@ -616,8 +602,6 @@ bool OutputWidget::StartOutput(bool automated)
 							     QString::fromUtf8(obs_module_text("MainOutputEncoderIndexNotFound")));
 				}
 				return false;
-			} else {
-				obs_encoder_get_ref(aenc);
 			}
 			aencs.push_back(aenc);
 		} else {
@@ -733,17 +717,16 @@ bool OutputWidget::StartOutput(bool automated)
 					audio_encoder_name += name;
 					audio_encoder_name += " ";
 					audio_encoder_name += std::to_string(i);
-					auto aenc = obs_audio_encoder_create("ffmpeg_aac", audio_encoder_name.c_str(), nullptr, i,
-									     nullptr);
-					obs_encoder_set_audio(aenc, obs_get_audio());
-					aencs.push_back(aenc);
+					auto aenc = CreateObsDefaultAudioEncoder(audio_encoder_name.c_str(), i, true);
+					if (aenc)
+						aencs.push_back(aenc);
 				}
 			} else {
 				std::string audio_encoder_name = "Aitum Stream Suite Audio ";
 				audio_encoder_name += name;
-				auto aenc = obs_audio_encoder_create("ffmpeg_aac", audio_encoder_name.c_str(), nullptr, 0, nullptr);
-				obs_encoder_set_audio(aenc, obs_get_audio());
-				aencs.push_back(aenc);
+				auto aenc = CreateObsDefaultAudioEncoder(audio_encoder_name.c_str(), 0, false);
+				if (aenc)
+					aencs.push_back(aenc);
 			}
 		}
 	}
@@ -954,6 +937,325 @@ bool OutputWidget::StartOutput(bool automated)
 	return true;
 }
 
+static obs_output_t *TakeIfActive(obs_output_t *output)
+{
+	if (!output)
+		return nullptr;
+	if (!obs_output_active(output)) {
+		obs_output_release(output);
+		return nullptr;
+	}
+	return output;
+}
+
+/* Replay buffer, then recording, then the stream output. Caller owns the ref. */
+static obs_output_t *ActiveFrontendOutput(bool is_record)
+{
+	if (is_record) {
+		if (obs_output_t *output = TakeIfActive(obs_frontend_get_replay_buffer_output()))
+			return output;
+		if (obs_output_t *output = TakeIfActive(obs_frontend_get_recording_output()))
+			return output;
+	}
+	return TakeIfActive(obs_frontend_get_streaming_output());
+}
+
+static obs_data_t *ReadProfileJson(const char *filename)
+{
+	char *profile = obs_frontend_get_current_profile_path();
+	if (!profile || !filename || !filename[0]) {
+		bfree(profile);
+		return nullptr;
+	}
+	std::string path = profile;
+	bfree(profile);
+	if (!path.empty() && path.back() != '/' && path.back() != '\\')
+		path.push_back('/');
+	path += filename;
+	char *json = os_quick_read_utf8_file(path.c_str());
+	if (!json)
+		return nullptr;
+	obs_data_t *data = obs_data_create_from_json(json);
+	bfree(json);
+	return data;
+}
+
+static const char *SimpleVideoEncoderId(const char *simple)
+{
+	if (!simple || !simple[0])
+		return "obs_x264";
+	if (strcmp(simple, "x264") == 0 || strcmp(simple, "x264_lowcpu") == 0)
+		return "obs_x264";
+	if (strcmp(simple, "qsv") == 0)
+		return "obs_qsv11_v2";
+	if (strcmp(simple, "qsv_av1") == 0)
+		return "obs_qsv11_av1";
+	if (strcmp(simple, "amd") == 0)
+		return "h264_texture_amf";
+	if (strcmp(simple, "amd_hevc") == 0)
+		return "h265_texture_amf";
+	if (strcmp(simple, "amd_av1") == 0)
+		return "av1_texture_amf";
+	if (strcmp(simple, "nvenc") == 0)
+		return "obs_nvenc_h264_tex";
+	if (strcmp(simple, "nvenc_hevc") == 0)
+		return "obs_nvenc_hevc_tex";
+	if (strcmp(simple, "nvenc_av1") == 0)
+		return "obs_nvenc_av1_tex";
+	if (strcmp(simple, "apple_h264") == 0)
+		return "com.apple.videotoolbox.videoencoder.ave.avc";
+	if (strcmp(simple, "apple_hevc") == 0)
+		return "com.apple.videotoolbox.videoencoder.ave.hevc";
+	return "obs_x264";
+}
+
+static const char *SimplePresetKey(const char *simple)
+{
+	if (!simple)
+		return "Preset";
+	if (strcmp(simple, "qsv") == 0 || strcmp(simple, "qsv_av1") == 0)
+		return "QSVPreset";
+	if (strcmp(simple, "amd") == 0 || strcmp(simple, "amd_hevc") == 0)
+		return "AMDPreset";
+	if (strcmp(simple, "amd_av1") == 0)
+		return "AMDAV1Preset";
+	if (strcmp(simple, "nvenc") == 0 || strcmp(simple, "nvenc_hevc") == 0 || strcmp(simple, "nvenc_av1") == 0)
+		return "NVENCPreset2";
+	return "Preset";
+}
+
+static int SimpleRecordingCrf(config_t *config, video_t *video, bool lowCpu)
+{
+	const char *quality = config ? config_get_string(config, "SimpleOutput", "RecQuality") : nullptr;
+	int crf = (quality && strcmp(quality, "HQ") == 0) ? 16 : 23;
+	if (lowCpu)
+		crf -= 2;
+	uint32_t cx = video ? video_output_get_width(video) : 0;
+	uint32_t cy = video ? video_output_get_height(video) : 0;
+	if ((cx == 0 || cy == 0) && config) {
+		cx = (uint32_t)config_get_uint(config, "Video", "OutputCX");
+		cy = (uint32_t)config_get_uint(config, "Video", "OutputCY");
+	}
+	const double cross = std::sqrt(double(cx) * double(cx) + double(cy) * double(cy));
+	const double capped = cross < 2000.0 ? cross : 2000.0;
+	const double reduction = (1.0 - capped / 2000.0) * 10.0;
+	return crf - (int)reduction;
+}
+
+static bool EncoderSupportsRateControl(obs_encoder_t *encoder, const char *mode)
+{
+	if (!encoder || !mode)
+		return false;
+	obs_properties_t *props = obs_encoder_properties(encoder);
+	obs_property_t *property = props ? obs_properties_get(props, "rate_control") : nullptr;
+	bool found = false;
+	if (property && obs_property_get_type(property) == OBS_PROPERTY_LIST) {
+		const size_t count = obs_property_list_item_count(property);
+		for (size_t i = 0; i < count; i++) {
+			const char *value = obs_property_list_item_string(property, i);
+			if (value && strcmp(value, mode) == 0) {
+				found = true;
+				break;
+			}
+		}
+	}
+	obs_properties_destroy(props);
+	return found;
+}
+
+static void ApplyCanvasVideoFormat(obs_encoder_t *encoder, video_t *video)
+{
+	if (!encoder || !video)
+		return;
+	switch (video_output_get_format(video)) {
+	case VIDEO_FORMAT_I420:
+	case VIDEO_FORMAT_NV12:
+	case VIDEO_FORMAT_I010:
+	case VIDEO_FORMAT_P010:
+		break;
+	default:
+		obs_encoder_set_preferred_video_format(encoder, VIDEO_FORMAT_NV12);
+		break;
+	}
+}
+
+obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, video_t *video, bool recording)
+{
+	if (!name || !name[0] || !video)
+		return nullptr;
+
+	config_t *config = obs_frontend_get_profile_config();
+	const char *mode = config ? config_get_string(config, "Output", "Mode") : nullptr;
+	const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+
+	const char *encoderId = "obs_x264";
+	obs_data_t *settings = obs_data_create();
+	bool simpleQsvRecording = false;
+	int simpleCrf = 23;
+
+	if (advanced && config) {
+		const char *recordId = recording ? config_get_string(config, "AdvOut", "RecEncoder") : nullptr;
+		const bool useStream = !recording || !recordId || !recordId[0] || strcmp(recordId, "none") == 0;
+		const char *configured = useStream ? config_get_string(config, "AdvOut", "Encoder") : recordId;
+		if (configured && configured[0])
+			encoderId = configured;
+		obs_data_t *file = ReadProfileJson(useStream ? "streamEncoder.json" : "recordEncoder.json");
+		if (file) {
+			obs_data_apply(settings, file);
+			obs_data_release(file);
+		}
+	} else if (config) {
+		const char *quality = recording ? config_get_string(config, "SimpleOutput", "RecQuality") : nullptr;
+		const bool useStream = !recording || !quality || !quality[0] || strcmp(quality, "Stream") == 0 ||
+				       strcmp(quality, "Lossless") == 0;
+		const char *simple = config_get_string(config, "SimpleOutput", useStream ? "StreamEncoder" : "RecEncoder");
+		encoderId = SimpleVideoEncoderId(simple);
+		if (useStream) {
+			int bitrate = (int)config_get_uint(config, "SimpleOutput", "VBitrate");
+			if (bitrate <= 0)
+				bitrate = 2500;
+			obs_data_set_string(settings, "rate_control", "CBR");
+			obs_data_set_int(settings, "bitrate", bitrate);
+			const char *presetKey = SimplePresetKey(simple);
+			const char *preset = config_get_string(config, "SimpleOutput", presetKey);
+			if (preset && preset[0]) {
+				if (strncmp(encoderId, "ffmpeg_", 7) == 0 && strcmp(presetKey, "NVENCPreset2") == 0)
+					obs_data_set_string(settings, "preset2", preset);
+				else
+					obs_data_set_string(settings, "preset", preset);
+			}
+			if (config_get_bool(config, "SimpleOutput", "UseAdvanced")) {
+				const char *custom = config_get_string(config, "SimpleOutput", "x264Settings");
+				if (custom && custom[0])
+					obs_data_set_string(settings, "x264opts", custom);
+			}
+		} else {
+			const bool lowCpu = simple && strcmp(simple, "x264_lowcpu") == 0;
+			simpleCrf = SimpleRecordingCrf(config, video, lowCpu);
+			simpleQsvRecording = simple && strcmp(simple, "qsv") == 0;
+			if (!simple || strcmp(simple, "x264") == 0 || lowCpu) {
+				obs_data_set_int(settings, "crf", simpleCrf);
+				obs_data_set_bool(settings, "use_bufsize", true);
+				obs_data_set_string(settings, "rate_control", "CRF");
+				obs_data_set_string(settings, "profile", "high");
+				obs_data_set_string(settings, "preset", lowCpu ? "ultrafast" : "veryfast");
+			} else if (strcmp(simple, "nvenc_hevc") == 0 || strcmp(simple, "nvenc_av1") == 0) {
+				obs_data_set_string(settings, "rate_control", "CQP");
+				obs_data_set_string(settings, "profile", "main");
+				obs_data_set_int(settings, "cqp", simpleCrf);
+			} else if (strcmp(simple, "amd") == 0 || strcmp(simple, "amd_hevc") == 0 ||
+				   strcmp(simple, "amd_av1") == 0) {
+				obs_data_set_string(settings, "rate_control", "CQP");
+				obs_data_set_string(settings, "profile", "high");
+				obs_data_set_string(settings, "preset", "quality");
+				obs_data_set_int(settings, "cqp", simpleCrf);
+			} else {
+				obs_data_set_string(settings, "profile", "high");
+				obs_data_set_string(settings, "rate_control", "CQP");
+				obs_data_set_int(settings, "cqp", simpleCrf);
+			}
+		}
+	} else {
+		obs_data_set_string(settings, "rate_control", "CBR");
+		obs_data_set_int(settings, "bitrate", 2500);
+	}
+
+	if (!EncoderAvailable(encoderId)) {
+		if (strcmp(encoderId, "obs_nvenc_h264_tex") == 0 && EncoderAvailable("ffmpeg_nvenc"))
+			encoderId = "ffmpeg_nvenc";
+		else if (strcmp(encoderId, "obs_nvenc_hevc_tex") == 0 && EncoderAvailable("ffmpeg_hevc_nvenc"))
+			encoderId = "ffmpeg_hevc_nvenc";
+		else
+			encoderId = "obs_x264";
+	}
+
+	obs_encoder_t *encoder = obs_video_encoder_create(encoderId, name, settings, nullptr);
+	if (!encoder) {
+		const int bitrate = (int)obs_data_get_int(settings, "bitrate");
+		obs_data_t *fallback = obs_data_create();
+		obs_data_set_string(fallback, "rate_control", "CBR");
+		obs_data_set_int(fallback, "bitrate", bitrate > 0 ? bitrate : 2500);
+		encoder = obs_video_encoder_create("obs_x264", name, fallback, nullptr);
+		obs_data_release(fallback);
+		encoderId = "obs_x264";
+	}
+	obs_data_release(settings);
+	if (!encoder)
+		return nullptr;
+
+	obs_encoder_set_video(encoder, video);
+	ApplyCanvasVideoFormat(encoder, video);
+	if (simpleQsvRecording && EncoderSupportsRateControl(encoder, "ICQ")) {
+		obs_data_t *icq = obs_data_create();
+		obs_data_set_string(icq, "rate_control", "ICQ");
+		obs_data_set_int(icq, "icq_quality", simpleCrf);
+		obs_encoder_update(encoder, icq);
+		obs_data_release(icq);
+	}
+	blog(LOG_INFO, "[Aitum Stream Suite] video encoder %s from OBS settings (%s)", encoderId,
+	     recording ? "recording" : "stream");
+	return encoder;
+}
+
+obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size_t mix, bool recording)
+{
+	if (!name || !name[0])
+		return nullptr;
+
+	config_t *config = obs_frontend_get_profile_config();
+	const char *mode = config ? config_get_string(config, "Output", "Mode") : nullptr;
+	const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+	const char *encoderId = "ffmpeg_aac";
+	int bitrate = 160;
+
+	if (advanced && config) {
+		const char *streamId = config_get_string(config, "AdvOut", "AudioEncoder");
+		const char *recordId = config_get_string(config, "AdvOut", "RecAudioEncoder");
+		const char *chosen = streamId;
+		if (recording && recordId && recordId[0] && strcmp(recordId, "none") != 0)
+			chosen = recordId;
+		if (chosen && chosen[0] && EncoderAvailable(chosen))
+			encoderId = chosen;
+		static const char *tracks[] = {"Track1Bitrate", "Track2Bitrate", "Track3Bitrate",
+						"Track4Bitrate", "Track5Bitrate", "Track6Bitrate"};
+		const size_t index = mix < 6 ? mix : 0;
+		bitrate = (int)config_get_uint(config, "AdvOut", tracks[index]);
+	} else if (config) {
+		const char *which = config_get_string(config, "SimpleOutput", recording ? "RecAudioEncoder" : "StreamAudioEncoder");
+		if (which && strcmp(which, "opus") == 0 && EncoderAvailable("ffmpeg_opus"))
+			encoderId = "ffmpeg_opus";
+		else if (EncoderAvailable("CoreAudio_AAC"))
+			encoderId = "CoreAudio_AAC";
+		else if (EncoderAvailable("libfdk_aac"))
+			encoderId = "libfdk_aac";
+		if (recording) {
+			const char *quality = config_get_string(config, "SimpleOutput", "RecQuality");
+			bitrate = (quality && strcmp(quality, "Stream") == 0)
+					  ? (int)config_get_uint(config, "SimpleOutput", "ABitrate")
+					  : 192;
+		} else {
+			bitrate = (int)config_get_uint(config, "SimpleOutput", "ABitrate");
+		}
+	}
+	if (bitrate <= 0)
+		bitrate = 160;
+
+	auto create = [&](const char *id) {
+		obs_data_t *audioSettings = obs_data_create();
+		obs_data_set_int(audioSettings, "bitrate", bitrate);
+		obs_encoder_t *created = obs_audio_encoder_create(id, name, audioSettings, mix, nullptr);
+		obs_data_release(audioSettings);
+		return created;
+	};
+
+	obs_encoder_t *encoder = create(encoderId);
+	if (!encoder && strcmp(encoderId, "ffmpeg_aac") != 0)
+		encoder = create("ffmpeg_aac");
+	if (encoder)
+		obs_encoder_set_audio(encoder, obs_get_audio());
+	return encoder;
+}
+
 obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced, bool is_record, const char *output_name,
 					     bool automated)
 {
@@ -1003,28 +1305,8 @@ obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced
 			auto venc_name = obs_data_get_string(settings, "video_encoder");
 			if (!venc_name || venc_name[0] == '\0') {
 				if (main) {
-					//use main encoder
-					obs_output_t *main_output = nullptr;
-					if (is_record) {
-						main_output = obs_frontend_get_replay_buffer_output();
-						if (main_output && !obs_output_active(main_output)) {
-							obs_output_release(main_output);
-							main_output = nullptr;
-						}
-						if (!main_output) {
-							main_output = obs_frontend_get_recording_output();
-						}
-						if (main_output && !obs_output_active(main_output)) {
-							obs_output_release(main_output);
-							main_output = nullptr;
-						}
-					}
+					obs_output_t *main_output = ActiveFrontendOutput(is_record);
 					if (!main_output) {
-						main_output = obs_frontend_get_streaming_output();
-					}
-
-					if (!obs_output_active(main_output)) {
-						obs_output_release(main_output);
 						blog(LOG_WARNING,
 						     "[Aitum Stream Suite] failed to start output '%s' because main was not started",
 						     output_name);
@@ -1037,6 +1319,8 @@ obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced
 					}
 					auto vei = (int)obs_data_get_int(settings, "video_encoder_index");
 					venc = obs_output_get_video_encoder2(main_output, vei);
+					if (venc)
+						obs_encoder_get_ref(venc);
 					obs_output_release(main_output);
 					if (!venc) {
 						blog(LOG_WARNING,
@@ -1050,8 +1334,6 @@ obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced
 										     "MainOutputEncoderIndexNotFound")));
 						}
 						return nullptr;
-					} else {
-						obs_encoder_get_ref(venc);
 					}
 				} else {
 					//default encoder
@@ -1080,26 +1362,12 @@ obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced
 						&d);
 
 					if (!venc) {
-						auto videoEncoderIds = {"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc",
-									"obs_qsv11_v2", "h264_texture_amf"};
-						const char *vencid = "obs_x264";
-						for (auto &videoEncoderId : videoEncoderIds) {
-							if (EncoderAvailable(videoEncoderId)) {
-								vencid = videoEncoderId;
-								break;
-							}
-						}
 						std::string venc_name = "Aitum Stream Suite Video ";
 						venc_name += output_name;
 						venc_name += " ";
 						venc_name += obs_canvas_get_name(canvas);
-						venc = obs_video_encoder_create(vencid, venc_name.c_str(), nullptr, nullptr);
-						obs_encoder_set_video(venc, obs_canvas_get_video(canvas));
-						auto video_settings = obs_data_create();
-						obs_data_set_string(video_settings, "rate_control", "CBR");
-						obs_data_set_int(video_settings, "bitrate", 6000);
-						obs_encoder_update(venc, video_settings);
-						obs_data_release(video_settings);
+						venc = CreateObsDefaultVideoEncoder(venc_name.c_str(), obs_canvas_get_video(canvas),
+										    is_record);
 					} else {
 						obs_encoder_get_ref(venc);
 					}
@@ -1166,27 +1434,12 @@ obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced
 			&d);
 
 		if (!venc && main) {
-			obs_output_t *main_output = nullptr;
-			if (is_record) {
-				main_output = obs_frontend_get_replay_buffer_output();
-				if (main_output && !obs_output_active(main_output)) {
-					obs_output_release(main_output);
-					main_output = nullptr;
-				}
-				if (!main_output) {
-					main_output = obs_frontend_get_recording_output();
-				}
-				if (main_output && !obs_output_active(main_output)) {
-					obs_output_release(main_output);
-					main_output = nullptr;
-				}
-			}
-			if (!main_output) {
-				main_output = obs_frontend_get_streaming_output();
-			}
+			obs_output_t *main_output = ActiveFrontendOutput(is_record);
 			venc = main_output ? obs_output_get_video_encoder(main_output) : nullptr;
+			if (venc)
+				obs_encoder_get_ref(venc);
 			obs_output_release(main_output);
-			if (!venc || !obs_output_active(main_output)) {
+			if (!venc) {
 				blog(LOG_WARNING, "[Aitum Stream Suite] failed to start output '%s' because main was not started",
 				     output_name);
 				if (!automated) {
@@ -1195,28 +1448,12 @@ obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced
 				}
 				return nullptr;
 			}
-			obs_encoder_get_ref(venc);
 		} else if (!venc) {
-			auto videoEncoderIds = {"obs_nvenc_h264_tex", "jim_nvenc", "ffmpeg_nvenc", "obs_qsv11_v2",
-						"h264_texture_amf"};
-			const char *vencid = "obs_x264";
-			for (auto &videoEncoderId : videoEncoderIds) {
-				if (EncoderAvailable(videoEncoderId)) {
-					vencid = videoEncoderId;
-					break;
-				}
-			}
 			std::string venc_name = "Aitum Stream Suite Video ";
 			venc_name += output_name;
 			venc_name += " ";
 			venc_name += obs_canvas_get_name(canvas);
-			venc = obs_video_encoder_create(vencid, venc_name.c_str(), nullptr, nullptr);
-			obs_encoder_set_video(venc, obs_canvas_get_video(canvas));
-			auto video_settings = obs_data_create();
-			obs_data_set_string(video_settings, "rate_control", "CBR");
-			obs_data_set_int(video_settings, "bitrate", 6000);
-			obs_encoder_update(venc, video_settings);
-			obs_data_release(video_settings);
+			venc = CreateObsDefaultVideoEncoder(venc_name.c_str(), obs_canvas_get_video(canvas), is_record);
 		}
 	}
 

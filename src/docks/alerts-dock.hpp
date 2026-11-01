@@ -50,6 +50,7 @@ private:
 	int wsGen = 0;
 	bool askedReconnect = false;
 	bool loadingHistory = false;
+	int platformFilter = -1;
 	std::shared_ptr<WsSession> session;
 	std::vector<Entry> entries;
 
@@ -59,6 +60,8 @@ private:
 	void SubscribeEventSub(const QString &sessionId);
 	void HandleEventSubMessage(const QByteArray &payload, int gen, bool subscribeOnWelcome);
 	void InsertCard(const Entry &entry, bool atTop);
+	void RebuildVisible();
+	void ClearHistory();
 	void RefreshAges();
 	void ScheduleSave();
 	void SaveHistory();
