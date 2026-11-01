@@ -1304,11 +1304,28 @@ static QByteArray ReadObsDockState()
 	return QByteArray::fromBase64(QByteArray(dockStateStr));
 }
 
+struct RestoreMaximized {
+	QPointer<QMainWindow> win;
+	bool was = false;
+	explicit RestoreMaximized(QMainWindow *window) : win(window), was(window && window->isMaximized()) {}
+	~RestoreMaximized()
+	{
+		if (!was || !win || win->isMaximized())
+			return;
+		QPointer<QMainWindow> held = win;
+		QTimer::singleShot(0, held, [held] {
+			if (held && !held->isMaximized())
+				held->showMaximized();
+		});
+	}
+};
+
 static void UntabifyFromControls(QMainWindow *main, QDockWidget *dock, QDockWidget *controls)
 {
 	if (!main || !dock || !controls || dock == controls) {
 		return;
 	}
+	RestoreMaximized keepMaximized(main);
 	dock->setAllowedAreas(Qt::AllDockWidgetAreas);
 	dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable |
 			  QDockWidget::DockWidgetFloatable);
@@ -1398,6 +1415,7 @@ static void restore_obs_dock_layout()
 		return;
 	}
 	restoring = true;
+	RestoreMaximized keepMaximized(main);
 	const bool ok = main->restoreState(dockState);
 	ensure_preview_docks_independent();
 	/* DockState may re-tabify Main Canvas ↔ Youtube — break that again. */

@@ -56,7 +56,7 @@ public:
 	explicit ChatDock(QWidget *parent = nullptr);
 	~ChatDock() override;
 	QSize sizeHint() const override { return QSize(360, 480); }
-	QSize minimumSizeHint() const override { return QSize(360, 180); }
+	QSize minimumSizeHint() const override { return QSize(160, 180); }
 
 	void ReloadAccounts();
 	void SyncAccountsFromConfig();

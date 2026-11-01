@@ -18,6 +18,7 @@
 #include <QEvent>
 #include <QLabel>
 #include <QMainWindow>
+#include <QPointer>
 #include <QSizePolicy>
 #include <QTimer>
 #include <util/dstr.h>
@@ -68,10 +69,36 @@ private:
 		if (!dock || applying)
 			return;
 		applying = true;
-		dock->setFixedWidth(width);
+		/* Floating docks can be a fixed widget. A docked setFixedWidth
+		 * becomes a minimum on the main window and OBS then saves a
+		 * non-maximized geometry. */
+		if (dock->isFloating()) {
+			dock->setFixedWidth(width);
+			if (QWidget *content = dock->widget()) {
+				content->setFixedWidth(width);
+				content->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+			}
+			applying = false;
+			return;
+		}
+		dock->setMinimumWidth(0);
+		dock->setMaximumWidth(QWIDGETSIZE_MAX);
 		if (QWidget *content = dock->widget()) {
-			content->setFixedWidth(width);
-			content->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+			content->setMinimumWidth(0);
+			content->setMaximumWidth(QWIDGETSIZE_MAX);
+			content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+		}
+		auto *main = qobject_cast<QMainWindow *>(dock->window());
+		if (main && (dock->width() < width - 1 || dock->width() > width + 1)) {
+			const bool wasMaximized = main->isMaximized();
+			main->resizeDocks({dock}, {width}, Qt::Horizontal);
+			if (wasMaximized && !main->isMaximized()) {
+				QPointer<QMainWindow> win = main;
+				QTimer::singleShot(0, win, [win] {
+					if (win && !win->isMaximized())
+						win->showMaximized();
+				});
+			}
 		}
 		applying = false;
 	}
@@ -85,16 +112,12 @@ void LockSideDock(QWidget *content, int width)
 {
 	if (!content)
 		return;
-	content->setFixedWidth(width);
-	content->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
 	auto *dock = qobject_cast<QDockWidget *>(content->parentWidget());
 	if (!dock)
 		return;
 	if (!dock->property("suiteFixedWidth").toBool()) {
 		dock->setProperty("suiteFixedWidth", true);
 		new FixedDockWidth(dock, width);
-	} else {
-		dock->setFixedWidth(width);
 	}
 }
 

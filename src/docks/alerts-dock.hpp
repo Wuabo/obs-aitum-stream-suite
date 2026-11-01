@@ -19,7 +19,7 @@ public:
 	explicit AlertsDock(QWidget *parent = nullptr);
 	~AlertsDock() override;
 	QSize sizeHint() const override { return QSize(300, 420); }
-	QSize minimumSizeHint() const override { return QSize(300, 160); }
+	QSize minimumSizeHint() const override { return QSize(160, 160); }
 
 	void ReloadAccounts();
 	void ReloadHistory();
