@@ -21,7 +21,7 @@ class QListWidget;
 class QListWidgetItem;
 class QPushButton;
 class QSpinBox;
-class QTabWidget;
+class QStackedWidget;
 class QTimer;
 class QVBoxLayout;
 class QWidget;
@@ -153,7 +153,8 @@ private:
 	QFrame *viewerBar = nullptr;
 	QPushButton *roomButton = nullptr;
 	QFrame *roomPanel = nullptr;
-	QTabWidget *roomTabs = nullptr;
+	QStackedWidget *roomStack = nullptr;
+	QPushButton *roomTabButtons[3] = {};
 	QWidget *roomPages[3] = {};
 	bool roomSyncing = false;
 	QCheckBox *twSlow = nullptr;

@@ -39,7 +39,8 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QSpinBox>
-#include <QTabWidget>
+#include <QButtonGroup>
+#include <QStackedWidget>
 #include <QRegularExpression>
 #include <QHideEvent>
 #include <QResizeEvent>
@@ -1040,7 +1041,7 @@ void ChatDock::BuildUi()
 	connect(roomButton, &QPushButton::toggled, this, [this](bool open) {
 		if (roomPanel)
 			roomPanel->setVisible(open);
-		if (open)
+		if (open && roomStack && roomStack->currentIndex() == int(Twitch) && availablePlatforms.contains(int(Twitch)))
 			LoadTwitchRoom();
 	});
 
@@ -1233,13 +1234,48 @@ void ChatDock::BuildRoomPanel(QVBoxLayout *root)
 	roomPanel = new QFrame(this);
 	roomPanel->setObjectName(QStringLiteral("chatRoomPanel"));
 	roomPanel->setVisible(false);
+	roomPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+	roomPanel->setStyleSheet(QStringLiteral(
+		"QFrame#chatRoomPanel { background: #1b1b1b; border-top: 1px solid #2e2e2e; }"));
 	auto *layout = new QVBoxLayout(roomPanel);
-	layout->setContentsMargins(8, 4, 8, 8);
+	layout->setContentsMargins(8, 6, 8, 8);
 	layout->setSpacing(6);
-	roomTabs = new QTabWidget(roomPanel);
-	layout->addWidget(roomTabs);
 
-	auto *twitchPage = new QWidget(roomTabs);
+	auto *switchRow = new QHBoxLayout;
+	switchRow->setSpacing(4);
+	auto *group = new QButtonGroup(roomPanel);
+	group->setExclusive(true);
+	const QString tabStyle = QStringLiteral(
+		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
+		" border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
+		"QPushButton:hover { color: #eee; border-color: #666; }"
+		"QPushButton:checked { color: white; background: #2a2a2a; border-color: #888; }");
+	for (int i = 0; i < 3; ++i) {
+		roomTabButtons[i] = new QPushButton(PlatformLabel(Platform(i)), roomPanel);
+		roomTabButtons[i]->setIcon(PlatformIcon(Platform(i)));
+		roomTabButtons[i]->setCheckable(true);
+		roomTabButtons[i]->setFlat(true);
+		roomTabButtons[i]->setCursor(Qt::PointingHandCursor);
+		roomTabButtons[i]->setStyleSheet(tabStyle);
+		roomTabButtons[i]->setVisible(false);
+		group->addButton(roomTabButtons[i], i);
+		switchRow->addWidget(roomTabButtons[i]);
+	}
+	switchRow->addStretch(1);
+	layout->addLayout(switchRow);
+	connect(group, &QButtonGroup::idClicked, this, [this](int id) {
+		if (!roomStack || id < 0 || id > 2)
+			return;
+		roomStack->setCurrentIndex(id);
+		if (id == int(Twitch))
+			LoadTwitchRoom();
+	});
+
+	roomStack = new QStackedWidget(roomPanel);
+	roomStack->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+	layout->addWidget(roomStack);
+
+	auto *twitchPage = new QWidget;
 	auto *twitchLayout = new QVBoxLayout(twitchPage);
 	twitchLayout->setContentsMargins(8, 8, 8, 8);
 	twitchLayout->setSpacing(6);
@@ -1272,19 +1308,27 @@ void ChatDock::BuildRoomPanel(QVBoxLayout *root)
 	twitchLayout->addWidget(clearChat);
 	roomPages[Twitch] = twitchPage;
 
-	auto *kickPage = new QWidget(roomTabs);
+	auto *youtubePage = new QWidget;
+	auto *youtubeLayout = new QVBoxLayout(youtubePage);
+	youtubeLayout->setContentsMargins(0, 0, 0, 0);
+	auto *youtubeNote = new QLabel(Tr("ChatRoomYouTubeUnavailable"), youtubePage);
+	youtubeNote->setWordWrap(true);
+	youtubeNote->setStyleSheet(QStringLiteral("color: #c8c8c8;"));
+	youtubeLayout->addWidget(youtubeNote);
+	roomPages[YouTube] = youtubePage;
+
+	auto *kickPage = new QWidget;
 	auto *kickLayout = new QVBoxLayout(kickPage);
+	kickLayout->setContentsMargins(0, 0, 0, 0);
 	auto *kickNote = new QLabel(Tr("ChatRoomKickUnavailable"), kickPage);
 	kickNote->setWordWrap(true);
+	kickNote->setStyleSheet(QStringLiteral("color: #c8c8c8;"));
 	kickLayout->addWidget(kickNote);
 	roomPages[Kick] = kickPage;
 
-	auto *youtubePage = new QWidget(roomTabs);
-	auto *youtubeLayout = new QVBoxLayout(youtubePage);
-	auto *youtubeNote = new QLabel(Tr("ChatRoomYouTubeUnavailable"), youtubePage);
-	youtubeNote->setWordWrap(true);
-	youtubeLayout->addWidget(youtubeNote);
-	roomPages[YouTube] = youtubePage;
+	roomStack->addWidget(roomPages[Twitch]);
+	roomStack->addWidget(roomPages[YouTube]);
+	roomStack->addWidget(roomPages[Kick]);
 
 	const auto queuePatch = [this] {
 		if (!roomSyncing)
@@ -1302,22 +1346,29 @@ void ChatDock::BuildRoomPanel(QVBoxLayout *root)
 
 void ChatDock::RefreshRoomTabs()
 {
-	if (!roomTabs || !roomButton)
+	if (!roomStack || !roomButton)
 		return;
+	int first = -1;
 	for (int i = 0; i < 3; ++i) {
-		const bool linked = !accounts[i].accessToken.isEmpty();
-		const int index = roomTabs->indexOf(roomPages[i]);
-		if (linked && index < 0)
-			roomTabs->addTab(roomPages[i], PlatformIcon(Platform(i)), PlatformLabel(Platform(i)));
-		else if (!linked && index >= 0)
-			roomTabs->removeTab(index);
+		const bool show = availablePlatforms.contains(i);
+		if (roomTabButtons[i])
+			roomTabButtons[i]->setVisible(show);
+		if (show && first < 0)
+			first = i;
 	}
-	const bool any = roomTabs->count() > 0;
-	roomButton->setVisible(any);
-	if (!any) {
+	if (first < 0) {
+		roomButton->setVisible(false);
 		roomButton->setChecked(false);
-		roomPanel->setVisible(false);
+		if (roomPanel)
+			roomPanel->setVisible(false);
+		return;
 	}
+	roomButton->setVisible(true);
+	const int current = roomStack->currentIndex();
+	const int next = availablePlatforms.contains(current) ? current : first;
+	roomStack->setCurrentIndex(next);
+	if (roomTabButtons[next])
+		roomTabButtons[next]->setChecked(true);
 }
 
 void ChatDock::LoadTwitchRoom()
