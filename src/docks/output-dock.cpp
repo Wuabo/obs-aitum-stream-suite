@@ -892,6 +892,74 @@ bool OutputDock::StartCanvasRecord(const QString &filenameOverride)
 		return false;
 	}
 
+	if (OutputWidget::UsesSimpleLosslessRecording()) {
+		config_t *config = obs_frontend_get_profile_config();
+		const char *mode = config ? config_get_string(config, "Output", "Mode") : nullptr;
+		const bool advanced = mode && strcmp(mode, "Advanced") == 0;
+		const char *dir = config ? config_get_string(config, advanced ? "AdvOut" : "SimpleOutput",
+							     advanced ? "RecFilePath" : "FilePath")
+					 : nullptr;
+		const char *filenameFormat = config ? config_get_string(config, "Output", "FilenameFormatting") : nullptr;
+		std::string pattern;
+		if (!filenameOverride.isEmpty()) {
+			pattern = filenameOverride.toStdString();
+		} else {
+			pattern = (filenameFormat && filenameFormat[0]) ? filenameFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
+			pattern += " ";
+			for (const char *c = canvasName; *c; c++) {
+				const char ch = *c;
+				if (ch == '<' || ch == '>' || ch == ':' || ch == '"' || ch == '/' || ch == '\\' || ch == '|' ||
+				    ch == '?' || ch == '*') {
+					continue;
+				}
+				pattern.push_back(ch);
+			}
+		}
+		char *filename = os_generate_formatted_filename("avi", true, pattern.c_str());
+		char path[512];
+		if (dir && dir[0]) {
+			snprintf(path, sizeof(path), "%s/%s", dir, filename ? filename : "recording.avi");
+			size_t cut = 0;
+			bool foundSep = false;
+			for (size_t i = 0; path[i]; i++) {
+				if (path[i] == '/' || path[i] == '\\') {
+					cut = i;
+					foundSep = true;
+				}
+			}
+			if (foundSep) {
+				const char saved = path[cut];
+				path[cut] = 0;
+				os_mkdirs(path);
+				path[cut] = saved;
+			}
+		} else {
+			snprintf(path, sizeof(path), "%s", filename ? filename : "recording.avi");
+		}
+		bfree(filename);
+		obs_output_t *output =
+			OutputWidget::CreateSimpleLosslessOutput("Aitum Stream Suite Builtin Record", video, path);
+		obs_canvas_release(canvas);
+		if (!output)
+			return false;
+		if (!obs_output_start(output)) {
+			const char *error = obs_output_get_last_error(output);
+			blog(LOG_WARNING, "[Aitum Stream Suite] canvas recording failed to start%s%s", error ? ": " : "",
+			     error ? error : "");
+			obs_output_release(output);
+			QMessageBox::warning(this, QString::fromUtf8(obs_frontend_get_locale_string("Output.StartRecordingFailed")),
+					     error && error[0] ? QString::fromUtf8(error)
+							       : QString::fromUtf8(obs_frontend_get_locale_string(
+									 "Output.StartFailedGeneric")));
+			return false;
+		}
+		canvasRecordOutput = output;
+		mainRecordStartTime = QDateTime::currentDateTime();
+		SetTimerText(mainRecordTimerLabel, true, mainRecordStartTime);
+		blog(LOG_INFO, "[Aitum Stream Suite] recording canvas '%s' to %s", canvasName, path);
+		return true;
+	}
+
 	std::string vencName = "Aitum Stream Suite Builtin Record ";
 	vencName += canvasName;
 	obs_encoder_t *venc = OutputWidget::CreateObsDefaultVideoEncoder(vencName.c_str(), video, true);

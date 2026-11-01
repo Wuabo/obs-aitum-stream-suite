@@ -17,12 +17,14 @@
 #include <util/platform.h>
 
 #include <cmath>
+#include <vector>
 
 extern obs_data_t *current_profile_config;
 extern bool isTwitchServer(QString outputServer);
 extern ChatDock *chat_dock;
 
 static obs_output_t *ActiveFrontendOutput(bool is_record);
+static void AppendDefaultVodTrack(std::vector<obs_encoder_t *> &aencs, obs_data_t *settings, const char *name);
 
 OutputWidget::OutputWidget(obs_data_t *output_data, QWidget *parent) : QFrame(parent), settings(output_data)
 {
@@ -554,6 +556,75 @@ bool OutputWidget::StartOutput(bool automated)
 
 	bool is_record = (strcmp(output_type, "record") == 0);
 	auto advanced = obs_data_get_bool(settings, "advanced");
+	const char *namedEncoder = advanced ? obs_data_get_string(settings, "video_encoder") : nullptr;
+	/* A named custom encoder overrides OBS. An empty one follows Settings → Output, including Lossless. */
+	if (is_record && UsesSimpleLosslessRecording() && !(namedEncoder && namedEncoder[0])) {
+		const char *canvas_name = obs_data_get_string(settings, "canvas");
+		obs_canvas_t *canvas = (!canvas_name || canvas_name[0] == '\0') ? obs_get_main_canvas()
+										 : obs_get_canvas_by_name(canvas_name);
+		if (!canvas) {
+			if (!automated) {
+				QMessageBox::warning(this, QString::fromUtf8(obs_module_text("CanvasNotFound")),
+						     QString::fromUtf8(obs_module_text("CanvasNotFound")));
+			}
+			return false;
+		}
+		video_t *video = obs_canvas_get_video(canvas);
+		if (!video) {
+			obs_canvas_release(canvas);
+			return false;
+		}
+		config_t *profile = obs_frontend_get_profile_config();
+		std::string filenameFormat;
+		if (!pendingFilenameOverride.isEmpty()) {
+			filenameFormat = pendingFilenameOverride.toStdString();
+		} else {
+			const char *obsFormat = profile ? config_get_string(profile, "Output", "FilenameFormatting") : nullptr;
+			filenameFormat = (obsFormat && obsFormat[0]) ? obsFormat : "%CCYY-%MM-%DD %hh-%mm-%ss";
+			filenameFormat += " ";
+			QString safeName = QString::fromUtf8(name);
+#ifdef _WIN32
+			safeName.replace(QRegularExpression("[<>:\"\\|\\?\\*]"), "");
+#endif
+			filenameFormat += safeName.toStdString();
+		}
+		char *filename = os_generate_formatted_filename("avi", true, filenameFormat.c_str());
+		auto dir = obs_data_get_string(settings, "path");
+		char path[512];
+		if (dir && dir[0] != '\0') {
+			snprintf(path, 512, "%s/%s", dir, filename ? filename : "recording.avi");
+			ensure_directory(path);
+		} else {
+			snprintf(path, 512, "%s", filename ? filename : "recording.avi");
+		}
+		bfree(filename);
+		std::string output_name = "Aitum Stream Suite Output ";
+		output_name += name;
+		output = CreateSimpleLosslessOutput(output_name.c_str(), video, path);
+		obs_canvas_release(canvas);
+		if (!output)
+			return false;
+		signal_handler_t *signal = obs_output_get_signal_handler(output);
+		signal_handler_disconnect(signal, "start", output_start, this);
+		signal_handler_disconnect(signal, "stop", output_stop, this);
+		signal_handler_connect(signal, "start", output_start, this);
+		signal_handler_connect(signal, "stop", output_stop, this);
+		if (!obs_output_start(output)) {
+			const char *error = obs_output_get_last_error(output);
+			blog(LOG_WARNING, "[Aitum Stream Suite] lossless recording failed to start%s%s", error ? ": " : "",
+			     error ? error : "");
+			obs_output_release(output);
+			output = nullptr;
+			return false;
+		}
+		if (vendor) {
+			const auto d = obs_data_create();
+			obs_data_set_string(d, "output", name);
+			obs_websocket_vendor_emit_event(vendor, "start_output", d);
+			obs_data_release(d);
+		}
+		return true;
+	}
 	auto video_encoders = obs_data_get_array(settings, "video_encoders");
 	auto video_encoders_count = obs_data_array_count(video_encoders);
 	if (video_encoders_count == 0) {
@@ -729,6 +800,8 @@ bool OutputWidget::StartOutput(bool automated)
 					aencs.push_back(aenc);
 			}
 		}
+		if (!is_record)
+			AppendDefaultVodTrack(aencs, settings, name);
 	}
 
 	if (vencs.empty()) {
@@ -1111,6 +1184,204 @@ static void ApplyObsStreamServiceSettings(config_t *config, obs_data_t *video, o
 	}
 }
 
+static enum obs_scale_type VideoScaleFilter(config_t *config)
+{
+	const char *scaleType = config ? config_get_string(config, "Video", "ScaleType") : nullptr;
+	const QString filter = QString::fromUtf8(scaleType ? scaleType : "");
+	if (filter.compare(QLatin1String("bilinear"), Qt::CaseInsensitive) == 0)
+		return OBS_SCALE_BILINEAR;
+	if (filter.compare(QLatin1String("lanczos"), Qt::CaseInsensitive) == 0)
+		return OBS_SCALE_LANCZOS;
+	if (filter.compare(QLatin1String("area"), Qt::CaseInsensitive) == 0)
+		return OBS_SCALE_AREA;
+	if (filter.compare(QLatin1String("point"), Qt::CaseInsensitive) == 0)
+		return OBS_SCALE_POINT;
+	return OBS_SCALE_BICUBIC;
+}
+
+struct OutputScale {
+	uint32_t width = 0;
+	uint32_t height = 0;
+	enum obs_scale_type filter = OBS_SCALE_BICUBIC;
+	bool active = false;
+};
+
+/* Same ratio OBS uses: Settings → Video (base → output), then the advanced encoder rescale. */
+static OutputScale ScaleForVideo(video_t *video, bool recording)
+{
+	OutputScale result;
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config || !video)
+		return result;
+	const uint32_t baseCX = (uint32_t)config_get_uint(config, "Video", "BaseCX");
+	const uint32_t baseCY = (uint32_t)config_get_uint(config, "Video", "BaseCY");
+	const uint32_t outCX = (uint32_t)config_get_uint(config, "Video", "OutputCX");
+	const uint32_t outCY = (uint32_t)config_get_uint(config, "Video", "OutputCY");
+	const uint32_t srcW = video_output_get_width(video);
+	const uint32_t srcH = video_output_get_height(video);
+	if (!baseCX || !baseCY || !outCX || !outCY || !srcW || !srcH)
+		return result;
+
+	double scaleX = 1.0;
+	double scaleY = 1.0;
+	/* The main video is already at the output size. Another canvas is still at its own size. */
+	if (video != obs_get_video()) {
+		scaleX = (double)outCX / (double)baseCX;
+		scaleY = (double)outCY / (double)baseCY;
+	}
+	result.filter = VideoScaleFilter(config);
+
+	const char *mode = config_get_string(config, "Output", "Mode");
+	if (mode && strcmp(mode, "Advanced") == 0) {
+		const char *recordId = recording ? config_get_string(config, "AdvOut", "RecEncoder") : nullptr;
+		const bool useStream = !recording || !recordId || !recordId[0] || strcmp(recordId, "none") == 0;
+		const char *rescaleRes = config_get_string(config, "AdvOut", useStream ? "RescaleRes" : "RecRescaleRes");
+		const int filter = (int)config_get_int(config, "AdvOut", useStream ? "RescaleFilter" : "RecRescaleFilter");
+		unsigned cx = 0;
+		unsigned cy = 0;
+		if (filter != OBS_SCALE_DISABLE && rescaleRes && rescaleRes[0] &&
+		    sscanf(rescaleRes, "%ux%u", &cx, &cy) == 2 && cx && cy) {
+			scaleX *= (double)cx / (double)outCX;
+			scaleY *= (double)cy / (double)outCY;
+			result.filter = (enum obs_scale_type)filter;
+		}
+	}
+
+	uint32_t dstW = (uint32_t)(srcW * scaleX + 0.5);
+	uint32_t dstH = (uint32_t)(srcH * scaleY + 0.5);
+	dstW &= ~1u;
+	dstH &= ~1u;
+	if (dstW < 2)
+		dstW = 2;
+	if (dstH < 2)
+		dstH = 2;
+	if (dstW == srcW && dstH == srcH)
+		return result;
+	result.width = dstW;
+	result.height = dstH;
+	result.active = true;
+	return result;
+}
+
+static void ApplyOutputScale(obs_encoder_t *encoder, video_t *video, bool recording)
+{
+	const OutputScale scale = ScaleForVideo(video, recording);
+	if (!encoder || !scale.active)
+		return;
+	obs_encoder_set_scaled_size(encoder, scale.width, scale.height);
+	const enum obs_scale_type filter = scale.filter == OBS_SCALE_DISABLE ? OBS_SCALE_BICUBIC : scale.filter;
+	obs_encoder_set_gpu_scale_type(encoder, filter);
+}
+
+static int ClosestListedBitrate(const char *id, int bitrate)
+{
+	if (!id || !id[0] || bitrate <= 0)
+		return bitrate;
+	obs_properties_t *props = obs_get_encoder_properties(id);
+	obs_property_t *prop = props ? obs_properties_get(props, "bitrate") : nullptr;
+	if (!prop) {
+		obs_properties_destroy(props);
+		return bitrate;
+	}
+	if (obs_property_get_type(prop) == OBS_PROPERTY_INT) {
+		const int minValue = obs_property_int_min(prop);
+		const int maxValue = obs_property_int_max(prop);
+		int step = obs_property_int_step(prop);
+		if (step < 1)
+			step = 1;
+		int snapped = bitrate;
+		if (snapped < minValue)
+			snapped = minValue;
+		else if (snapped > maxValue)
+			snapped = maxValue;
+		else if (step > 1)
+			snapped = minValue + ((snapped - minValue + step / 2) / step) * step;
+		if (snapped > maxValue)
+			snapped = maxValue;
+		obs_properties_destroy(props);
+		return snapped;
+	}
+	if (obs_property_get_type(prop) != OBS_PROPERTY_LIST) {
+		obs_properties_destroy(props);
+		return bitrate;
+	}
+	int prev = 0;
+	int next = 10000;
+	const size_t count = obs_property_list_item_count(prop);
+	for (size_t i = 0; i < count; i++) {
+		if (obs_property_list_item_disabled(prop, i))
+			continue;
+		const int value = (int)obs_property_list_item_int(prop, i);
+		if (value == bitrate) {
+			obs_properties_destroy(props);
+			return bitrate;
+		}
+		if (value > bitrate && value < next)
+			next = value;
+		if (value < bitrate && value > prev)
+			prev = value;
+	}
+	obs_properties_destroy(props);
+	if (next != 10000)
+		return next;
+	if (prev != 0)
+		return prev;
+	return bitrate;
+}
+
+/* Mixer index for the Twitch VOD track, or -1 when OBS would not send one. */
+static int VodMixerIndex(const QString &server)
+{
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config)
+		return -1;
+	if (server.startsWith(QLatin1String("srt://"), Qt::CaseInsensitive) ||
+	    server.startsWith(QLatin1String("rist://"), Qt::CaseInsensitive))
+		return -1;
+	const bool twitch = isTwitchServer(server);
+	const bool custom = config_get_bool(obs_frontend_get_user_config(), "General", "EnableCustomServerVodTrack");
+	if (!twitch && !custom)
+		return -1;
+	const char *mode = config_get_string(config, "Output", "Mode");
+	if (mode && strcmp(mode, "Advanced") == 0) {
+		if (!config_get_bool(config, "AdvOut", "VodTrackEnabled"))
+			return -1;
+		const int streamTrack = (int)config_get_int(config, "AdvOut", "TrackIndex");
+		const int vodTrack = (int)config_get_int(config, "AdvOut", "VodTrackIndex");
+		if (vodTrack < 1 || vodTrack > 6 || vodTrack == streamTrack)
+			return -1;
+		return vodTrack - 1;
+	}
+	if (!config_get_bool(config, "SimpleOutput", "UseAdvanced") ||
+	    !config_get_bool(config, "SimpleOutput", "VodTrackEnabled"))
+		return -1;
+	return 1;
+}
+
+static void AppendDefaultVodTrack(std::vector<obs_encoder_t *> &aencs, obs_data_t *settings, const char *name)
+{
+	if (!settings || aencs.empty() || aencs.size() > 1)
+		return;
+	QString server = QString::fromUtf8(obs_data_get_string(settings, "stream_server"));
+	if (server.isEmpty())
+		server = QString::fromUtf8(obs_data_get_string(settings, "server"));
+	const int mix = VodMixerIndex(server);
+	if (mix < 0)
+		return;
+	obs_output_t *main = TakeIfActive(obs_frontend_get_streaming_output());
+	obs_encoder_t *archive = main ? obs_output_get_audio_encoder(main, 1) : nullptr;
+	if (archive)
+		obs_encoder_get_ref(archive);
+	obs_output_release(main);
+	if (!archive) {
+		std::string audioName = "Aitum Stream Suite VOD Audio ";
+		audioName += name ? name : "";
+		archive = OutputWidget::CreateObsDefaultAudioEncoder(audioName.c_str(), (size_t)mix, false, mix);
+	}
+	if (archive)
+		aencs.push_back(archive);
+}
+
 /* Copy the encoder OBS is already using, including the service caps it already applied. */
 static obs_encoder_t *CloneActiveObsVideoEncoder(const char *name, video_t *video, bool recording)
 {
@@ -1143,6 +1414,7 @@ static obs_encoder_t *CloneActiveObsVideoEncoder(const char *name, video_t *vide
 		return nullptr;
 	obs_encoder_set_video(encoder, video);
 	ApplyCanvasVideoFormat(encoder, video);
+	ApplyOutputScale(encoder, video, recording);
 	blog(LOG_INFO, "[Aitum Stream Suite] video encoder %s copied from the active OBS %s encoder", encoderId.c_str(),
 	     recording ? "recording" : "stream");
 	return encoder;
@@ -1151,6 +1423,9 @@ static obs_encoder_t *CloneActiveObsVideoEncoder(const char *name, video_t *vide
 obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, video_t *video, bool recording)
 {
 	if (!name || !name[0] || !video)
+		return nullptr;
+	/* Lossless is an ffmpeg_output (utvideo), not a video encoder. */
+	if (recording && UsesSimpleLosslessRecording())
 		return nullptr;
 
 	if (obs_encoder_t *cloned = CloneActiveObsVideoEncoder(name, video, recording))
@@ -1182,8 +1457,7 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 		applyService = useStream;
 	} else if (config) {
 		const char *quality = recording ? config_get_string(config, "SimpleOutput", "RecQuality") : nullptr;
-		const bool useStream = !recording || !quality || !quality[0] || strcmp(quality, "Stream") == 0 ||
-				       strcmp(quality, "Lossless") == 0;
+		const bool useStream = !recording || !quality || !quality[0] || strcmp(quality, "Stream") == 0;
 		const char *simple = config_get_string(config, "SimpleOutput", useStream ? "StreamEncoder" : "RecEncoder");
 		encoderId = SimpleVideoEncoderId(simple);
 		if (useStream) {
@@ -1258,6 +1532,7 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 	if (applyService)
 		ApplyObsStreamServiceSettings(config, settings, nullptr, advanced);
 
+	const char *wantedId = encoderId;
 	obs_encoder_t *encoder = obs_video_encoder_create(encoderId, name, settings, nullptr);
 	if (!encoder) {
 		const int bitrate = (int)obs_data_get_int(settings, "bitrate");
@@ -1266,6 +1541,12 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 		obs_data_set_int(fallback, "bitrate", bitrate > 0 ? bitrate : 2500);
 		encoder = obs_video_encoder_create("obs_x264", name, fallback, nullptr);
 		obs_data_release(fallback);
+		if (encoder && strcmp(wantedId, "obs_x264") != 0) {
+			blog(LOG_WARNING, "[Aitum Stream Suite] encoder %s unavailable, using obs_x264", wantedId);
+			QWidget *parent = static_cast<QWidget *>(obs_frontend_get_main_window());
+			QMessageBox::warning(parent, QString::fromUtf8(obs_module_text("EncoderFallbackTitle")),
+					     QString::fromUtf8(obs_module_text("EncoderFallback")).arg(QString::fromUtf8(wantedId)));
+		}
 		encoderId = "obs_x264";
 	}
 	obs_data_release(settings);
@@ -1274,6 +1555,7 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 
 	obs_encoder_set_video(encoder, video);
 	ApplyCanvasVideoFormat(encoder, video);
+	ApplyOutputScale(encoder, video, recording);
 	if (simpleQsvRecording && EncoderSupportsRateControl(encoder, "ICQ")) {
 		obs_data_t *icq = obs_data_create();
 		obs_data_set_string(icq, "rate_control", "ICQ");
@@ -1286,10 +1568,13 @@ obs_encoder_t *OutputWidget::CreateObsDefaultVideoEncoder(const char *name, vide
 	return encoder;
 }
 
-obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size_t mix, bool recording)
+obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size_t mix, bool recording,
+									 int lockedMix)
 {
 	if (!name || !name[0])
 		return nullptr;
+	if (lockedMix >= 0)
+		mix = (size_t)lockedMix;
 
 	config_t *config = obs_frontend_get_profile_config();
 	const char *mode = config ? config_get_string(config, "Output", "Mode") : nullptr;
@@ -1308,7 +1593,7 @@ obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size
 		static const char *tracks[] = {"Track1Bitrate", "Track2Bitrate", "Track3Bitrate",
 						"Track4Bitrate", "Track5Bitrate", "Track6Bitrate"};
 		size_t index = mix < 6 ? mix : 0;
-		if (!recording) {
+		if (!recording && lockedMix < 0) {
 			const int track = (int)config_get_int(config, "AdvOut", "TrackIndex");
 			if (track >= 1 && track <= 6)
 				index = (size_t)(track - 1);
@@ -1353,7 +1638,7 @@ obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size
 	auto create = [&](const char *id) {
 		obs_data_t *audioSettings = obs_data_create();
 		obs_data_set_string(audioSettings, "rate_control", "CBR");
-		obs_data_set_int(audioSettings, "bitrate", bitrate);
+		obs_data_set_int(audioSettings, "bitrate", ClosestListedBitrate(id, bitrate));
 		if (applyService)
 			ApplyObsStreamServiceSettings(config, nullptr, audioSettings, advanced);
 		obs_encoder_t *created = obs_audio_encoder_create(id, name, audioSettings, mix, nullptr);
@@ -1367,6 +1652,50 @@ obs_encoder_t *OutputWidget::CreateObsDefaultAudioEncoder(const char *name, size
 	if (encoder)
 		obs_encoder_set_audio(encoder, obs_get_audio());
 	return encoder;
+}
+
+bool OutputWidget::UsesSimpleLosslessRecording()
+{
+	config_t *config = obs_frontend_get_profile_config();
+	if (!config)
+		return false;
+	const char *mode = config_get_string(config, "Output", "Mode");
+	if (mode && strcmp(mode, "Advanced") == 0)
+		return false;
+	const char *quality = config_get_string(config, "SimpleOutput", "RecQuality");
+	return quality && strcmp(quality, "Lossless") == 0;
+}
+
+obs_output_t *OutputWidget::CreateSimpleLosslessOutput(const char *name, video_t *video, const char *path)
+{
+	if (!name || !name[0] || !video || !path || !path[0])
+		return nullptr;
+	obs_output_t *file = obs_output_create("ffmpeg_output", name, nullptr, nullptr);
+	if (!file)
+		return nullptr;
+	config_t *config = obs_frontend_get_profile_config();
+	int tracks = config ? (int)config_get_int(config, "SimpleOutput", "RecTracks") : 1;
+	if (tracks <= 0)
+		tracks = 1;
+	obs_data_t *fileSettings = obs_data_create();
+	obs_data_set_string(fileSettings, "url", path);
+	obs_data_set_string(fileSettings, "format_name", "avi");
+	obs_data_set_string(fileSettings, "video_encoder", "utvideo");
+	obs_data_set_string(fileSettings, "audio_encoder", "pcm_s16le");
+	const char *mux = config ? config_get_string(config, "SimpleOutput", "MuxerCustom") : nullptr;
+	if (mux && mux[0])
+		obs_data_set_string(fileSettings, "muxer_settings", mux);
+	const OutputScale scale = ScaleForVideo(video, true);
+	if (scale.active) {
+		obs_data_set_int(fileSettings, "scale_width", scale.width);
+		obs_data_set_int(fileSettings, "scale_height", scale.height);
+	}
+	obs_output_set_media(file, video, obs_get_audio());
+	obs_output_set_mixers(file, (size_t)tracks);
+	obs_output_update(file, fileSettings);
+	obs_data_release(fileSettings);
+	blog(LOG_INFO, "[Aitum Stream Suite] lossless recording %s (utvideo) to %s", name, path);
+	return file;
 }
 
 obs_encoder_t *OutputWidget::GetVideoEncoder(obs_data_t *settings, bool advanced, bool is_record, const char *output_name,

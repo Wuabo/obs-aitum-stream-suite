@@ -54,9 +54,13 @@ public:
 
 	obs_output_t *GetOutput() const { return output; }
 
-	/* New encoder using the type and settings from OBS Settings → Output. */
+	/* New encoder using the type and settings from OBS Settings → Output.
+	 * lockedMix >= 0 keeps that mixer (Twitch VOD track). -1 uses the OBS stream/record track. */
 	static obs_encoder_t *CreateObsDefaultVideoEncoder(const char *name, video_t *video, bool recording);
-	static obs_encoder_t *CreateObsDefaultAudioEncoder(const char *name, size_t mix, bool recording);
+	static obs_encoder_t *CreateObsDefaultAudioEncoder(const char *name, size_t mix, bool recording,
+							    int lockedMix = -1);
+	static bool UsesSimpleLosslessRecording();
+	static obs_output_t *CreateSimpleLosslessOutput(const char *name, video_t *video, const char *path);
 
 	void CheckActive();
 	void UpdateStats();
