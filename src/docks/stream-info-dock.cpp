@@ -2,6 +2,7 @@
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <src/utils/profile-secret.hpp>
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
@@ -646,7 +647,8 @@ static void ReadCredential(const char *key, QString &clientId, QString &clientSe
 	obs_data_t *one = root ? obs_data_get_obj(root, key) : nullptr;
 	if (one) {
 		clientId = QString::fromUtf8(obs_data_get_string(one, "client_id"));
-		clientSecret = QString::fromUtf8(obs_data_get_string(one, "client_secret"));
+		UpgradeProfileSecret(one, "client_secret");
+		clientSecret = RevealProfileSecret(obs_data_get_string(one, "client_secret"));
 	}
 	obs_data_release(one);
 	obs_data_release(root);
@@ -663,7 +665,7 @@ static void WriteCredential(const char *key, const QString &clientId, const QStr
 	if (!one)
 		one = obs_data_create();
 	obs_data_set_string(one, "client_id", clientId.toUtf8().constData());
-	obs_data_set_string(one, "client_secret", clientSecret.toUtf8().constData());
+	StoreProfileSecret(one, "client_secret", clientSecret);
 	if (idChanged) {
 		obs_data_erase(one, "access_token");
 		obs_data_erase(one, "refresh_token");
@@ -810,11 +812,14 @@ void StreamInfoDock::LoadPlatform()
 		return;
 	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
 	obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(platform)) : nullptr;
+	bool migrated = false;
 	if (one) {
 		clientId = QString::fromUtf8(obs_data_get_string(one, "client_id"));
-		clientSecret = QString::fromUtf8(obs_data_get_string(one, "client_secret"));
-		accessToken = QString::fromUtf8(obs_data_get_string(one, "access_token"));
-		refreshToken = QString::fromUtf8(obs_data_get_string(one, "refresh_token"));
+		migrated = UpgradeProfileSecret(one, "client_secret") | UpgradeProfileSecret(one, "access_token") |
+			   UpgradeProfileSecret(one, "refresh_token");
+		clientSecret = RevealProfileSecret(obs_data_get_string(one, "client_secret"));
+		accessToken = RevealProfileSecret(obs_data_get_string(one, "access_token"));
+		refreshToken = RevealProfileSecret(obs_data_get_string(one, "refresh_token"));
 		expiresAt = obs_data_get_int(one, "expires_at");
 		userId = QString::fromUtf8(obs_data_get_string(one, "user_id"));
 		userName = QString::fromUtf8(obs_data_get_string(one, "user_name"));
@@ -827,6 +832,8 @@ void StreamInfoDock::LoadPlatform()
 	}
 	obs_data_release(one);
 	obs_data_release(root);
+	if (migrated)
+		save_current_profile_config(false);
 	SetConnected(!accessToken.isEmpty());
 }
 
@@ -841,9 +848,9 @@ void StreamInfoDock::SavePlatform()
 	if (!one)
 		one = obs_data_create();
 	obs_data_set_string(one, "client_id", clientId.toUtf8().constData());
-	obs_data_set_string(one, "client_secret", clientSecret.toUtf8().constData());
-	obs_data_set_string(one, "access_token", accessToken.toUtf8().constData());
-	obs_data_set_string(one, "refresh_token", refreshToken.toUtf8().constData());
+	StoreProfileSecret(one, "client_secret", clientSecret);
+	StoreProfileSecret(one, "access_token", accessToken);
+	StoreProfileSecret(one, "refresh_token", refreshToken);
 	obs_data_set_int(one, "expires_at", expiresAt);
 	obs_data_set_string(one, "user_id", userId.toUtf8().constData());
 	obs_data_set_string(one, "user_name", userName.toUtf8().constData());
@@ -1324,7 +1331,7 @@ void StreamInfoDock::RefreshYouTubeForChat()
 		return;
 	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
 	obs_data_t *one = root ? obs_data_get_obj(root, "youtube") : nullptr;
-	const QString token = one ? QString::fromUtf8(obs_data_get_string(one, "access_token")) : QString();
+	const QString token = one ? RevealProfileSecret(obs_data_get_string(one, "access_token")) : QString();
 	obs_data_release(one);
 	obs_data_release(root);
 	if (token.isEmpty())

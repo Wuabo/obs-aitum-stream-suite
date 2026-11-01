@@ -23,6 +23,9 @@ else()
   target_link_libraries(${PROJECT_NAME} PRIVATE OBS::frontend-api)
 endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs)
+if(OS_WINDOWS)
+  target_link_libraries(${PROJECT_NAME} PRIVATE crypt32)
+endif()
 
 find_package(Qt6 COMPONENTS Widgets Core Network Svg)
 if(BUILD_OUT_OF_TREE)
@@ -80,7 +83,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/alerts-dock.cpp
   src/docks/alerts-dock.hpp
   src/docks/sources-dock.cpp
-  src/docks/sources-dock.hpp)
+  src/docks/sources-dock.hpp
+  src/utils/profile-secret.cpp
+  src/utils/profile-secret.hpp)
 
 target_sources(${PROJECT_NAME} PRIVATE
   src/dialogs/config-dialog.cpp

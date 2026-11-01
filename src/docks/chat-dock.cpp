@@ -2,6 +2,7 @@
 #include "alerts-dock.hpp"
 #include "stream-info-dock.hpp"
 #include <src/utils/icon.hpp>
+#include <src/utils/profile-secret.hpp>
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -458,6 +459,7 @@ QPixmap RenderEmojiPixmap(const QString &grapheme, int size)
 } // namespace
 
 extern obs_data_t *current_profile_config;
+void save_current_profile_config(bool save_docks);
 
 namespace {
 
@@ -1528,11 +1530,14 @@ void ChatDock::LoadAccount(Platform platform)
 		return;
 	obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
 	obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(platform)) : nullptr;
+	bool migrated = false;
 	if (one) {
 		acc.clientId = QString::fromUtf8(obs_data_get_string(one, "client_id"));
-		acc.clientSecret = QString::fromUtf8(obs_data_get_string(one, "client_secret"));
-		acc.accessToken = QString::fromUtf8(obs_data_get_string(one, "access_token"));
-		acc.refreshToken = QString::fromUtf8(obs_data_get_string(one, "refresh_token"));
+		migrated = UpgradeProfileSecret(one, "client_secret") | UpgradeProfileSecret(one, "access_token") |
+			   UpgradeProfileSecret(one, "refresh_token");
+		acc.clientSecret = RevealProfileSecret(obs_data_get_string(one, "client_secret"));
+		acc.accessToken = RevealProfileSecret(obs_data_get_string(one, "access_token"));
+		acc.refreshToken = RevealProfileSecret(obs_data_get_string(one, "refresh_token"));
 		acc.expiresAt = obs_data_get_int(one, "expires_at");
 		acc.userId = QString::fromUtf8(obs_data_get_string(one, "user_id"));
 		acc.userName = QString::fromUtf8(obs_data_get_string(one, "user_name"));
@@ -1548,6 +1553,8 @@ void ChatDock::LoadAccount(Platform platform)
 	}
 	obs_data_release(one);
 	obs_data_release(root);
+	if (migrated)
+		save_current_profile_config(false);
 }
 
 void ChatDock::EnsureToken(Platform platform, std::function<void(bool)> done)
@@ -1598,11 +1605,12 @@ void ChatDock::EnsureToken(Platform platform, std::function<void(bool)> done)
 			     obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
 			     obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(platform)) : nullptr;
 			     if (one) {
-				     obs_data_set_string(one, "access_token", acc.accessToken.toUtf8().constData());
-				     obs_data_set_string(one, "refresh_token", acc.refreshToken.toUtf8().constData());
+				     StoreProfileSecret(one, "access_token", acc.accessToken);
+				     StoreProfileSecret(one, "refresh_token", acc.refreshToken);
 				     obs_data_set_int(one, "expires_at", acc.expiresAt);
 				     obs_data_set_obj(root, PlatformKey(platform), one);
 				     obs_data_set_obj(current_profile_config, "stream_accounts", root);
+				     save_current_profile_config(false);
 			     }
 			     obs_data_release(one);
 			     obs_data_release(root);
@@ -3953,7 +3961,6 @@ void ChatDock::DeleteTwitchMessage(const QString &messageId)
 		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
 		     {}, "DELETE", [this, messageId](int status, const QByteArray &body, const QString &error) {
 			     if (status == 204 || (status >= 200 && status < 300)) {
-				     blog(LOG_INFO, "[Stream Suite] Twitch message deleted");
 				     MarkMessageDeleted(messageId, Tr("ChatDockMessageRemoved"));
 				     return;
 			     }
@@ -4061,7 +4068,6 @@ void ChatDock::ModerateTwitchUser(const QString &userId, const QString &login, c
 				     AppendSystemMessage(Tr("ChatDockActionFailed").arg(actionLabel, reason), Twitch);
 				     return;
 			     }
-			     blog(LOG_INFO, "[Stream Suite] Twitch moderation ok");
 			     const QString loginKey = login.toLower();
 			     if (unban) {
 				     twitchBannedUsers.remove(userId);
@@ -4118,7 +4124,6 @@ void ChatDock::DeleteKickMessage(const QString &messageId, const QString &uiId)
 		      {QByteArrayLiteral("Accept"), QByteArrayLiteral("application/json")}},
 		     {}, "DELETE", [this, uiId](int status, const QByteArray &body, const QString &error) {
 			     if (status == 204 || (status >= 200 && status < 300)) {
-				     blog(LOG_INFO, "[Stream Suite] Kick message deleted");
 				     MarkMessageDeleted(uiId, Tr("ChatDockMessageRemoved"));
 				     return;
 			     }
@@ -4171,7 +4176,6 @@ void ChatDock::ModerateKickUser(const QString &userId, const QString &displayNam
 			payload.insert(QStringLiteral("reason"), QStringLiteral("Ban"));
 		}
 		const QByteArray bodyBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-		blog(LOG_INFO, "[Stream Suite] Kick moderation %s %s", unban ? "DELETE" : "POST", bodyBytes.constData());
 		Http(QStringLiteral("https://api.kick.com/public/v1/moderation/bans"),
 		     {{QByteArrayLiteral("Authorization"),
 		       QByteArrayLiteral("Bearer ") + accounts[Kick].accessToken.toUtf8()},
@@ -4196,7 +4200,6 @@ void ChatDock::ModerateKickUser(const QString &userId, const QString &displayNam
 							 Kick);
 				     return;
 			     }
-			     blog(LOG_INFO, "[Stream Suite] Kick moderation ok for %s", userId.toUtf8().constData());
 			     const QString loginKey = matchLogin.toLower();
 			     if (unban) {
 				     kickBannedUsers.remove(userId);
@@ -5401,7 +5404,6 @@ void ChatDock::BindTwitchSentMessage(const QString &nonce, const QString &realId
 	AddChatIdAlias(item, realId);
 	seenMessageIds.insert(realId);
 	item->setData(Qt::UserRole + 7, false);
-	blog(LOG_INFO, "[Stream Suite] Twitch sent message id bound");
 	if (twitchPendingDeletes.remove(localId) || (!nonce.isEmpty() && twitchPendingDeletes.remove(nonce)))
 		DeleteTwitchMessage(realId);
 }

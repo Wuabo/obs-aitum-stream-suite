@@ -7,6 +7,7 @@
 #include "stream-info-dock.hpp"
 
 #include <obs-module.h>
+#include <src/utils/profile-secret.hpp>
 #include <util/config-file.h>
 
 #include <QAbstractItemView>
@@ -337,9 +338,14 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 			"QPushButton:checked { color: #f4f4f5; background: #242424; font-weight: 700; }"));
 		filters->addButton(button, id);
 		bar->addWidget(button);
-		if (id == 3)
+		if ((platformFilter < 0 && id == 3) || id == platformFilter)
 			button->setChecked(true);
 	};
+	if (current_profile_config && obs_data_has_user_value(current_profile_config, "activity_filter")) {
+		const int saved = (int)obs_data_get_int(current_profile_config, "activity_filter");
+		if (saved >= -1 && saved <= 2)
+			platformFilter = saved;
+	}
 	addFilter(3, Tr("ActivityFilterAll"), QString());
 	addFilter(0, QStringLiteral("Twitch"), PlatformIconPath(0));
 	addFilter(1, QStringLiteral("YouTube"), PlatformIconPath(1));
@@ -356,6 +362,10 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 	layout->addLayout(bar);
 	connect(filters, &QButtonGroup::idClicked, this, [this](int id) {
 		platformFilter = id == 3 ? -1 : id;
+		if (current_profile_config) {
+			obs_data_set_int(current_profile_config, "activity_filter", platformFilter);
+			save_current_profile_config(false);
+		}
 		RebuildVisible();
 	});
 	connect(clear, &QPushButton::clicked, this, &AlertsDock::ClearHistory);
@@ -402,7 +412,9 @@ void AlertsDock::LoadTwitchAccount()
 	obs_data_t *one = root ? obs_data_get_obj(root, "twitch") : nullptr;
 	if (one) {
 		clientId = QString::fromUtf8(obs_data_get_string(one, "client_id"));
-		accessToken = QString::fromUtf8(obs_data_get_string(one, "access_token"));
+		if (UpgradeProfileSecret(one, "access_token"))
+			save_current_profile_config(false);
+		accessToken = RevealProfileSecret(obs_data_get_string(one, "access_token"));
 		userId = QString::fromUtf8(obs_data_get_string(one, "user_id"));
 	}
 	obs_data_release(one);

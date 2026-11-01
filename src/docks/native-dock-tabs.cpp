@@ -1415,11 +1415,17 @@ static void restore_obs_dock_layout()
 		return;
 	}
 	restoring = true;
+	/* Paint once, after the docks are back in the saved places. */
+	main->setUpdatesEnabled(false);
 	RestoreMaximized keepMaximized(main);
-	const bool ok = main->restoreState(dockState);
+	const bool already = main->saveState() == dockState;
+	const bool ok = already || main->restoreState(dockState);
 	ensure_preview_docks_independent();
 	/* DockState may re-tabify Main Canvas ↔ Youtube — break that again. */
 	EnsurePreviewDocksNotTabbed();
+	if (keepMaximized.was && !main->isMaximized())
+		main->showMaximized();
+	main->setUpdatesEnabled(true);
 	restoring = false;
 	if (!ok) {
 		blog(LOG_WARNING, "[Stream Suite] restoreState(DockState) failed");
@@ -1445,10 +1451,15 @@ void schedule_restore_obs_dock_layout()
 			if (gen != generation) {
 				return;
 			}
+			auto *window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+			if (window)
+				window->setUpdatesEnabled(false);
 			if (!nativeTabsStopped) {
 				EnsurePreviewDocksNotTabbed();
 			}
 			FinishPreservedDockVisibility();
+			if (window)
+				window->setUpdatesEnabled(true);
 		});
 	});
 }

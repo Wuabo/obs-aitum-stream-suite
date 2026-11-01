@@ -9,7 +9,7 @@ Plugin para o OBS Studio. As docks ficam em **Docks**:
 
 O Client ID e o client secret não ficam na dock. No fundo da dock **Stream Info** há um botão de definições. Aí colas as credenciais. Os campos começam ocultos; o botão à direita mostra ou esconde o valor.
 
-O OBS grava isso no `aitum.json` do perfil atual, em `%APPDATA%\obs-studio\basic\profiles\<perfil>\aitum.json`. Não é preciso editar esse ficheiro à mão.
+O OBS grava isso no `aitum.json` do perfil atual, em `%APPDATA%\obs-studio\basic\profiles\<perfil>\aitum.json`. O client secret e os tokens ficam cifrados com a conta do Windows. Não é preciso editar esse ficheiro à mão.
 
 Redirect usado pelo plugin no YouTube e na Kick, exatamente assim:
 
