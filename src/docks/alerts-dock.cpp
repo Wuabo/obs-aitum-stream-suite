@@ -6,7 +6,9 @@
 #include "chat-dock.hpp"
 #include "stream-info-dock.hpp"
 
+#include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <src/utils/icon.hpp>
 #include <src/utils/profile-secret.hpp>
 #include <util/config-file.h>
 
@@ -27,7 +29,9 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QTimer>
+#include <cstring>
 #include <QVBoxLayout>
 
 #include <curl/curl.h>
@@ -314,53 +318,28 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 	layout->setContentsMargins(8, 8, 8, 8);
 	layout->setSpacing(6);
 
-	auto *bar = new QHBoxLayout;
-	bar->setContentsMargins(0, 0, 0, 0);
-	bar->setSpacing(2);
-	auto *filters = new QButtonGroup(this);
-	filters->setExclusive(true);
-	const auto addFilter = [&](int id, const QString &text, const QString &iconPath) {
-		auto *button = new QPushButton(this);
-		button->setCheckable(true);
-		button->setFlat(true);
-		button->setMinimumWidth(0);
-		button->setFixedHeight(24);
-		button->setToolTip(text);
-		if (!iconPath.isEmpty()) {
-			button->setIcon(QIcon(iconPath));
-			button->setIconSize(QSize(16, 16));
-			button->setFixedWidth(28);
-		} else {
-			button->setText(text);
-		}
-		button->setStyleSheet(QStringLiteral(
-			"QPushButton { color: #a3a3a3; background: transparent; border: none; border-radius: 6px; padding: 0 6px; font-size: 11px; }"
-			"QPushButton:checked { color: #f4f4f5; background: #242424; font-weight: 700; }"));
-		filters->addButton(button, id);
-		bar->addWidget(button);
-		if ((platformFilter < 0 && id == 3) || id == platformFilter)
-			button->setChecked(true);
-	};
+	filterBar = new QHBoxLayout;
+	filterBar->setContentsMargins(0, 0, 0, 0);
+	filterBar->setSpacing(4);
+	filterGroup = new QButtonGroup(this);
+	filterGroup->setExclusive(true);
 	if (current_profile_config && obs_data_has_user_value(current_profile_config, "activity_filter")) {
 		const int saved = (int)obs_data_get_int(current_profile_config, "activity_filter");
 		if (saved >= -1 && saved <= 2)
 			platformFilter = saved;
 	}
-	addFilter(3, Tr("ActivityFilterAll"), QString());
-	addFilter(0, QStringLiteral("Twitch"), PlatformIconPath(0));
-	addFilter(1, QStringLiteral("YouTube"), PlatformIconPath(1));
-	addFilter(2, QStringLiteral("Kick"), PlatformIconPath(2));
-	bar->addStretch(1);
-	auto *clear = new QPushButton(Tr("ActivityClear"), this);
-	clear->setFlat(true);
-	clear->setMinimumWidth(0);
-	clear->setFixedHeight(24);
-	clear->setStyleSheet(QStringLiteral(
-		"QPushButton { color: #a3a3a3; background: transparent; border: none; padding: 0 6px; font-size: 11px; }"
-		"QPushButton:hover { color: #f4f4f5; }"));
-	bar->addWidget(clear);
-	layout->addLayout(bar);
-	connect(filters, &QButtonGroup::idClicked, this, [this](int id) {
+	clearButton = new QPushButton(Tr("ActivityClear"), this);
+	clearButton->setFlat(true);
+	clearButton->setCursor(Qt::PointingHandCursor);
+	clearButton->setMinimumWidth(0);
+	clearButton->setFixedHeight(28);
+	clearButton->setStyleSheet(QStringLiteral(
+		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
+		" border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+		"QPushButton:hover { color: #eee; border-color: #666; background: #222; }"
+		"QPushButton:pressed { background: #1a1a1a; }"));
+	layout->addLayout(filterBar);
+	connect(filterGroup, &QButtonGroup::idClicked, this, [this](int id) {
 		platformFilter = id == 3 ? -1 : id;
 		if (current_profile_config) {
 			obs_data_set_int(current_profile_config, "activity_filter", platformFilter);
@@ -368,7 +347,7 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 		}
 		RebuildVisible();
 	});
-	connect(clear, &QPushButton::clicked, this, &AlertsDock::ClearHistory);
+	connect(clearButton, &QPushButton::clicked, this, &AlertsDock::ClearHistory);
 
 	list = new QListWidget(this);
 	list->setObjectName(QStringLiteral("activityList"));
@@ -392,6 +371,7 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 	saveTimer->setInterval(800);
 	connect(saveTimer, &QTimer::timeout, this, &AlertsDock::SaveHistory);
 
+	RefreshAvailablePlatforms();
 	LoadHistory();
 }
 
@@ -399,6 +379,118 @@ AlertsDock::~AlertsDock()
 {
 	StopEventSub();
 	SaveHistory();
+}
+
+void AlertsDock::showEvent(QShowEvent *event)
+{
+	QFrame::showEvent(event);
+	RefreshAvailablePlatforms();
+}
+
+void AlertsDock::RefreshAvailablePlatforms()
+{
+	QSet<int> next;
+	auto add = [&](StreamPlatformKind kind) {
+		if (kind == StreamPlatformKind::Twitch)
+			next.insert(0);
+		else if (kind == StreamPlatformKind::YouTube)
+			next.insert(1);
+		else if (kind == StreamPlatformKind::Kick)
+			next.insert(2);
+	};
+	if (obs_service_t *service = obs_frontend_get_streaming_service()) {
+		const char *url = obs_service_get_connect_info(service, OBS_SERVICE_CONNECT_INFO_SERVER_URL);
+		add(DetectStreamPlatformFromEndpoint(QString::fromUtf8(url ? url : "")));
+	}
+	if (current_profile_config) {
+		obs_data_array_t *outputs = obs_data_get_array(current_profile_config, "outputs");
+		if (outputs) {
+			const size_t count = obs_data_array_count(outputs);
+			for (size_t i = 0; i < count; i++) {
+				obs_data_t *item = obs_data_array_item(outputs, i);
+				const char *type = obs_data_get_string(item, "type");
+				if (type && *type && strcmp(type, "stream") != 0) {
+					obs_data_release(item);
+					continue;
+				}
+				QString server = QString::fromUtf8(obs_data_get_string(item, "stream_server"));
+				if (server.isEmpty())
+					server = QString::fromUtf8(obs_data_get_string(item, "server"));
+				obs_data_release(item);
+				add(DetectStreamPlatformFromEndpoint(server));
+			}
+			obs_data_array_release(outputs);
+		}
+	}
+	if (next == availablePlatforms && filterBar && filterBar->count() > 0)
+		return;
+	availablePlatforms = next;
+	RebuildFilters();
+	RebuildVisible();
+}
+
+void AlertsDock::RebuildFilters()
+{
+	if (!filterBar || !filterGroup || !clearButton)
+		return;
+	const auto buttons = filterGroup->buttons();
+	for (QAbstractButton *button : buttons)
+		filterGroup->removeButton(button);
+	while (QLayoutItem *item = filterBar->takeAt(0)) {
+		if (QWidget *widget = item->widget()) {
+			if (widget != clearButton)
+				widget->deleteLater();
+		}
+		delete item;
+	}
+
+	const QString style = QStringLiteral(
+		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
+		" border-radius: 4px; padding: 2px 6px; font-size: 11px; }"
+		"QPushButton:hover { color: #eee; border-color: #666; }"
+		"QPushButton:checked { color: white; background: #2a2a2a; border-color: #888; font-weight: 600; }");
+	const bool several = availablePlatforms.size() >= 2;
+	const bool showAll = !(platformFilter >= 0 && availablePlatforms.contains(platformFilter));
+	const auto add = [&](int id, const QString &text, const QString &iconPath) {
+		auto *button = new QPushButton(text, this);
+		button->setCheckable(true);
+		button->setFlat(true);
+		button->setCursor(Qt::PointingHandCursor);
+		button->setMinimumWidth(0);
+		button->setFixedHeight(28);
+		button->setStyleSheet(style);
+		if (!iconPath.isEmpty()) {
+			button->setIcon(QIcon(iconPath));
+			button->setIconSize(QSize(14, 14));
+		}
+		filterGroup->addButton(button, id);
+		filterBar->addWidget(button);
+		if (!several)
+			button->setChecked(id != 3);
+		else if ((id == 3 && showAll) || id == platformFilter)
+			button->setChecked(true);
+	};
+	if (several)
+		add(3, Tr("ActivityFilterAll"), QString());
+	if (availablePlatforms.contains(0))
+		add(0, QStringLiteral("Twitch"), PlatformIconPath(0));
+	if (availablePlatforms.contains(1))
+		add(1, QStringLiteral("YouTube"), PlatformIconPath(1));
+	if (availablePlatforms.contains(2))
+		add(2, QStringLiteral("Kick"), PlatformIconPath(2));
+	filterBar->addStretch(1);
+	filterBar->addWidget(clearButton);
+}
+
+bool AlertsDock::EntryVisible(const Entry &entry) const
+{
+	if (!availablePlatforms.contains(entry.platform))
+		return false;
+	if (availablePlatforms.size() < 2)
+		return true;
+	if (platformFilter >= 0 && availablePlatforms.contains(platformFilter) && entry.platform != platformFilter)
+		return false;
+	return true;
 }
 
 void AlertsDock::LoadTwitchAccount()
@@ -708,7 +800,7 @@ void AlertsDock::InsertCard(const Entry &entry, bool atTop)
 {
 	if (!list)
 		return;
-	if (platformFilter >= 0 && entry.platform != platformFilter)
+	if (!EntryVisible(entry))
 		return;
 	QLabel *age = nullptr;
 	QWidget *card = MakeActivityCard(entry.platform, entry.kind, entry.user, entry.detail, entry.message, entry.atMs, &age);

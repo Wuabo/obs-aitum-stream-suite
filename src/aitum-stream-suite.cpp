@@ -533,6 +533,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 				chat_dock->hide();
 		}
 		if (alerts_dock) {
+			alerts_dock->RefreshAvailablePlatforms();
 			alerts_dock->ReloadHistory();
 			alerts_dock->ReloadAccounts();
 			LockSideDock(alerts_dock, kActivityDockWidth);
@@ -553,6 +554,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (chat_dock)
 			chat_dock->ReloadAccounts();
 		if (alerts_dock) {
+			alerts_dock->RefreshAvailablePlatforms();
 			alerts_dock->ReloadHistory();
 			alerts_dock->ReloadAccounts();
 		}
@@ -775,6 +777,8 @@ void open_config_dialog(int tab, const char *create_type)
 				stream_info_dock->RefreshAvailablePlatforms();
 			if (chat_dock)
 				chat_dock->RefreshAvailablePlatforms();
+			if (alerts_dock)
+				alerts_dock->RefreshAvailablePlatforms();
 			if (vendor) {
 				obs_websocket_vendor_emit_event(vendor, "outputs_changed", nullptr);
 			}

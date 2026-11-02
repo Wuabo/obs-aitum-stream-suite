@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFrame>
+#include <QSet>
 #include <QString>
 #include <atomic>
 #include <memory>
@@ -23,8 +24,12 @@ public:
 
 	void ReloadAccounts();
 	void ReloadHistory();
+	void RefreshAvailablePlatforms();
 	void Push(int platform, const QString &kind, const QString &user, const QString &detail,
 		  const QString &message = QString(), qint64 atMs = 0);
+
+protected:
+	void showEvent(QShowEvent *event) override;
 
 private:
 	struct WsSession {
@@ -41,6 +46,10 @@ private:
 		qint64 atMs = 0;
 	};
 
+	class QButtonGroup *filterGroup = nullptr;
+	class QHBoxLayout *filterBar = nullptr;
+	class QPushButton *clearButton = nullptr;
+	QSet<int> availablePlatforms;
 	QListWidget *list = nullptr;
 	QTimer *ageTimer = nullptr;
 	QTimer *saveTimer = nullptr;
@@ -60,7 +69,9 @@ private:
 	void SubscribeEventSub(const QString &sessionId);
 	void HandleEventSubMessage(const QByteArray &payload, int gen, bool subscribeOnWelcome);
 	void InsertCard(const Entry &entry, bool atTop);
+	void RebuildFilters();
 	void RebuildVisible();
+	bool EntryVisible(const Entry &entry) const;
 	void ClearHistory();
 	void RefreshAges();
 	void ScheduleSave();
