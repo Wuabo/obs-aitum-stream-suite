@@ -21,6 +21,7 @@
 #include <QLabel>
 #include <QList>
 #include <QMainWindow>
+#include <QMouseEvent>
 #include <QPointer>
 #include <QScreen>
 #include <QSizePolicy>
@@ -70,46 +71,109 @@ void RepairAlmostMaximized(QMainWindow *main)
 		main->showMaximized();
 }
 
-/* The dock frame is fixed, so the splitter cannot move it. The page inside
- * stays unconstrained: a fixed page plus the frame was wider than the dock
- * and pushed the neighbouring docks. */
+struct LockedDockEdge {
+	QPointer<QDockWidget> dock;
+	int width = 0;
+};
+
+QList<LockedDockEdge> lockedDockEdges;
+bool blockingLockedEdge = false;
+
+bool PressOnLockedDockEdge(const QPoint &globalPos)
+{
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main)
+		return false;
+	const QPoint pos = main->mapFromGlobal(globalPos);
+	for (const LockedDockEdge &edge : lockedDockEdges) {
+		QDockWidget *dock = edge.dock;
+		if (!dock || !dock->isVisible() || dock->isFloating())
+			continue;
+		const QRect rect(dock->mapTo(main, QPoint(0, 0)), dock->size());
+		if (pos.y() < rect.top() || pos.y() > rect.bottom())
+			continue;
+		const int grip = 10;
+		if (qAbs(pos.x() - rect.left()) <= grip || qAbs(pos.x() - rect.right()) <= grip)
+			return true;
+	}
+	return false;
+}
+
+/* Swallow the splitter on Chat and Canal only. setFixedWidth on a docked
+ * widget is written into the OBS layout and, on the next launch, leaves the
+ * main canvas short with the empty center showing. */
+class LockedEdgeFilter : public QObject {
+public:
+	using QObject::QObject;
+
+protected:
+	bool eventFilter(QObject *, QEvent *event) override
+	{
+		if (event->type() == QEvent::MouseButtonRelease) {
+			blockingLockedEdge = false;
+			return false;
+		}
+		if (event->type() != QEvent::MouseButtonPress && event->type() != QEvent::MouseMove &&
+		    event->type() != QEvent::MouseButtonDblClick)
+			return false;
+		auto *mouse = static_cast<QMouseEvent *>(event);
+		if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick) {
+			blockingLockedEdge = PressOnLockedDockEdge(mouse->globalPosition().toPoint());
+			return blockingLockedEdge;
+		}
+		return blockingLockedEdge && mouse->buttons() != Qt::NoButton;
+	}
+};
+
+void InstallLockedEdgeFilter(QMainWindow *main)
+{
+	if (!main || main->property("suiteEdgeFilter").toBool())
+		return;
+	main->setProperty("suiteEdgeFilter", true);
+	auto *filter = new LockedEdgeFilter(main);
+	main->installEventFilter(filter);
+	qApp->installEventFilter(filter);
+}
+
+/* Chat and Canal keep one width. Docked, that is a splitter block — not a
+ * minimum — so the saved layout of the other docks comes back intact. */
 class FixedDockWidth : public QObject {
 public:
 	FixedDockWidth(QDockWidget *dock, int width) : QObject(dock), dock(dock), width(width)
 	{
-		dock->installEventFilter(this);
-		QObject::connect(dock, &QDockWidget::topLevelChanged, this, [this](bool) { Hold(); });
-		Hold();
+		lockedDockEdges.append({dock, width});
+		if (auto *main = qobject_cast<QMainWindow *>(dock->window()))
+			InstallLockedEdgeFilter(main);
+		QObject::connect(dock, &QDockWidget::topLevelChanged, this, [this](bool) { Apply(); });
+		Apply();
 	}
 
 protected:
-	bool eventFilter(QObject *obj, QEvent *event) override
+	void Apply()
 	{
-		if (obj == dock && !applying && (event->type() == QEvent::Resize || event->type() == QEvent::Show))
-			Hold();
-		return false;
-	}
-
-	void Hold()
-	{
-		if (!dock || applying)
+		if (!dock)
 			return;
-		applying = true;
+		if (dock->isFloating()) {
+			if (dock->minimumWidth() != width || dock->maximumWidth() != width)
+				dock->setFixedWidth(width);
+			return;
+		}
+		/* Drop a fixed size so OBS can save and restore the real layout. */
+		if (dock->minimumWidth() != 0)
+			dock->setMinimumWidth(0);
+		if (dock->maximumWidth() != QWIDGETSIZE_MAX)
+			dock->setMaximumWidth(QWIDGETSIZE_MAX);
 		if (QWidget *content = dock->widget()) {
 			if (content->minimumWidth() != 0)
 				content->setMinimumWidth(0);
 			if (content->maximumWidth() != QWIDGETSIZE_MAX)
 				content->setMaximumWidth(QWIDGETSIZE_MAX);
-			content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+			content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 		}
-		if (dock->minimumWidth() != width || dock->maximumWidth() != width)
-			dock->setFixedWidth(width);
-		applying = false;
 	}
 
 	QDockWidget *dock = nullptr;
 	int width = 0;
-	bool applying = false;
 };
 
 void LockSideDock(QWidget *content, int width)
@@ -808,6 +872,8 @@ bool obs_module_load(void)
 		l->setAlignment(Qt::AlignCenter);
 		l->setContentsMargins(0, 0, 0, 0);
 		l->setMinimumSize(0, 0);
+		/* A tall center is the hole under the preview after a restart. */
+		l->setMaximumSize(0, 0);
 		l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 		main_window->setCentralWidget(l);
 		/* Dock is narrow → OBS Minimized clears typed toolbars; reinject. */
