@@ -34,6 +34,19 @@ static void PolishWidget(QWidget *widget)
 	widget->style()->polish(widget);
 }
 
+/* Yami: SourceTree .indicator-expand { margin-left: 0; margin-right: spacing_large }.
+ * That type selector often fails for plugin SourceTree widgets, so SourceTreeItem
+ * .checkbox-icon (margin-left: spacing_large; margin-right: 0) sticks and shifts
+ * the expand/folder icons right. Force the native margins on the expand itself. */
+static void ApplyNativeExpandMargins(QCheckBox *expand)
+{
+	if (!expand) {
+		return;
+	}
+	expand->setStyleSheet(QStringLiteral("QCheckBox { margin-left: 0px; margin-right: 4px; }"));
+	PolishWidget(expand);
+}
+
 /* Same tint OBS applies in idian::Utils::applyColorToIcon: theme icons
  * follow the label text color (white on Yami, muted when hidden). */
 static void ApplyIconColor(QLabel *label)
@@ -567,9 +580,7 @@ void SourceTreeItem::Update(bool force)
 		expand->setAttribute(Qt::WA_LayoutUsesWidgetRect);
 #endif
 		boxLayout->insertWidget(0, expand);
-		/* Only polish once under SourceTree so .indicator-expand margins apply. */
-		if (tree && tree->isAncestorOf(expand))
-			PolishWidget(expand);
+		ApplyNativeExpandMargins(expand);
 
 		OBSDataAutoRelease private_settings = obs_sceneitem_get_private_settings(sceneitem);
 		expand->blockSignals(true);
@@ -1064,10 +1075,9 @@ void SourceTree::ResetWidgets()
 	for (int i = 0; i < stm->items.count(); i++) {
 		QModelIndex index = stm->createIndex(i, 0, nullptr);
 		setIndexWidget(index, new SourceTreeItem(this, stm->items[i]));
-		/* Parent is SourceTree now — apply expand margins like native. */
 		SourceTreeItem *item = GetItemWidget(i);
 		if (item && item->expand)
-			PolishWidget(item->expand);
+			ApplyNativeExpandMargins(item->expand);
 	}
 }
 
@@ -1076,7 +1086,7 @@ void SourceTree::UpdateWidget(const QModelIndex &idx, obs_sceneitem_t *item)
 	setIndexWidget(idx, new SourceTreeItem(this, item));
 	SourceTreeItem *widget = GetItemWidget(idx.row());
 	if (widget && widget->expand)
-		PolishWidget(widget->expand);
+		ApplyNativeExpandMargins(widget->expand);
 }
 
 void SourceTree::UpdateWidgets(bool force)
