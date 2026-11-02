@@ -1,4 +1,5 @@
 #include "output-dock.hpp"
+#include "native-dock-tabs.hpp"
 
 #include "../dialogs/recording-names-dialog.hpp"
 #include "../version.h"
@@ -14,6 +15,7 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QScrollArea>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTime>
 #include <QToolBar>
@@ -126,6 +128,9 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	tabs->setObjectName(QStringLiteral("outputTabs"));
 	tabs->setDocumentMode(true);
 	tabs->setTabPosition(QTabWidget::North);
+	tabs->setUsesScrollButtons(true);
+	style_suite_tab_bar(tabs->tabBar());
+	tabs->setStyleSheet(QStringLiteral("QTabWidget#outputTabs::pane { border: none; top: 0px; }"));
 	tabs->addTab(makePage(&streamLayout), QString::fromUtf8(obs_module_text("OutputTabStreams")));
 	tabs->addTab(makePage(&recordLayout), QString::fromUtf8(obs_module_text("OutputTabRecordings")));
 

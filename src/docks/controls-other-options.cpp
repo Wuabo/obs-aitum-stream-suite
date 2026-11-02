@@ -1,4 +1,5 @@
 #include "controls-other-options.hpp"
+#include "native-dock-tabs.hpp"
 #include "output-dock.hpp"
 
 #include <obs-frontend-api.h>
@@ -221,31 +222,10 @@ void install_controls_other_options_tab()
 
 		tabs = new QTabBar(tabHost);
 		tabs->setObjectName(QStringLiteral("controlsOtherOptionsTabs"));
-		tabs->setExpanding(false);
-		tabs->setElideMode(Qt::ElideRight);
-		tabs->setUsesScrollButtons(true);
-		tabs->setDrawBase(false);
-		tabs->setDocumentMode(true);
-		tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-		tabs->setFixedHeight(22);
-		tabs->setStyleSheet(QString::fromUtf8(
-			"QTabBar { font-size: 8pt; }"
-			"QTabBar::tab {"
-			"  background: palette(mid);"
-			"  color: palette(windowText);"
-			"  border: none;"
-			"  padding: 2px 6px;"
-			"  margin-right: 1px;"
-			"  min-width: 2em;"
-			"}"
-			"QTabBar::tab:selected {"
-			"  background: palette(dark);"
-			"}"
-			"QTabBar::tab:hover:!selected {"
-			"  background: palette(button);"
-			"}"));
+		style_suite_tab_bar(tabs);
 
 		row->addWidget(tabs);
+		tabHost->setMaximumHeight(24);
 		layout->insertWidget(0, tabHost);
 	}
 

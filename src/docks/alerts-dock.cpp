@@ -15,7 +15,6 @@
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QDateTime>
-#include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -24,8 +23,6 @@
 #include <QLabel>
 #include <QList>
 #include <QListWidget>
-#include <QPainter>
-#include <QPixmap>
 #include <QMetaObject>
 #include <QPointer>
 #include <QPushButton>
@@ -147,23 +144,13 @@ QString KindLabel(const QString &kind)
 	return kind;
 }
 
-QColor EventColor(const QString &kind)
+QColor PlatformAccent(int platform)
 {
-	if (kind == QLatin1String("follow"))
-		return QColor(QStringLiteral("#a78bfa"));
-	if (kind == QLatin1String("sub") || kind == QLatin1String("member"))
-		return QColor(QStringLiteral("#fbbf24"));
-	if (kind == QLatin1String("gift"))
-		return QColor(QStringLiteral("#f472b6"));
-	if (kind == QLatin1String("bits"))
-		return QColor(QStringLiteral("#c084fc"));
-	if (kind == QLatin1String("raid"))
-		return QColor(QStringLiteral("#4ade80"));
-	if (kind == QLatin1String("superchat"))
-		return QColor(QStringLiteral("#f87171"));
-	if (kind == QLatin1String("redeem"))
-		return QColor(QStringLiteral("#38bdf8"));
-	return QColor(QStringLiteral("#d4d4d4"));
+	if (platform == 1)
+		return QColor(QStringLiteral("#FF5555"));
+	if (platform == 2)
+		return QColor(QStringLiteral("#53FC18"));
+	return QColor(QStringLiteral("#9146FF"));
 }
 
 QString PlatformIconPath(int platform)
@@ -173,56 +160,6 @@ QString PlatformIconPath(int platform)
 	if (platform == 2)
 		return QStringLiteral(":/aitum/media/kick.png");
 	return QStringLiteral(":/aitum/media/twitch.png");
-}
-
-QString EventGlyph(const QString &kind)
-{
-	if (kind == QLatin1String("follow"))
-		return QStringLiteral("♥");
-	if (kind == QLatin1String("sub") || kind == QLatin1String("member"))
-		return QStringLiteral("★");
-	if (kind == QLatin1String("gift"))
-		return QStringLiteral("🎁");
-	if (kind == QLatin1String("bits"))
-		return QStringLiteral("◆");
-	if (kind == QLatin1String("raid"))
-		return QStringLiteral("➤");
-	if (kind == QLatin1String("superchat"))
-		return QStringLiteral("💬");
-	if (kind == QLatin1String("redeem"))
-		return QStringLiteral("◎");
-	return QStringLiteral("•");
-}
-
-QPixmap EventBadge(int platform, const QString &kind)
-{
-	constexpr int size = 72;
-	QPixmap pm(size, size);
-	pm.fill(Qt::transparent);
-	QPainter p(&pm);
-	p.setRenderHint(QPainter::Antialiasing, true);
-	p.setRenderHint(QPainter::TextAntialiasing, true);
-	const QColor color = EventColor(kind);
-	QColor fill = color;
-	fill.setAlpha(46);
-	p.setPen(QPen(color, 3));
-	p.setBrush(fill);
-	p.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), 18, 18);
-
-	QFont font(QStringLiteral("Segoe UI Emoji"));
-	font.setPixelSize(kind == QLatin1String("gift") || kind == QLatin1String("superchat") ? 26 : 30);
-	font.setBold(true);
-	p.setFont(font);
-	p.setPen(Qt::white);
-	p.drawText(QRectF(6, 4, 46, 44), Qt::AlignCenter, EventGlyph(kind));
-
-	const QPixmap platformIcon = QIcon(PlatformIconPath(platform)).pixmap(26, 26);
-	p.setPen(Qt::NoPen);
-	p.setBrush(QColor(QStringLiteral("#111111")));
-	p.drawEllipse(QRectF(size - 32, size - 32, 30, 30));
-	if (!platformIcon.isNull())
-		p.drawPixmap(size - 30, size - 30, platformIcon);
-	return pm;
 }
 
 QString EventSubtitle(const QString &kind, const QString &detail)
@@ -252,59 +189,53 @@ QString RelativeAge(qint64 atMs)
 QWidget *MakeActivityCard(int platform, const QString &kind, const QString &user, const QString &detail,
 			  const QString &message, qint64 atMs, QLabel **ageOut)
 {
-	const QColor accent = EventColor(kind);
 	auto *card = new QFrame;
 	card->setObjectName(QStringLiteral("activityCard"));
-	card->setStyleSheet(QStringLiteral("QFrame#activityCard {"
-					   "  background: #141414;"
-					   "  border: 1px solid #2a2a2a;"
-					   "  border-left: 3px solid %1;"
-					   "  border-radius: 10px;"
-					   "}"
-					   "QFrame#activityCard QLabel { background: transparent; border: none; }")
-				    .arg(accent.name()));
+	card->setAttribute(Qt::WA_StyledBackground, true);
+	card->setStyleSheet(QStringLiteral(
+		"QFrame#activityCard { background: #1b2230; border-radius: 6px; border: none; }"
+		"QFrame#activityCard QLabel { background: transparent; border: none; }"));
 
 	auto *outer = new QVBoxLayout(card);
 	outer->setContentsMargins(10, 8, 12, 8);
-	outer->setSpacing(4);
+	outer->setSpacing(0);
 
 	auto *row = new QHBoxLayout;
 	row->setContentsMargins(0, 0, 0, 0);
-	row->setSpacing(10);
+	row->setSpacing(8);
 
 	auto *icon = new QLabel;
-	icon->setFixedSize(36, 36);
-	icon->setPixmap(EventBadge(platform, kind));
+	icon->setFixedSize(18, 18);
 	icon->setScaledContents(true);
+	icon->setPixmap(QIcon(PlatformIconPath(platform)).pixmap(18, 18));
 	row->addWidget(icon, 0, Qt::AlignTop);
 
 	auto *textCol = new QVBoxLayout;
 	textCol->setContentsMargins(0, 0, 0, 0);
 	textCol->setSpacing(1);
 	auto *name = new QLabel(user.isEmpty() ? QStringLiteral("—") : user);
-	name->setStyleSheet(QStringLiteral("color: #f4f4f5; font-weight: 700; font-size: 13px;"));
+	name->setStyleSheet(QStringLiteral("color: %1; font-weight: 700; font-size: 13px;").arg(PlatformAccent(platform).name()));
 	auto *subtitle = new QLabel(EventSubtitle(kind, detail));
-	subtitle->setStyleSheet(QStringLiteral("color: %1; font-size: 11px; font-weight: 600;").arg(accent.name()));
+	subtitle->setStyleSheet(QStringLiteral("color: #9a9a9a; font-size: 12px;"));
 	subtitle->setWordWrap(true);
 	textCol->addWidget(name);
 	textCol->addWidget(subtitle);
+	if (!message.trimmed().isEmpty()) {
+		auto *msg = new QLabel(message.trimmed());
+		msg->setWordWrap(true);
+		msg->setStyleSheet(QStringLiteral("color: #e6e6e6; font-size: 13px;"));
+		textCol->addWidget(msg);
+	}
 	row->addLayout(textCol, 1);
 
 	auto *age = new QLabel(RelativeAge(atMs));
-	age->setStyleSheet(QStringLiteral("color: #737373; font-size: 11px; font-weight: 600;"));
+	age->setStyleSheet(QStringLiteral("color: #9a9a9a; font-size: 11px;"));
 	age->setProperty("atMs", atMs);
 	row->addWidget(age, 0, Qt::AlignTop);
 	if (ageOut)
 		*ageOut = age;
 
 	outer->addLayout(row);
-
-	if (!message.trimmed().isEmpty()) {
-		auto *msg = new QLabel(message.trimmed());
-		msg->setWordWrap(true);
-		msg->setStyleSheet(QStringLiteral("color: #d4d4d4; font-size: 12px; padding-left: 46px;"));
-		outer->addWidget(msg);
-	}
 
 	return card;
 }
@@ -315,12 +246,14 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 {
 	setObjectName(QStringLiteral("AitumStreamSuiteActivity"));
 	auto *layout = new QVBoxLayout(this);
-	layout->setContentsMargins(8, 8, 8, 8);
-	layout->setSpacing(6);
+	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setSpacing(0);
 
-	filterBar = new QHBoxLayout;
-	filterBar->setContentsMargins(0, 0, 0, 0);
-	filterBar->setSpacing(4);
+	auto *bar = new QFrame(this);
+	bar->setObjectName(QStringLiteral("activityFilterBar"));
+	filterBar = new QHBoxLayout(bar);
+	filterBar->setContentsMargins(8, 6, 8, 6);
+	filterBar->setSpacing(6);
 	filterGroup = new QButtonGroup(this);
 	filterGroup->setExclusive(true);
 	if (current_profile_config && obs_data_has_user_value(current_profile_config, "activity_filter")) {
@@ -332,13 +265,12 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 	clearButton->setFlat(true);
 	clearButton->setCursor(Qt::PointingHandCursor);
 	clearButton->setMinimumWidth(0);
-	clearButton->setFixedHeight(28);
 	clearButton->setStyleSheet(QStringLiteral(
 		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
-		" border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+		" border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
 		"QPushButton:hover { color: #eee; border-color: #666; background: #222; }"
 		"QPushButton:pressed { background: #1a1a1a; }"));
-	layout->addLayout(filterBar);
+	layout->addWidget(bar);
 	connect(filterGroup, &QButtonGroup::idClicked, this, [this](int id) {
 		platformFilter = id == 3 ? -1 : id;
 		if (current_profile_config) {
@@ -355,11 +287,13 @@ AlertsDock::AlertsDock(QWidget *parent) : QFrame(parent)
 	list->setFocusPolicy(Qt::NoFocus);
 	list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-	list->setSpacing(8);
+	list->setSpacing(6);
 	list->setStyleSheet(QStringLiteral(
-		"QListWidget#activityList { background: #0b0b0b; border: none; outline: none; }"
-		"QListWidget#activityList::item { background: transparent; border: none; margin: 0; padding: 0; }"));
-	layout->addWidget(list);
+		"QListWidget#activityList { background: #141414; border: none; color: #eee; outline: none; }"
+		"QListWidget#activityList::item { padding: 0px; margin: 0px; border: none; background: transparent; }"
+		"QListWidget#activityList::item:selected { background: transparent; }"
+		"QListWidget#activityList::item:hover { background: transparent; }"));
+	layout->addWidget(list, 1);
 
 	ageTimer = new QTimer(this);
 	ageTimer->setInterval(30000);
@@ -444,24 +378,30 @@ void AlertsDock::RebuildFilters()
 		delete item;
 	}
 
-	const QString style = QStringLiteral(
+	const QString textStyle = QStringLiteral(
 		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
-		" border-radius: 4px; padding: 2px 6px; font-size: 11px; }"
+		" border-radius: 4px; padding: 3px 8px; font-size: 11px; }"
 		"QPushButton:hover { color: #eee; border-color: #666; }"
-		"QPushButton:checked { color: white; background: #2a2a2a; border-color: #888; font-weight: 600; }");
+		"QPushButton:checked { color: white; background: #2a2a2a; border-color: #888; }");
+	const QString iconStyle = QStringLiteral(
+		"QPushButton { color: #b0b0b0; background: transparent; border: 1px solid #3a3a3a;"
+		" border-radius: 4px; padding: 4px; }"
+		"QPushButton:hover { color: #eee; border-color: #666; }"
+		"QPushButton:checked { color: white; background: #2a2a2a; border-color: #888; }");
 	const bool several = availablePlatforms.size() >= 2;
 	const bool showAll = !(platformFilter >= 0 && availablePlatforms.contains(platformFilter));
 	const auto add = [&](int id, const QString &text, const QString &iconPath) {
-		auto *button = new QPushButton(text, this);
+		auto *button = new QPushButton(iconPath.isEmpty() ? text : QString(), this);
 		button->setCheckable(true);
 		button->setFlat(true);
 		button->setCursor(Qt::PointingHandCursor);
 		button->setMinimumWidth(0);
-		button->setFixedHeight(28);
-		button->setStyleSheet(style);
+		button->setToolTip(text);
+		button->setStyleSheet(iconPath.isEmpty() ? textStyle : iconStyle);
 		if (!iconPath.isEmpty()) {
 			button->setIcon(QIcon(iconPath));
-			button->setIconSize(QSize(14, 14));
+			button->setIconSize(QSize(16, 16));
+			button->setFixedSize(28, 28);
 		}
 		filterGroup->addButton(button, id);
 		filterBar->addWidget(button);

@@ -27,6 +27,36 @@
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
 
+void style_suite_tab_bar(QTabBar *bar)
+{
+	if (!bar) {
+		return;
+	}
+	bar->setExpanding(false);
+	bar->setElideMode(Qt::ElideRight);
+	bar->setUsesScrollButtons(true);
+	bar->setDrawBase(false);
+	bar->setDocumentMode(true);
+	bar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	bar->setFixedHeight(22);
+	/* Same skin as the canvas tabs inside Scenes / Sources. */
+	bar->setStyleSheet(QString::fromUtf8(
+		"QTabBar { font-size: 8pt; }"
+		"QTabBar::tab {"
+		"  background: palette(mid);"
+		"  color: palette(window-text);"
+		"  border: 1px solid transparent;"
+		"  border-radius: 3px;"
+		"  padding: 1px 8px;"
+		"  min-width: 0px;"
+		"  min-height: 0px;"
+		"  margin: 0px;"
+		"  margin-right: 2px;"
+		"}"
+		"QTabBar::tab:hover { background: palette(light); color: palette(window-text); }"
+		"QTabBar::tab:selected { background: palette(highlight); color: palette(highlighted-text); }"));
+}
+
 static void ensure_preview_docks_independent();
 extern bool nativeTabsStopped;
 
@@ -975,30 +1005,7 @@ QTabBar *EnsureBar(QWidget *frame, QVBoxLayout *layout, QTabBar *&bar, QWidget *
 		row->setSpacing(0);
 		bar = new QTabBar(host);
 		bar->setObjectName(QString::fromUtf8(name));
-		bar->setExpanding(false);
-		bar->setElideMode(Qt::ElideRight);
-		bar->setUsesScrollButtons(true);
-		bar->setDrawBase(false);
-		bar->setDocumentMode(true);
-		bar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-		bar->setFixedHeight(22);
-		/* Tighter than Yami's default tab padding so Scenes | Youtube
-		 * stays a single short row inside the dock. */
-		bar->setStyleSheet(QString::fromUtf8(
-			"QTabBar { font-size: 8pt; }"
-			"QTabBar::tab {"
-			"  background: palette(mid);"
-			"  color: palette(window-text);"
-			"  border: 1px solid transparent;"
-			"  border-radius: 3px;"
-			"  padding: 1px 8px;"
-			"  min-width: 0px;"
-			"  min-height: 0px;"
-			"  margin: 0px;"
-			"  margin-right: 2px;"
-			"}"
-			"QTabBar::tab:hover { background: palette(light); color: palette(window-text); }"
-			"QTabBar::tab:selected { background: palette(highlight); color: palette(highlighted-text); }"));
+		style_suite_tab_bar(bar);
 		row->addWidget(bar);
 		host->setMaximumHeight(24);
 		layout->insertWidget(0, host);

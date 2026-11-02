@@ -11,3 +11,6 @@ void shutdown_native_canvas_tabs();
 void schedule_restore_obs_dock_layout();
 /* Remember which docks are open before a new canvas is added, and put them back. */
 void begin_preserve_open_docks();
+/* Compact tab bar used inside Scenes, Sources and Scene Transitions. */
+class QTabBar;
+void style_suite_tab_bar(QTabBar *bar);
