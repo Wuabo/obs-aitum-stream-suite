@@ -614,6 +614,7 @@ void CanvasDock::LoadUI()
 	sourceList->setDragEnabled(true);
 	sourceList->setDragDropMode(QAbstractItemView::InternalMove);
 	sourceList->setDefaultDropAction(Qt::TargetMoveAction);
+	sourceList->setSpacing(0);
 
 	connect(sourceList, &SourceTree::customContextMenuRequested, [this] { ShowSourcesContextMenu(GetCurrentSceneItem()); });
 	connect(sourceList->selectionModel(), &QItemSelectionModel::selectionChanged, this,
