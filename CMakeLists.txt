@@ -82,6 +82,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/chat-dock.hpp
   src/docks/alerts-dock.cpp
   src/docks/alerts-dock.hpp
+  src/docks/channel-dock.cpp
+  src/docks/channel-dock.hpp
   src/docks/sources-dock.cpp
   src/docks/sources-dock.hpp
   src/utils/profile-secret.cpp

@@ -8,6 +8,7 @@
 #include "docks/stream-info-dock.hpp"
 #include "docks/chat-dock.hpp"
 #include "docks/alerts-dock.hpp"
+#include "docks/channel-dock.hpp"
 #include "utils/icon.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
@@ -36,6 +37,7 @@ OBSBasicSettings *configDialog = nullptr;
 OutputDock *output_dock = nullptr;
 StreamInfoDock *stream_info_dock = nullptr;
 ChatDock *chat_dock = nullptr;
+ChannelDock *channel_dock = nullptr;
 
 extern std::list<CanvasDock *> canvas_docks;
 extern std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -46,7 +48,7 @@ static bool scene_collection_changing = false;
 
 namespace {
 
-constexpr int kActivityDockWidth = 300;
+constexpr int kChannelDockWidth = 300;
 constexpr int kChatDockWidth = 360;
 
 /* A docked setFixedWidth becomes the main window minimum. OBS then saves a
@@ -80,7 +82,7 @@ void RepairAlmostMaximized(QMainWindow *main)
  * minimum — so the main window can still open maximized. */
 class FixedDockWidth : public QObject {
 public:
-	FixedDockWidth(QDockWidget *dock, int width) : QObject(dock), dock(dock), width(width)
+	FixedDockWidth(QDockWidget *dock, int width, bool hard) : QObject(dock), dock(dock), width(width), hard(hard)
 	{
 		locks.append(this);
 		dock->installEventFilter(this);
@@ -132,15 +134,24 @@ protected:
 		applying = true;
 		auto *main = qobject_cast<QMainWindow *>(dock->window());
 		const bool wasMaximized = main && main->isMaximized();
-		if (dock->isFloating()) {
-			dock->setFixedWidth(width);
+		QWidget *content = dock->widget();
+		if (dock->isFloating() || hard) {
+			/* Hard lock is the activity width. Apply it once so a later
+			 * resize does not push the main window out of maximize. */
+			if (dock->minimumWidth() != width || dock->maximumWidth() != width)
+				dock->setFixedWidth(width);
+			if (content) {
+				content->setMinimumWidth(0);
+				content->setMaximumWidth(width);
+				content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+			}
 		} else {
 			/* Leave the dock resizable to the layout. Pin the width afterwards. */
 			if (dock->minimumWidth() != 0)
 				dock->setMinimumWidth(0);
 			if (dock->maximumWidth() != QWIDGETSIZE_MAX)
 				dock->setMaximumWidth(QWIDGETSIZE_MAX);
-			if (QWidget *content = dock->widget()) {
+			if (content) {
 				if (content->minimumWidth() != 0)
 					content->setMinimumWidth(0);
 				if (content->maximumWidth() != QWIDGETSIZE_MAX)
@@ -158,6 +169,7 @@ protected:
 	QDockWidget *dock = nullptr;
 	QPointer<QMainWindow> mainWindow;
 	int width = 0;
+	bool hard = false;
 	bool applying = false;
 	bool snapQueued = false;
 	static QList<QPointer<FixedDockWidth>> locks;
@@ -165,7 +177,7 @@ protected:
 
 QList<QPointer<FixedDockWidth>> FixedDockWidth::locks;
 
-void LockSideDock(QWidget *content, int width)
+void LockSideDock(QWidget *content, int width, bool hard = false)
 {
 	if (!content)
 		return;
@@ -174,7 +186,7 @@ void LockSideDock(QWidget *content, int width)
 		return;
 	if (!dock->property("suiteFixedWidth").toBool()) {
 		dock->setProperty("suiteFixedWidth", true);
-		new FixedDockWidth(dock, width);
+		new FixedDockWidth(dock, width, hard);
 	}
 }
 
@@ -593,15 +605,12 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			alerts_dock->RefreshAvailablePlatforms();
 			alerts_dock->ReloadHistory();
 			alerts_dock->ReloadAccounts();
-			LockSideDock(alerts_dock, kActivityDockWidth);
-			if (auto *dw = qobject_cast<QDockWidget *>(alerts_dock->parentWidget()))
-				dw->hide();
-			else
-				alerts_dock->hide();
 		}
+		if (channel_dock)
+			LockSideDock(channel_dock, kChannelDockWidth, true);
 		QTimer::singleShot(800, [] {
 			LockSideDock(chat_dock, kChatDockWidth);
-			LockSideDock(alerts_dock, kActivityDockWidth);
+			LockSideDock(channel_dock, kChannelDockWidth, true);
 			RepairAlmostMaximized(static_cast<QMainWindow *>(obs_frontend_get_main_window()));
 		});
 		install_main_canvas_context_bar_fix();
@@ -647,14 +656,12 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		output_dock = nullptr;
-		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
 		stream_info_dock = nullptr;
+		alerts_dock = nullptr;
+		channel_dock = nullptr;
+		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
 		obs_frontend_remove_dock("AitumStreamSuiteChat");
 		chat_dock = nullptr;
-		if (alerts_dock) {
-			alerts_dock = nullptr;
-			obs_frontend_remove_dock("AitumStreamSuiteActivity");
-		}
 	} else if (event == OBS_FRONTEND_EVENT_STREAMING_STARTING || event == OBS_FRONTEND_EVENT_STREAMING_STARTED) {
 		if (output_dock) {
 			output_dock->UpdateMainStreamStatus(true);
@@ -875,13 +882,13 @@ bool obs_module_load(void)
 	output_dock = new OutputDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteOutput", obs_module_text("AitumStreamSuiteOutput"), output_dock);
 	stream_info_dock = new StreamInfoDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteStreamInfo", obs_module_text("AitumStreamSuiteStreamInfo"),
-				    stream_info_dock);
+	alerts_dock = new AlertsDock(main_window);
+	/* Keep the Stream Info dock id so the saved layout slot stays put. */
+	channel_dock = new ChannelDock(alerts_dock, stream_info_dock, main_window);
+	obs_frontend_add_dock_by_id("AitumStreamSuiteStreamInfo", obs_module_text("AitumStreamSuiteChannel"), channel_dock);
 	chat_dock = new ChatDock(main_window);
 	obs_frontend_add_dock_by_id("AitumStreamSuiteChat", obs_module_text("AitumStreamSuiteChat"), chat_dock);
-	alerts_dock = new AlertsDock(main_window);
-	obs_frontend_add_dock_by_id("AitumStreamSuiteActivity", obs_module_text("AitumStreamSuiteActivity"), alerts_dock);
-	/* Chat and alerts stay off until the user enables them in View → Docks. */
+	/* Chat stays off until the user enables it in View → Docks. */
 	QTimer::singleShot(0, main_window, [] {
 		auto hideDock = [](QWidget *widget, int width) {
 			if (!widget)
@@ -893,7 +900,7 @@ bool obs_module_load(void)
 				widget->hide();
 		};
 		hideDock(chat_dock, kChatDockWidth);
-		hideDock(alerts_dock, kActivityDockWidth);
+		LockSideDock(channel_dock, kChannelDockWidth, true);
 	});
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */
@@ -937,17 +944,15 @@ void obs_module_unload()
 		obs_frontend_remove_dock("AitumStreamSuiteOutput");
 		output_dock = nullptr;
 	}
-	if (stream_info_dock) {
-		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
+	if (channel_dock || stream_info_dock || alerts_dock) {
 		stream_info_dock = nullptr;
+		alerts_dock = nullptr;
+		channel_dock = nullptr;
+		obs_frontend_remove_dock("AitumStreamSuiteStreamInfo");
 	}
 	if (chat_dock) {
 		obs_frontend_remove_dock("AitumStreamSuiteChat");
 		chat_dock = nullptr;
-	}
-	if (alerts_dock) {
-		alerts_dock = nullptr;
-		obs_frontend_remove_dock("AitumStreamSuiteActivity");
 	}
 }
 
