@@ -22,10 +22,6 @@ class LockedCheckBox;
 class VisibilityCheckBox;
 class CanvasDock;
 
-class SourceTreeSubItemCheckBox : public QCheckBox {
-	Q_OBJECT
-};
-
 class SourceTreeItem : public QFrame {
 	Q_OBJECT
 

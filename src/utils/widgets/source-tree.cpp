@@ -150,7 +150,6 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 	}
 	PolishWidget(vis);
 	PolishWidget(lock);
-	PolishWidget(expand);
 
 	/* --------------------------------------------------------- */
 
@@ -561,14 +560,16 @@ void SourceTreeItem::Update(bool force)
 		boxLayout->insertItem(0, spacer);
 
 	} else if (type == Type::Group) {
-		expand = new SourceTreeSubItemCheckBox();
+		expand = new QCheckBox();
 		expand->setProperty("class", QString::fromUtf8("checkbox-icon indicator-expand"));
 		expand->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
 #ifdef __APPLE__
 		expand->setAttribute(Qt::WA_LayoutUsesWidgetRect);
 #endif
 		boxLayout->insertWidget(0, expand);
-		PolishWidget(expand);
+		/* Only polish once under SourceTree so .indicator-expand margins apply. */
+		if (tree && tree->isAncestorOf(expand))
+			PolishWidget(expand);
 
 		OBSDataAutoRelease private_settings = obs_sceneitem_get_private_settings(sceneitem);
 		expand->blockSignals(true);
@@ -1063,12 +1064,19 @@ void SourceTree::ResetWidgets()
 	for (int i = 0; i < stm->items.count(); i++) {
 		QModelIndex index = stm->createIndex(i, 0, nullptr);
 		setIndexWidget(index, new SourceTreeItem(this, stm->items[i]));
+		/* Parent is SourceTree now — apply expand margins like native. */
+		SourceTreeItem *item = GetItemWidget(i);
+		if (item && item->expand)
+			PolishWidget(item->expand);
 	}
 }
 
 void SourceTree::UpdateWidget(const QModelIndex &idx, obs_sceneitem_t *item)
 {
 	setIndexWidget(idx, new SourceTreeItem(this, item));
+	SourceTreeItem *widget = GetItemWidget(idx.row());
+	if (widget && widget->expand)
+		PolishWidget(widget->expand);
 }
 
 void SourceTree::UpdateWidgets(bool force)
