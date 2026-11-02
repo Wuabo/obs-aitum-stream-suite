@@ -193,6 +193,10 @@ public:
 	bool MultipleBaseSelected() const;
 	bool GroupsSelected() const;
 
+	/* Hidden canvas tabs collapse to width 0; call after show to restore
+	 * eye/lock row geometry without a second painted frame. */
+	void RelayoutIndexWidgets();
+
 public slots:
 	inline void ReorderItems() { GetStm()->ReorderItems(); }
 	inline void RefreshItems() { GetStm()->SceneChanged(); }
@@ -211,10 +215,6 @@ protected:
 	virtual void resizeEvent(QResizeEvent *event) override;
 
 	virtual void selectionChanged(const QItemSelection &selected, const QItemSelection &deselected) override;
-
-	/* Hidden canvas tabs collapse to width 0; index widgets keep that
-	 * geometry until we force a layout pass on show/resize. */
-	void RelayoutIndexWidgets();
 };
 
 class SourceTreeDelegate : public QStyledItemDelegate {

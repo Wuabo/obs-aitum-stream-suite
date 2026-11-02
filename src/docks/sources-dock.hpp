@@ -43,4 +43,10 @@ public:
 	~SourcesDock();
 	void SetScene(obs_source_t *scene);
 	void Shutdown() { SetScene(nullptr); }
+	void RelayoutSourceList()
+	{
+		if (sourceList) {
+			sourceList->RelayoutIndexWidgets();
+		}
+	}
 };

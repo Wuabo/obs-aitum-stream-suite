@@ -1616,16 +1616,21 @@ void SourceTree::RelayoutIndexWidgets()
 
 void SourceTree::showEvent(QShowEvent *event)
 {
+	/* Suppress the intermediate paint at width 0→full so eye/lock don't
+	 * visibly jump; ShowMain also gates updates around the tab switch. */
+	const bool prev = updatesEnabled();
+	setUpdatesEnabled(false);
 	QListView::showEvent(event);
 	RelayoutIndexWidgets();
-	/* Layout may still be settling after the tab host expands. */
-	QTimer::singleShot(0, this, [this]() { RelayoutIndexWidgets(); });
+	setUpdatesEnabled(prev);
 }
 
 void SourceTree::resizeEvent(QResizeEvent *event)
 {
 	QListView::resizeEvent(event);
-	RelayoutIndexWidgets();
+	if (event->size().width() > 0 && event->size().width() != event->oldSize().width()) {
+		RelayoutIndexWidgets();
+	}
 }
 
 SourceTreeDelegate::SourceTreeDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
