@@ -901,6 +901,8 @@ QColor ChatDock::PlatformChipAccent(Platform platform)
 ChatDock::ChatDock(QWidget *parent) : QFrame(parent)
 {
 	setObjectName(QStringLiteral("AitumStreamSuiteChat"));
+	setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+	setFixedWidth(320);
 	curl_global_init(CURL_GLOBAL_DEFAULT);
 
 	viewerTimer = new QTimer(this);

@@ -49,7 +49,7 @@ static bool scene_collection_changing = false;
 namespace {
 
 constexpr int kChannelDockWidth = 300;
-constexpr int kChatDockWidth = 360;
+constexpr int kChatDockWidth = 320;
 
 /* A docked setFixedWidth becomes the main window minimum. OBS then saves a
  * normal geometry and the next launch is no longer maximized. */
@@ -595,7 +595,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			stream_info_dock->ReloadAccounts();
 		if (chat_dock) {
 			chat_dock->ReloadAccounts();
-			LockSideDock(chat_dock, kChatDockWidth);
+			LockSideDock(chat_dock, kChatDockWidth, true);
 			if (auto *dw = qobject_cast<QDockWidget *>(chat_dock->parentWidget()))
 				dw->hide();
 			else
@@ -609,7 +609,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		if (channel_dock)
 			LockSideDock(channel_dock, kChannelDockWidth, true);
 		QTimer::singleShot(800, [] {
-			LockSideDock(chat_dock, kChatDockWidth);
+			LockSideDock(chat_dock, kChatDockWidth, true);
 			LockSideDock(channel_dock, kChannelDockWidth, true);
 			RepairAlmostMaximized(static_cast<QMainWindow *>(obs_frontend_get_main_window()));
 		});
@@ -893,7 +893,7 @@ bool obs_module_load(void)
 		auto hideDock = [](QWidget *widget, int width) {
 			if (!widget)
 				return;
-			LockSideDock(widget, width);
+			LockSideDock(widget, width, true);
 			if (auto *dw = qobject_cast<QDockWidget *>(widget->parentWidget()))
 				dw->hide();
 			else
