@@ -398,17 +398,6 @@ void SyncVisibleToolbarIcons()
 
 void ShowMain(bool main)
 {
-	QWidget *sourcesFrame = sourcesLayout ? sourcesLayout->parentWidget() : nullptr;
-	QWidget *scenesFrame = scenesLayout ? scenesLayout->parentWidget() : nullptr;
-	const bool sourcesUpdates = sourcesFrame ? sourcesFrame->updatesEnabled() : true;
-	const bool scenesUpdates = scenesFrame ? scenesFrame->updatesEnabled() : true;
-	if (sourcesFrame) {
-		sourcesFrame->setUpdatesEnabled(false);
-	}
-	if (scenesFrame) {
-		scenesFrame->setUpdatesEnabled(false);
-	}
-
 	if (nativeScenes) {
 		nativeScenes->setVisible(main);
 	}
@@ -439,25 +428,19 @@ void ShowMain(bool main)
 		}
 	}
 
-	/* Relayout while still frozen so the first paint already has full-width rows. */
 	for (auto &page : pages) {
 		if (!page.sources || !page.sources->isVisible()) {
 			continue;
 		}
 		if (auto *dock = page.sources->findChild<SourcesDock *>()) {
+			/* Ensure paint is on — a nested updatesEnabled(false) can stick. */
+			dock->setUpdatesEnabled(true);
 			dock->RelayoutSourceList();
 		}
 	}
 
 	SetNativeRemoveShortcutsEnabled(main);
 	SyncVisibleToolbarIcons();
-
-	if (sourcesFrame) {
-		sourcesFrame->setUpdatesEnabled(sourcesUpdates);
-	}
-	if (scenesFrame) {
-		scenesFrame->setUpdatesEnabled(scenesUpdates);
-	}
 }
 
 QList<QDockWidget *> CollectPreviewDocks(QMainWindow *mainWin)

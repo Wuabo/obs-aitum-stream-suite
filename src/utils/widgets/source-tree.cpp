@@ -1616,13 +1616,8 @@ void SourceTree::RelayoutIndexWidgets()
 
 void SourceTree::showEvent(QShowEvent *event)
 {
-	/* Suppress the intermediate paint at width 0→full so eye/lock don't
-	 * visibly jump; ShowMain also gates updates around the tab switch. */
-	const bool prev = updatesEnabled();
-	setUpdatesEnabled(false);
 	QListView::showEvent(event);
 	RelayoutIndexWidgets();
-	setUpdatesEnabled(prev);
 }
 
 void SourceTree::resizeEvent(QResizeEvent *event)

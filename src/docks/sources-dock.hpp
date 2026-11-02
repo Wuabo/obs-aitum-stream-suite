@@ -45,7 +45,9 @@ public:
 	void Shutdown() { SetScene(nullptr); }
 	void RelayoutSourceList()
 	{
+		setUpdatesEnabled(true);
 		if (sourceList) {
+			sourceList->setUpdatesEnabled(true);
 			sourceList->RelayoutIndexWidgets();
 		}
 	}
