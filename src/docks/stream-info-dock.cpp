@@ -2,6 +2,7 @@
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <src/utils/oauth-refresh.hpp>
 #include <src/utils/profile-secret.hpp>
 #include <QAction>
 #include <QCheckBox>
@@ -1024,43 +1025,12 @@ void StreamInfoDock::Http(const QNetworkRequest &request, const QByteArray &body
 
 void StreamInfoDock::EnsureToken(std::function<void(bool)> done)
 {
-	if (TokenFresh()) {
-		done(true);
-		return;
-	}
-	if (refreshToken.isEmpty() || clientId.isEmpty()) {
-		SetConnected(false);
-		done(false);
-		return;
-	}
-	QUrl url;
-	QUrlQuery query;
-	query.addQueryItem("grant_type", "refresh_token");
-	query.addQueryItem("refresh_token", refreshToken);
-	query.addQueryItem("client_id", clientId);
-	if (platform == Twitch) {
-		url = QUrl(QStringLiteral("https://id.twitch.tv/oauth2/token"));
-	} else if (platform == YouTube) {
-		url = QUrl(QStringLiteral("https://oauth2.googleapis.com/token"));
-		query.addQueryItem("client_secret", clientSecret);
-	} else {
-		url = QUrl(QStringLiteral("https://id.kick.com/oauth/token"));
-		query.addQueryItem("client_secret", clientSecret);
-	}
-	QNetworkRequest req(url);
-	req.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
-	Http(req, query.query(QUrl::FullyEncoded).toUtf8(), "POST", [this, done](int status, const QByteArray &body, const QString &) {
-		const QJsonObject json = QJsonDocument::fromJson(body).object();
-		if (status < 200 || status >= 300 || !json.contains("access_token")) {
-			accessToken.clear();
-			SavePlatform();
+	RefreshProfileOauth(QString::fromUtf8(PlatformKey(platform)), false, [this, done](OauthRefreshResult result) {
+		if (result == OauthRefreshResult::Refreshed || result == OauthRefreshResult::Reauth)
+			LoadPlatform();
+		if (result == OauthRefreshResult::Reauth)
 			SetConnected(false);
-			SetResult(JsonError(body));
-			done(false);
-			return;
-		}
-		AcceptToken(json);
-		done(true);
+		done(result == OauthRefreshResult::Fresh || result == OauthRefreshResult::Refreshed);
 	});
 }
 
@@ -1088,6 +1058,8 @@ void StreamInfoDock::BeginConnect()
 		SetStatus(Tr("StreamInfoUnavailable"));
 		return;
 	}
+	/* Reload first so a token refreshed on disk is not overwritten by the old copy. */
+	LoadPlatform();
 	authInProgress = true;
 	SavePlatform();
 	authGeneration++;

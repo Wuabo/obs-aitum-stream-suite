@@ -203,6 +203,7 @@ private:
 	QHash<QString, QString> ytBanIds;
 	QHash<QString, QStringList> ytBanIdList;
 	bool twitchConnectStarted = false;
+	bool twitchIrcAuthRetried = false;
 	bool youtubeConnectStarted = false;
 	bool kickConnectStarted = false;
 	bool twitchNotLinkedAnnounced = false;
@@ -287,7 +288,7 @@ private:
 	void SendYouTubeMessage(const QString &text);
 	void ShowYouTubeMessageMenu(QListWidgetItem *item, QWidget *anchor);
 	void ShowMessageActions(QListWidgetItem *item, QWidget *anchor);
-	void AskModerationReconnect(Platform platform);
+	void AskModerationReconnect(Platform platform, int status);
 	void DeleteTwitchMessage(const QString &messageId);
 	void ModerateTwitchUser(const QString &userId, const QString &login, const QString &displayName, int timeoutSeconds);
 	void DeleteKickMessage(const QString &messageId, const QString &uiId);

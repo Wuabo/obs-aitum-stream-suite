@@ -87,7 +87,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/sources-dock.cpp
   src/docks/sources-dock.hpp
   src/utils/profile-secret.cpp
-  src/utils/profile-secret.hpp)
+  src/utils/profile-secret.hpp
+  src/utils/oauth-refresh.cpp
+  src/utils/oauth-refresh.hpp)
 
 target_sources(${PROJECT_NAME} PRIVATE
   src/dialogs/config-dialog.cpp

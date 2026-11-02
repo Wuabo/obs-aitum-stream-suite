@@ -9,6 +9,7 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <src/utils/icon.hpp>
+#include <src/utils/oauth-refresh.hpp>
 #include <src/utils/profile-secret.hpp>
 #include <util/config-file.h>
 
@@ -463,45 +464,61 @@ void AlertsDock::ReloadAccounts()
 	const QString previousToken = accessToken;
 	const QString previousUser = userId;
 	LoadTwitchAccount();
-	if (accessToken == previousToken && userId == previousUser && (session || accessToken.isEmpty()))
-		return;
-	StopEventSub();
 	askedReconnect = false;
-	if (accessToken.isEmpty() || clientId.isEmpty())
-		return;
-	if (!userId.isEmpty()) {
-		StartEventSub(QStringLiteral("wss://eventsub.wss.twitch.tv/ws"), true);
-		return;
-	}
-	const QByteArray token = accessToken.toUtf8();
-	const QByteArray cid = clientId.toUtf8();
+	tokenRefreshTried = false;
 	QPointer<AlertsDock> alive(this);
-	std::thread([alive, token, cid] {
-		QByteArray response;
-		const int status = CurlJson(QByteArrayLiteral("https://api.twitch.tv/helix/users"), QByteArrayLiteral("GET"),
-					     {{QByteArrayLiteral("Client-Id"), cid},
-					      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token}},
-					     {}, &response);
-		const QString id = QJsonDocument::fromJson(response)
-					   .object()
-					   .value(QStringLiteral("data"))
-					   .toArray()
-					   .at(0)
-					   .toObject()
-					   .value(QStringLiteral("id"))
-					   .toString();
+	RefreshProfileOauth(QStringLiteral("twitch"), false, [alive, previousToken, previousUser](OauthRefreshResult result) {
 		if (!alive)
 			return;
-		QMetaObject::invokeMethod(
-			alive,
-			[alive, status, id] {
-				if (!alive || status < 200 || status >= 300 || id.isEmpty())
-					return;
-				alive->userId = id;
-				alive->StartEventSub(QStringLiteral("wss://eventsub.wss.twitch.tv/ws"), true);
-			},
-			Qt::QueuedConnection);
-	}).detach();
+		if (result == OauthRefreshResult::Refreshed || result == OauthRefreshResult::Reauth)
+			alive->LoadTwitchAccount();
+		if (result == OauthRefreshResult::Reauth) {
+			alive->StopEventSub();
+			if (stream_info_dock && !alive->askedReconnect && !alive->clientId.isEmpty()) {
+				alive->askedReconnect = true;
+				stream_info_dock->RequestModerationAuth(0);
+			}
+			return;
+		}
+		if (alive->accessToken.isEmpty() || alive->clientId.isEmpty()) {
+			alive->StopEventSub();
+			return;
+		}
+		if (alive->accessToken == previousToken && alive->userId == previousUser && alive->session)
+			return;
+		if (!alive->userId.isEmpty()) {
+			alive->StartEventSub(QStringLiteral("wss://eventsub.wss.twitch.tv/ws"), true);
+			return;
+		}
+		const QByteArray token = alive->accessToken.toUtf8();
+		const QByteArray cid = alive->clientId.toUtf8();
+		std::thread([alive, token, cid] {
+			QByteArray response;
+			const int status = CurlJson(QByteArrayLiteral("https://api.twitch.tv/helix/users"), QByteArrayLiteral("GET"),
+						     {{QByteArrayLiteral("Client-Id"), cid},
+						      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token}},
+						     {}, &response);
+			const QString id = QJsonDocument::fromJson(response)
+						   .object()
+						   .value(QStringLiteral("data"))
+						   .toArray()
+						   .at(0)
+						   .toObject()
+						   .value(QStringLiteral("id"))
+						   .toString();
+			if (!alive)
+				return;
+			QMetaObject::invokeMethod(
+				alive,
+				[alive, status, id] {
+					if (!alive || status < 200 || status >= 300 || id.isEmpty())
+						return;
+					alive->userId = id;
+					alive->StartEventSub(QStringLiteral("wss://eventsub.wss.twitch.tv/ws"), true);
+				},
+				Qt::QueuedConnection);
+		}).detach();
+	});
 }
 
 void AlertsDock::StopEventSub()
@@ -601,7 +618,7 @@ void AlertsDock::SubscribeEventSub(const QString &sessionId)
 			{"channel.ban", "1", false, true},
 			{"channel.unban", "1", false, true},
 		};
-		bool authFailed = false;
+		bool unauthorized = false;
 		for (const Item &item : items) {
 			QJsonObject condition;
 			if (item.raid)
@@ -625,22 +642,34 @@ void AlertsDock::SubscribeEventSub(const QString &sessionId)
 					  {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token},
 					  {QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/json")}},
 					 QJsonDocument(body).toJson(QJsonDocument::Compact), &response);
-			if (status == 401 || status == 403)
-				authFailed = true;
-			else if (status != 409 && (status < 200 || status >= 300))
+			if (status == 401)
+				unauthorized = true;
+			else if (status == 403 || (status != 409 && (status < 200 || status >= 300)))
 				blog(LOG_WARNING, "[Stream Suite] EventSub %s HTTP %d: %s", item.type, status,
 				     response.left(180).constData());
 		}
-		if (!authFailed || !alive)
+		if (!unauthorized || !alive)
 			return;
+		const QByteArray sessionCopy = session;
 		QMetaObject::invokeMethod(
 			alive,
-			[alive] {
-				if (!alive || alive->askedReconnect)
+			[alive, sessionCopy] {
+				if (!alive || alive->tokenRefreshTried)
 					return;
-				alive->askedReconnect = true;
-				if (stream_info_dock)
+				alive->tokenRefreshTried = true;
+				RefreshProfileOauth(QStringLiteral("twitch"), true, [alive, sessionCopy](OauthRefreshResult result) {
+					if (!alive)
+						return;
+					if (result == OauthRefreshResult::Refreshed) {
+						alive->LoadTwitchAccount();
+						alive->SubscribeEventSub(QString::fromUtf8(sessionCopy));
+						return;
+					}
+					if (result != OauthRefreshResult::Reauth || alive->askedReconnect || !stream_info_dock)
+						return;
+					alive->askedReconnect = true;
 					stream_info_dock->RequestModerationAuth(0);
+				});
 			},
 			Qt::QueuedConnection);
 	}).detach();

@@ -1,7 +1,10 @@
 #include "chat-dock.hpp"
 #include "alerts-dock.hpp"
 #include "stream-info-dock.hpp"
+
+extern StreamInfoDock *stream_info_dock;
 #include <src/utils/icon.hpp>
+#include <src/utils/oauth-refresh.hpp>
 #include <src/utils/profile-secret.hpp>
 
 #include <obs-frontend-api.h>
@@ -1365,7 +1368,7 @@ void ChatDock::LoadTwitchRoom()
 		      {QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + acc.accessToken.toUtf8()}},
 		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
 			     if (status == 401 || status == 403) {
-				     AskModerationReconnect(Twitch);
+				     AskModerationReconnect(Twitch, status);
 				     return;
 			     }
 			     const QJsonArray data = QJsonDocument::fromJson(body).object().value(QStringLiteral("data")).toArray();
@@ -1421,7 +1424,7 @@ void ChatDock::PatchTwitchRoom()
 		     QJsonDocument(body).toJson(QJsonDocument::Compact), "PATCH",
 		     [this](int status, const QByteArray &payload, const QString &) {
 			     if (status == 401 || status == 403) {
-				     AskModerationReconnect(Twitch);
+				     AskModerationReconnect(Twitch, status);
 				     return;
 			     }
 			     if (status < 200 || status >= 300) {
@@ -1465,7 +1468,7 @@ void ChatDock::ClearTwitchRoom()
 				     return;
 			     }
 			     if (status == 401 || status == 403) {
-				     AskModerationReconnect(Twitch);
+				     AskModerationReconnect(Twitch, status);
 				     return;
 			     }
 			     const QString message =
@@ -1551,64 +1554,15 @@ void ChatDock::LoadAccount(Platform platform)
 
 void ChatDock::EnsureToken(Platform platform, std::function<void(bool)> done)
 {
-	Account &acc = accounts[platform];
-	if (acc.accessToken.isEmpty()) {
+	if (accounts[platform].accessToken.isEmpty() && accounts[platform].refreshToken.isEmpty()) {
 		done(false);
 		return;
 	}
-	const qint64 now = QDateTime::currentSecsSinceEpoch();
-	if (acc.expiresAt <= 0 || acc.expiresAt > now + 60) {
-		done(true);
-		return;
-	}
-	if (acc.refreshToken.isEmpty() || acc.clientId.isEmpty()) {
-		done(false);
-		return;
-	}
-	QUrl url;
-	QUrlQuery query;
-	query.addQueryItem("grant_type", "refresh_token");
-	query.addQueryItem("refresh_token", acc.refreshToken);
-	query.addQueryItem("client_id", acc.clientId);
-	if (platform == Twitch) {
-		url = QUrl(QStringLiteral("https://id.twitch.tv/oauth2/token"));
-	} else if (platform == YouTube) {
-		url = QUrl(QStringLiteral("https://oauth2.googleapis.com/token"));
-		query.addQueryItem("client_secret", acc.clientSecret);
-	} else {
-		url = QUrl(QStringLiteral("https://id.kick.com/oauth/token"));
-		query.addQueryItem("client_secret", acc.clientSecret);
-	}
-	Http(url.toString(), {{QByteArrayLiteral("Content-Type"), QByteArrayLiteral("application/x-www-form-urlencoded")}},
-	     query.query(QUrl::FullyEncoded).toUtf8(), "POST",
-	     [this, platform, done](int status, const QByteArray &body, const QString &) {
-		     Account &acc = accounts[platform];
-		     const QJsonObject json = QJsonDocument::fromJson(body).object();
-		     if (status < 200 || status >= 300 || !json.contains("access_token")) {
-			     done(false);
-			     return;
-		     }
-		     acc.accessToken = json.value("access_token").toString();
-		     if (json.contains("refresh_token"))
-			     acc.refreshToken = json.value("refresh_token").toString();
-		     const int expiresIn = json.value("expires_in").toInt(0);
-		     acc.expiresAt = expiresIn > 0 ? QDateTime::currentSecsSinceEpoch() + expiresIn : 0;
-		     if (current_profile_config) {
-			     obs_data_t *root = obs_data_get_obj(current_profile_config, "stream_accounts");
-			     obs_data_t *one = root ? obs_data_get_obj(root, PlatformKey(platform)) : nullptr;
-			     if (one) {
-				     StoreProfileSecret(one, "access_token", acc.accessToken);
-				     StoreProfileSecret(one, "refresh_token", acc.refreshToken);
-				     obs_data_set_int(one, "expires_at", acc.expiresAt);
-				     obs_data_set_obj(root, PlatformKey(platform), one);
-				     obs_data_set_obj(current_profile_config, "stream_accounts", root);
-				     save_current_profile_config(false);
-			     }
-			     obs_data_release(one);
-			     obs_data_release(root);
-		     }
-		     done(true);
-	     });
+	RefreshProfileOauth(QString::fromUtf8(PlatformKey(platform)), false, [this, platform, done](OauthRefreshResult result) {
+		if (result == OauthRefreshResult::Refreshed || result == OauthRefreshResult::Reauth)
+			LoadAccount(platform);
+		done(result == OauthRefreshResult::Fresh || result == OauthRefreshResult::Refreshed);
+	});
 }
 
 void ChatDock::Http(const QString &url, const QList<QPair<QByteArray, QByteArray>> &headers, const QByteArray &body,
@@ -2100,12 +2054,30 @@ void ChatDock::ConnectTwitchIrc()
 		     {}, "GET", [this](int status, const QByteArray &body, const QString &) {
 			     if (!connectionsActive)
 				     return;
+			     if (status == 401 && !twitchIrcAuthRetried) {
+				     twitchIrcAuthRetried = true;
+				     RefreshProfileOauth(QStringLiteral("twitch"), true, [this](OauthRefreshResult result) {
+					     if (!connectionsActive)
+						     return;
+					     if (result == OauthRefreshResult::Refreshed) {
+						     LoadAccount(Twitch);
+						     twitchConnectStarted = false;
+						     ConnectTwitchIrc();
+						     return;
+					     }
+					     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)), Twitch);
+					     if (result == OauthRefreshResult::Reauth && stream_info_dock)
+						     stream_info_dock->RequestModerationAuth(int(Twitch));
+				     });
+				     return;
+			     }
 			     if (status < 200 || status >= 300) {
 				     AppendSystemMessage(Tr("ChatDockAuthFailed").arg(PlatformLabel(Twitch)), Twitch);
 				     if (!twitchReconnectTimer->isActive())
 					     twitchReconnectTimer->start(8000);
 				     return;
 			     }
+			     twitchIrcAuthRetried = false;
 			     const QJsonArray data = QJsonDocument::fromJson(body).object().value("data").toArray();
 			     if (data.isEmpty())
 				     return;
@@ -2401,8 +2373,25 @@ void ChatDock::HandleTwitchLine(const QString &line)
 	}
 	if (line.contains(QStringLiteral("Login authentication failed"), Qt::CaseInsensitive) ||
 	    line.contains(QStringLiteral("Improperly formatted auth"), Qt::CaseInsensitive)) {
+		blog(LOG_WARNING, "[Stream Suite] Twitch IRC auth failed");
+		if (!twitchIrcAuthRetried) {
+			twitchIrcAuthRetried = true;
+			RefreshProfileOauth(QStringLiteral("twitch"), true, [this](OauthRefreshResult result) {
+				if (!connectionsActive)
+					return;
+				if (result == OauthRefreshResult::Refreshed) {
+					LoadAccount(Twitch);
+					twitchConnectStarted = false;
+					ConnectTwitchIrc();
+					return;
+				}
+				AppendSystemMessage(Tr("ChatDockTwitchReauth"), Twitch);
+				if (result == OauthRefreshResult::Reauth && stream_info_dock)
+					stream_info_dock->RequestModerationAuth(int(Twitch));
+			});
+			return;
+		}
 		AppendSystemMessage(Tr("ChatDockTwitchReauth"), Twitch);
-		blog(LOG_WARNING, "[Stream Suite] Twitch IRC auth failed — reconnect with chat:read chat:edit");
 		return;
 	}
 	if ((line.contains(QStringLiteral(" 001 ")) || line.contains(QStringLiteral("GLOBALUSERSTATE"))) && !twitchJoined &&
@@ -3935,11 +3924,20 @@ static QString TwitchApiError(const QByteArray &body, int status)
 	return message.isEmpty() ? QString::number(status) : message;
 }
 
-void ChatDock::AskModerationReconnect(Platform platform)
+void ChatDock::AskModerationReconnect(Platform platform, int status)
 {
-	AppendSystemMessage(Tr("ChatDockModReconnect").arg(PlatformLabel(platform)), platform);
-	if (stream_info_dock)
-		stream_info_dock->RequestModerationAuth(int(platform));
+	RefreshProfileOauth(QString::fromUtf8(PlatformKey(platform)), true, [this, platform, status](OauthRefreshResult result) {
+		if (result == OauthRefreshResult::Failed)
+			return;
+		if (result == OauthRefreshResult::Refreshed)
+			LoadAccount(platform);
+		/* 401 on an expired access token is fixed by the refresh above. */
+		if (result == OauthRefreshResult::Refreshed && status == 401)
+			return;
+		AppendSystemMessage(Tr("ChatDockModReconnect").arg(PlatformLabel(platform)), platform);
+		if (stream_info_dock)
+			stream_info_dock->RequestModerationAuth(int(platform));
+	});
 }
 
 void ChatDock::DeleteTwitchMessage(const QString &messageId)
@@ -3971,7 +3969,7 @@ void ChatDock::DeleteTwitchMessage(const QString &messageId)
 			     }
 			     if (status == 401 || status == 403) {
 				     blog(LOG_WARNING, "[Stream Suite] Twitch delete HTTP %d: %s", status, body.left(180).constData());
-				     AskModerationReconnect(Twitch);
+				     AskModerationReconnect(Twitch, status);
 				     return;
 			     }
 			     const QString reason = error.isEmpty() ? TwitchApiError(body, status) : error;
@@ -4063,7 +4061,7 @@ void ChatDock::ModerateTwitchUser(const QString &userId, const QString &login, c
 											    const QString &error) {
 			     if (status == 401 || status == 403) {
 				     blog(LOG_WARNING, "[Stream Suite] Twitch moderation HTTP %d: %s", status, body.left(180).constData());
-				     AskModerationReconnect(Twitch);
+				     AskModerationReconnect(Twitch, status);
 				     return;
 			     }
 			     if (status < 200 || status >= 300) {
@@ -4134,7 +4132,7 @@ void ChatDock::DeleteKickMessage(const QString &messageId, const QString &uiId)
 			     }
 			     if (status == 401 || status == 403) {
 				     blog(LOG_WARNING, "[Stream Suite] Kick delete HTTP %d: %s", status, body.left(180).constData());
-				     AskModerationReconnect(Kick);
+				     AskModerationReconnect(Kick, status);
 				     return;
 			     }
 			     const QString reason = error.isEmpty()
@@ -4191,7 +4189,7 @@ void ChatDock::ModerateKickUser(const QString &userId, const QString &displayNam
 												 const QString &error) {
 			     if (status == 401 || status == 403) {
 				     blog(LOG_WARNING, "[Stream Suite] Kick moderation HTTP %d: %s", status, body.left(180).constData());
-				     AskModerationReconnect(Kick);
+				     AskModerationReconnect(Kick, status);
 				     return;
 			     }
 			     if (status < 200 || status >= 300) {

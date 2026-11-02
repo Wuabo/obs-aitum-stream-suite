@@ -58,6 +58,7 @@ private:
 	QString userId;
 	int wsGen = 0;
 	bool askedReconnect = false;
+	bool tokenRefreshTried = false;
 	bool loadingHistory = false;
 	int platformFilter = -1;
 	std::shared_ptr<WsSession> session;
