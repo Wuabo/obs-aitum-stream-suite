@@ -20,8 +20,7 @@ ChannelDock::ChannelDock(AlertsDock *activity, StreamInfoDock *info, QWidget *pa
 	style_suite_tab_bar(tabs->tabBar());
 	tabs->setStyleSheet(QStringLiteral("QTabWidget#channelTabs::pane { border: none; top: 0px; }"));
 	tabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-	setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-	setFixedWidth(300);
+	setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 	if (activity)
 		tabs->addTab(activity, QString::fromUtf8(obs_module_text("AitumStreamSuiteActivity")));
 	if (info)

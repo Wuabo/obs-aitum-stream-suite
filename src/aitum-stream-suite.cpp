@@ -51,11 +51,11 @@ namespace {
 constexpr int kChannelDockWidth = 300;
 constexpr int kChatDockWidth = 320;
 
-/* A docked setFixedWidth becomes the main window minimum. OBS then saves a
- * normal geometry and the next launch is no longer maximized. */
+/* Only lift a window that already covers the work area. Never showNormal:
+ * that rebuilds every dock's size and position. */
 void RepairAlmostMaximized(QMainWindow *main)
 {
-	if (!main || main->isFullScreen() || !main->isVisible())
+	if (!main || main->isMaximized() || main->isFullScreen() || !main->isVisible())
 		return;
 	QScreen *screen = main->screen();
 	if (!screen)
@@ -66,118 +66,53 @@ void RepairAlmostMaximized(QMainWindow *main)
 	const QRect frame = main->frameGeometry();
 	const bool fillsWorkArea = qAbs(frame.width() - avail.width()) <= 80 && qAbs(frame.height() - avail.height()) <= 80 &&
 				   qAbs(frame.x() - avail.x()) <= 80;
-	if (main->isMaximized()) {
-		/* Saved maximize rect can be wider than the monitor. Re-apply it. */
-		if (!fillsWorkArea) {
-			main->showNormal();
-			main->showMaximized();
-		}
-		return;
-	}
 	if (fillsWorkArea)
 		main->showMaximized();
 }
 
-/* Chat and Activity keep one width. Docked, the limit is a snap — not a
- * minimum — so the main window can still open maximized. */
+/* The dock frame is fixed, so the splitter cannot move it. The page inside
+ * stays unconstrained: a fixed page plus the frame was wider than the dock
+ * and pushed the neighbouring docks. */
 class FixedDockWidth : public QObject {
 public:
-	FixedDockWidth(QDockWidget *dock, int width, bool hard) : QObject(dock), dock(dock), width(width), hard(hard)
+	FixedDockWidth(QDockWidget *dock, int width) : QObject(dock), dock(dock), width(width)
 	{
-		locks.append(this);
 		dock->installEventFilter(this);
-		if (auto *main = qobject_cast<QMainWindow *>(dock->window())) {
-			if (!main->property("suiteWidthFilter").toBool()) {
-				main->setProperty("suiteWidthFilter", true);
-				main->installEventFilter(this);
-				mainWindow = main;
-			}
-		}
-		QObject::connect(dock, &QDockWidget::topLevelChanged, this, [this](bool) { Snap(); });
-		Snap();
+		QObject::connect(dock, &QDockWidget::topLevelChanged, this, [this](bool) { Hold(); });
+		Hold();
 	}
 
 protected:
 	bool eventFilter(QObject *obj, QEvent *event) override
 	{
-		if (obj == dock && event->type() == QEvent::Resize && !applying)
-			QueueSnap();
-		if (obj == mainWindow && event->type() == QEvent::MouseButtonRelease) {
-			for (const QPointer<FixedDockWidth> &lock : locks) {
-				if (lock)
-					lock->QueueSnap();
-			}
-		}
-		if (obj == mainWindow && event->type() == QEvent::Close)
-			RepairAlmostMaximized(mainWindow);
+		if (obj == dock && !applying && (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+			Hold();
 		return false;
 	}
 
-	void QueueSnap()
-	{
-		if (snapQueued || !dock)
-			return;
-		snapQueued = true;
-		QPointer<FixedDockWidth> self(this);
-		QTimer::singleShot(0, this, [self] {
-			if (!self)
-				return;
-			self->snapQueued = false;
-			self->Snap();
-		});
-	}
-
-	void Snap()
+	void Hold()
 	{
 		if (!dock || applying)
 			return;
 		applying = true;
-		auto *main = qobject_cast<QMainWindow *>(dock->window());
-		const bool wasMaximized = main && main->isMaximized();
-		QWidget *content = dock->widget();
-		if (dock->isFloating() || hard) {
-			/* Hard lock is the activity width. Apply it once so a later
-			 * resize does not push the main window out of maximize. */
-			if (dock->minimumWidth() != width || dock->maximumWidth() != width)
-				dock->setFixedWidth(width);
-			if (content) {
+		if (QWidget *content = dock->widget()) {
+			if (content->minimumWidth() != 0)
 				content->setMinimumWidth(0);
-				content->setMaximumWidth(width);
-				content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-			}
-		} else {
-			/* Leave the dock resizable to the layout. Pin the width afterwards. */
-			if (dock->minimumWidth() != 0)
-				dock->setMinimumWidth(0);
-			if (dock->maximumWidth() != QWIDGETSIZE_MAX)
-				dock->setMaximumWidth(QWIDGETSIZE_MAX);
-			if (content) {
-				if (content->minimumWidth() != 0)
-					content->setMinimumWidth(0);
-				if (content->maximumWidth() != QWIDGETSIZE_MAX)
-					content->setMaximumWidth(QWIDGETSIZE_MAX);
-				content->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-			}
-			if (main && dock->isVisible() && qAbs(dock->width() - width) > 1)
-				main->resizeDocks({dock}, {width}, Qt::Horizontal);
+			if (content->maximumWidth() != QWIDGETSIZE_MAX)
+				content->setMaximumWidth(QWIDGETSIZE_MAX);
+			content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
 		}
-		if (wasMaximized && main && !main->isMaximized())
-			main->showMaximized();
+		if (dock->minimumWidth() != width || dock->maximumWidth() != width)
+			dock->setFixedWidth(width);
 		applying = false;
 	}
 
 	QDockWidget *dock = nullptr;
-	QPointer<QMainWindow> mainWindow;
 	int width = 0;
-	bool hard = false;
 	bool applying = false;
-	bool snapQueued = false;
-	static QList<QPointer<FixedDockWidth>> locks;
 };
 
-QList<QPointer<FixedDockWidth>> FixedDockWidth::locks;
-
-void LockSideDock(QWidget *content, int width, bool hard = false)
+void LockSideDock(QWidget *content, int width)
 {
 	if (!content)
 		return;
@@ -186,7 +121,7 @@ void LockSideDock(QWidget *content, int width, bool hard = false)
 		return;
 	if (!dock->property("suiteFixedWidth").toBool()) {
 		dock->setProperty("suiteFixedWidth", true);
-		new FixedDockWidth(dock, width, hard);
+		new FixedDockWidth(dock, width);
 	}
 }
 
@@ -595,7 +530,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			stream_info_dock->ReloadAccounts();
 		if (chat_dock) {
 			chat_dock->ReloadAccounts();
-			LockSideDock(chat_dock, kChatDockWidth, true);
+			LockSideDock(chat_dock, kChatDockWidth);
 			if (auto *dw = qobject_cast<QDockWidget *>(chat_dock->parentWidget()))
 				dw->hide();
 			else
@@ -607,10 +542,10 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			alerts_dock->ReloadAccounts();
 		}
 		if (channel_dock)
-			LockSideDock(channel_dock, kChannelDockWidth, true);
+			LockSideDock(channel_dock, kChannelDockWidth);
 		QTimer::singleShot(800, [] {
-			LockSideDock(chat_dock, kChatDockWidth, true);
-			LockSideDock(channel_dock, kChannelDockWidth, true);
+			LockSideDock(chat_dock, kChatDockWidth);
+			LockSideDock(channel_dock, kChannelDockWidth);
 			RepairAlmostMaximized(static_cast<QMainWindow *>(obs_frontend_get_main_window()));
 		});
 		install_main_canvas_context_bar_fix();
@@ -893,14 +828,14 @@ bool obs_module_load(void)
 		auto hideDock = [](QWidget *widget, int width) {
 			if (!widget)
 				return;
-			LockSideDock(widget, width, true);
+			LockSideDock(widget, width);
 			if (auto *dw = qobject_cast<QDockWidget *>(widget->parentWidget()))
 				dw->hide();
 			else
 				widget->hide();
 		};
 		hideDock(chat_dock, kChatDockWidth);
-		LockSideDock(channel_dock, kChannelDockWidth, true);
+		LockSideDock(channel_dock, kChannelDockWidth);
 	});
 	/* Scenes/Sources/Transitions live in OBS native docks (canvas tabs).
 	 * Properties/Filters/Transform use OBS native dialogs. */
