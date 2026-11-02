@@ -602,7 +602,8 @@ void CanvasDock::LoadUI()
 	sourcesGroup->setLayout(sourcesGroupLayout);
 	sourceList = new SourceTree(
 		&selectMutex, &hoveredPreviewItems, [](void *param) { return ((CanvasDock *)param)->scene; }, this, this, this);
-	sourceList->setObjectName(QString::fromUtf8("sources"));
+	/* Must not collide with OBSBasic's native SourceTree objectName. */
+	sourceList->setObjectName(QString::fromUtf8("AitumSourcesList"));
 	sourceList->setContentsMargins(0, 0, 0, 0);
 	sourceList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 	sourceList->setFrameShape(QFrame::NoFrame);

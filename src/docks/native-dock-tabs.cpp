@@ -244,8 +244,12 @@ public:
 		layout->setSpacing(0);
 		sources = new SourcesDock(this);
 		layout->addWidget(sources);
-		PolishDockWidgets(sources);
+		/* Polish toolbar only — polishing SourceTree/checkboxes here
+		 * (and again after hide/show) desyncs indicator geometry. */
 		MatchNativeToolbar(sources, "AitumSourcesToolbar", nativeSourcesToolbar);
+		if (auto *tb = sources->findChild<QToolBar *>(QString::fromUtf8("AitumSourcesToolbar"))) {
+			PolishDockWidgets(tb);
+		}
 
 		if (dock) {
 			connect(dock, &CanvasDock::editingSceneChanged, this, [this] { SyncScene(); });

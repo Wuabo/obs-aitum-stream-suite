@@ -207,8 +207,14 @@ protected:
 	virtual void mouseDoubleClickEvent(QMouseEvent *event) override;
 	virtual void dropEvent(QDropEvent *event) override;
 	virtual void paintEvent(QPaintEvent *event) override;
+	virtual void showEvent(QShowEvent *event) override;
+	virtual void resizeEvent(QResizeEvent *event) override;
 
 	virtual void selectionChanged(const QItemSelection &selected, const QItemSelection &deselected) override;
+
+	/* Hidden canvas tabs collapse to width 0; index widgets keep that
+	 * geometry until we force a layout pass on show/resize. */
+	void RelayoutIndexWidgets();
 };
 
 class SourceTreeDelegate : public QStyledItemDelegate {

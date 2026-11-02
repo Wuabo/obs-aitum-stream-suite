@@ -76,7 +76,8 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 		},
 		this, nullptr, this);
 
-	sourceList->setObjectName(QString::fromUtf8("sources"));
+	/* Must not collide with OBSBasic's native SourceTree objectName. */
+	sourceList->setObjectName(QString::fromUtf8("AitumSourcesList"));
 	sourceList->setContentsMargins(0, 0, 0, 0);
 	sourceList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 	sourceList->setFrameShape(QFrame::NoFrame);

@@ -9,6 +9,8 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QShowEvent>
 #include <QSpacerItem>
 #include <QStyle>
 #include <QTimer>
@@ -1586,6 +1588,44 @@ void SourceTree::paintEvent(QPaintEvent *event)
 	} else {
 		QListView::paintEvent(event);
 	}
+}
+
+void SourceTree::RelayoutIndexWidgets()
+{
+	if (!isVisible() || !viewport() || viewport()->width() <= 0) {
+		return;
+	}
+	updateGeometries();
+	doItemsLayout();
+	SourceTreeModel *stm = GetStm();
+	if (!stm) {
+		return;
+	}
+	for (int i = 0; i < stm->items.count(); i++) {
+		QModelIndex idx = stm->createIndex(i, 0);
+		QWidget *w = indexWidget(idx);
+		if (!w) {
+			continue;
+		}
+		const QRect rect = visualRect(idx);
+		if (rect.isValid() && w->geometry() != rect) {
+			w->setGeometry(rect);
+		}
+	}
+}
+
+void SourceTree::showEvent(QShowEvent *event)
+{
+	QListView::showEvent(event);
+	RelayoutIndexWidgets();
+	/* Layout may still be settling after the tab host expands. */
+	QTimer::singleShot(0, this, [this]() { RelayoutIndexWidgets(); });
+}
+
+void SourceTree::resizeEvent(QResizeEvent *event)
+{
+	QListView::resizeEvent(event);
+	RelayoutIndexWidgets();
 }
 
 SourceTreeDelegate::SourceTreeDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
