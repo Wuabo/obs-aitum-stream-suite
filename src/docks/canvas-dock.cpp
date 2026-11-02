@@ -4822,20 +4822,45 @@ void CanvasDock::LoadScenes()
 	if (sceneList) {
 		QListWidgetItem *selectedItem = nullptr;
 		sceneList->blockSignals(true);
-		for (int idx = 0; idx < sceneList->count();) {
-			auto item = sceneList->takeItem(idx);
+		/* Sort by saved order. The old take/insert loop hung when groups
+		 * were filtered out: remaining scenes kept sparse high orders
+		 * (> count), so idx never advanced. */
+		struct SceneListEntry {
+			QListWidgetItem *item;
+			int order;
+			bool active;
+		};
+		std::vector<SceneListEntry> entries;
+		entries.reserve((size_t)sceneList->count());
+		while (sceneList->count() > 0) {
+			auto item = sceneList->takeItem(0);
 			auto scene = obs_canvas_get_source_by_name(canvas, item->text().toUtf8().constData());
-			auto settings = obs_source_get_settings(scene);
-			const int order = (int)obs_data_get_int(settings, "order");
-			if (order <= idx) {
-				idx++;
+			int order = 0;
+			bool active = false;
+			if (scene) {
+				auto settings = obs_source_get_settings(scene);
+				order = (int)obs_data_get_int(settings, "order");
+				active = obs_data_get_bool(settings, "canvas_active");
+				obs_data_release(settings);
+				obs_source_release(scene);
 			}
-			sceneList->insertItem(order, item);
-			if (obs_data_get_bool(settings, "canvas_active")) {
-				selectedItem = item;
+			entries.push_back({item, order, active});
+		}
+		std::stable_sort(entries.begin(), entries.end(),
+				 [](const SceneListEntry &a, const SceneListEntry &b) { return a.order < b.order; });
+		for (int i = 0; i < (int)entries.size(); i++) {
+			sceneList->addItem(entries[(size_t)i].item);
+			/* Compact order after group filter so later saves stay dense. */
+			auto scene = obs_canvas_get_source_by_name(canvas, entries[(size_t)i].item->text().toUtf8().constData());
+			if (scene) {
+				auto settings = obs_source_get_settings(scene);
+				obs_data_set_int(settings, "order", i);
+				obs_data_release(settings);
+				obs_source_release(scene);
 			}
-			obs_data_release(settings);
-			obs_source_release(scene);
+			if (entries[(size_t)i].active) {
+				selectedItem = entries[(size_t)i].item;
+			}
 		}
 		sceneList->blockSignals(false);
 		if (selectedItem) {
