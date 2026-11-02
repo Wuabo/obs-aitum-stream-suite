@@ -422,14 +422,19 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 	/* Scenes/groups are per-canvas. Never use obs_get_source_by_name for
 	 * them — that only sees Main and falsely blocks Kick/Youtube/Vertical
 	 * from reusing the same group name. */
-	const bool canvasSource = (obs_source_get_output_flags(source) & OBS_SOURCE_REQUIRES_CANVAS) != 0;
+	const bool canvasSource = obs_source_is_group(source) || obs_source_is_scene(source) ||
+				  (obs_source_get_output_flags(source) & OBS_SOURCE_REQUIRES_CANVAS) != 0;
+
 	OBSCanvasAutoRelease canvas = nullptr;
 	if (canvasSource) {
-		obs_scene_t *scene = tree->getScene(tree->getSceneParam);
-		obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
-		canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
-		if (!canvas && tree->canvasDock)
+		/* Prefer the dock's canvas: scene weak refs can be empty during edit. */
+		if (tree->canvasDock && tree->canvasDock->GetCanvas())
 			canvas = obs_canvas_get_ref(tree->canvasDock->GetCanvas());
+		if (!canvas) {
+			obs_scene_t *scene = tree->getScene(tree->getSceneParam);
+			obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+			canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+		}
 		if (!canvas)
 			canvas = obs_source_get_canvas(source);
 	}
@@ -438,11 +443,12 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 	if (canvasSource) {
 		if (canvas)
 			existingSource = obs_canvas_get_source_by_name(canvas, newName.c_str());
+		/* No canvas → do not fall back to global lookup. */
 	} else {
 		existingSource = obs_get_source_by_name(newName.c_str());
 	}
 
-	if (existingSource) {
+	if (existingSource && existingSource.Get() != source) {
 		QMessageBox::information(tree, QString::fromUtf8(obs_frontend_get_locale_string("NameExists.Title")),
 					 QString::fromUtf8(obs_frontend_get_locale_string("NameExists.Text")));
 		return;
@@ -896,17 +902,20 @@ QString SourceTreeModel::GetNewGroupName()
 {
 	QString name = QString::fromUtf8(obs_frontend_get_locale_string("Group"));
 	int i = 2;
-	obs_scene_t *scene = st ? st->getScene(st->getSceneParam) : nullptr;
-	obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
-	OBSCanvasAutoRelease canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
-	if (!canvas && st && st->canvasDock && st->canvasDock->GetCanvas())
+	OBSCanvasAutoRelease canvas = nullptr;
+	if (st && st->canvasDock && st->canvasDock->GetCanvas())
 		canvas = obs_canvas_get_ref(st->canvasDock->GetCanvas());
+	if (!canvas) {
+		obs_scene_t *scene = st ? st->getScene(st->getSceneParam) : nullptr;
+		obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+		canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+	}
 	for (;;) {
 		OBSSourceAutoRelease group = nullptr;
 		if (canvas) {
 			group = obs_canvas_get_source_by_name(canvas, name.toUtf8().constData());
-		} else {
-			/* Last resort: Main canvas only (obs_get_source_by_name). */
+		} else if (!st || !st->canvasDock) {
+			/* Native Main only — suite canvas docks must never use global lookup. */
 			group = obs_get_source_by_name(name.toUtf8().constData());
 		}
 		if (!group)
