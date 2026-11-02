@@ -422,21 +422,21 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 	/* Scenes/groups are per-canvas. Never use obs_get_source_by_name for
 	 * them — that only sees Main and falsely blocks Kick/Youtube/Vertical
 	 * from reusing the same group name. */
-	const bool canvasSource = obs_source_is_group(source) || obs_source_is_scene(source) ||
+	const bool canvasSource = obs_sceneitem_is_group(sceneitem) || obs_source_is_group(source) ||
+				  obs_source_is_scene(source) ||
 				  (obs_source_get_output_flags(source) & OBS_SOURCE_REQUIRES_CANVAS) != 0;
 
 	OBSCanvasAutoRelease canvas = nullptr;
 	if (canvasSource) {
-		/* Prefer the dock's canvas: scene weak refs can be empty during edit. */
-		if (tree->canvasDock && tree->canvasDock->GetCanvas())
+		/* Source's own canvas is ground truth for the name hash. */
+		canvas = obs_source_get_canvas(source);
+		if (!canvas && tree->canvasDock && tree->canvasDock->GetCanvas())
 			canvas = obs_canvas_get_ref(tree->canvasDock->GetCanvas());
 		if (!canvas) {
 			obs_scene_t *scene = tree->getScene(tree->getSceneParam);
 			obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
 			canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
 		}
-		if (!canvas)
-			canvas = obs_source_get_canvas(source);
 	}
 
 	OBSSourceAutoRelease existingSource = nullptr;
@@ -445,10 +445,15 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 			existingSource = obs_canvas_get_source_by_name(canvas, newName.c_str());
 		/* No canvas → do not fall back to global lookup. */
 	} else {
+		/* Global inputs share one namespace across all canvases. */
 		existingSource = obs_get_source_by_name(newName.c_str());
 	}
 
 	if (existingSource && existingSource.Get() != source) {
+		blog(LOG_INFO,
+		     "[Stream Suite] NameExists rename '%s' -> '%s' on canvas '%s' (existing id=%s)",
+		     obs_source_get_name(source), newName.c_str(),
+		     canvas ? obs_canvas_get_name(canvas) : "(none)", obs_source_get_id(existingSource));
 		QMessageBox::information(tree, QString::fromUtf8(obs_frontend_get_locale_string("NameExists.Title")),
 					 QString::fromUtf8(obs_frontend_get_locale_string("NameExists.Text")));
 		return;
@@ -903,13 +908,13 @@ QString SourceTreeModel::GetNewGroupName()
 	QString name = QString::fromUtf8(obs_frontend_get_locale_string("Group"));
 	int i = 2;
 	OBSCanvasAutoRelease canvas = nullptr;
-	if (st && st->canvasDock && st->canvasDock->GetCanvas())
+	obs_scene_t *scene = st ? st->getScene(st->getSceneParam) : nullptr;
+	obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+	/* Prefer the scene's canvas — that is where the new group will be inserted. */
+	if (sceneSource)
+		canvas = obs_source_get_canvas(sceneSource);
+	if (!canvas && st && st->canvasDock && st->canvasDock->GetCanvas())
 		canvas = obs_canvas_get_ref(st->canvasDock->GetCanvas());
-	if (!canvas) {
-		obs_scene_t *scene = st ? st->getScene(st->getSceneParam) : nullptr;
-		obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
-		canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
-	}
 	for (;;) {
 		OBSSourceAutoRelease group = nullptr;
 		if (canvas) {
@@ -929,9 +934,17 @@ QString SourceTreeModel::GetNewGroupName()
 void SourceTreeModel::AddGroup()
 {
 	QString name = GetNewGroupName();
-	obs_sceneitem_t *group = obs_scene_add_group(st->getScene(st->getSceneParam), name.toUtf8().constData());
-	if (!group)
+	obs_scene_t *scene = st->getScene(st->getSceneParam);
+	if (!scene) {
+		blog(LOG_WARNING, "[Stream Suite] AddGroup: no scene on this sources dock");
 		return;
+	}
+	obs_sceneitem_t *group = obs_scene_add_group(scene, name.toUtf8().constData());
+	if (!group) {
+		blog(LOG_WARNING, "[Stream Suite] AddGroup: obs_scene_add_group failed for '%s'",
+		     name.toUtf8().constData());
+		return;
+	}
 
 	beginInsertRows(QModelIndex(), 0, 0);
 	items.insert(0, group);
