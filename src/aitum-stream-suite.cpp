@@ -627,8 +627,11 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	} else if (event == OBS_FRONTEND_EVENT_PROFILE_CHANGING) {
 		save_current_profile_config(true);
 	} else if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
-		/* SCRIPTING_SHUTDOWN and EXIT both arrive. End the live once, while tokens and outputs still exist. */
+		/* SCRIPTING_SHUTDOWN runs before ClearSceneData; EXIT after.
+		 * Tear canvas docks down on the first signal so channels/refs
+		 * are released while sources are still alive (matches Vertical). */
 		static bool endedLiveOnExit = false;
+		static bool clearedCanvasDocksOnExit = false;
 		if (!endedLiveOnExit) {
 			endedLiveOnExit = true;
 			const bool youtubeLive =
@@ -650,6 +653,28 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 		 * destroyed docks during scene teardown. */
 		shutdown_native_canvas_tabs();
 		shutdown_main_canvas_context_bar_fix();
+
+		if (!clearedCanvasDocksOnExit) {
+			clearedCanvasDocksOnExit = true;
+			while (!canvas_clone_docks.empty()) {
+				auto *it = canvas_clone_docks.front();
+				if (QWidget *dock = it->parentWidget()) {
+					obs_frontend_remove_dock(dock->objectName().toUtf8().constData());
+				} else {
+					canvas_clone_docks.pop_front();
+					delete it;
+				}
+			}
+			while (!canvas_docks.empty()) {
+				auto *it = canvas_docks.front();
+				if (QWidget *dock = it->parentWidget()) {
+					obs_frontend_remove_dock(dock->objectName().toUtf8().constData());
+				} else {
+					canvas_docks.pop_front();
+					delete it;
+				}
+			}
+		}
 
 		/* Tear down while the UI is still alive. Registered docks are
 		 * owned by OBS after obs_frontend_add_dock_by_id — remove only. */

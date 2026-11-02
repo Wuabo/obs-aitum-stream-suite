@@ -1792,36 +1792,55 @@ CanvasDock::~CanvasDock()
 	for (auto projector : projectors) {
 		delete projector;
 	}
+	projectors.clear();
 	obs_frontend_remove_save_callback(save_load, this);
 	canvas_docks.remove(this);
-	obs_display_remove_draw_callback(preview->GetDisplay(), DrawPreview, this);
+	if (preview && preview->GetDisplay())
+		obs_display_remove_draw_callback(preview->GetDisplay(), DrawPreview, this);
 	SaveSettings(true);
 	obs_data_release(settings);
-	obs_enter_graphics();
-	gs_vertexbuffer_destroy(box);
-	gs_vertexbuffer_destroy(rectFill);
-	gs_vertexbuffer_destroy(circleFill);
-	obs_leave_graphics();
-	if (canvas) {
-		auto sh = obs_canvas_get_signal_handler(canvas);
-		if (sh) {
-			signal_handler_disconnect(sh, "source_add", source_add, this);
-		}
-	}
-	obs_canvas_release(canvas);
+	settings = nullptr;
+
+	/* Drop scene-item refs before the canvas/view tears down sources. */
+	if (sourceList)
+		sourceList->Clear();
+	stretchGroup = nullptr;
+	stretchItem = nullptr;
+	scene = nullptr;
 
 	obs_source_t *oldTransition = obs_weak_source_get_source(source);
 	if (oldTransition && obs_source_get_type(oldTransition) == OBS_SOURCE_TYPE_TRANSITION) {
-		obs_weak_source_release(source);
-		source = nullptr;
 		signal_handler_t *handler = obs_source_get_signal_handler(oldTransition);
 		signal_handler_disconnect(handler, "transition_stop", transition_override_stop, this);
 		obs_source_dec_showing(oldTransition);
 		obs_source_dec_active(oldTransition);
 	}
+	obs_weak_source_release(source);
+	source = nullptr;
 	obs_source_release(oldTransition);
-
 	transitions.clear();
+
+	if (canvas) {
+		auto sh = obs_canvas_get_signal_handler(canvas);
+		if (sh)
+			signal_handler_disconnect(sh, "source_add", source_add, this);
+		/* Clear program channel while sources are still valid, then
+		 * remove+release so obs_shutdown does not destroy a live view. */
+		obs_canvas_set_channel(canvas, 0, nullptr);
+		obs_frontend_remove_canvas(canvas);
+		obs_canvas_remove(canvas);
+		obs_canvas_release(canvas);
+		canvas = nullptr;
+	}
+
+	obs_enter_graphics();
+	gs_vertexbuffer_destroy(box);
+	gs_vertexbuffer_destroy(rectFill);
+	gs_vertexbuffer_destroy(circleFill);
+	obs_leave_graphics();
+	box = nullptr;
+	rectFill = nullptr;
+	circleFill = nullptr;
 }
 
 extern obs_data_t *current_profile_config;
