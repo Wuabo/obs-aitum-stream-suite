@@ -19,7 +19,8 @@ private:
 	static constexpr int kRowSpacing = 8;
 	static constexpr int kActionBtnWidth = 40;
 	static constexpr int kTimerMinWidth = 52;
-	QVBoxLayout *mainLayout = nullptr;
+	QVBoxLayout *streamLayout = nullptr;
+	QVBoxLayout *recordLayout = nullptr;
 	QLabel *mainPlatformIconLabel = nullptr;
 	QLabel *mainStreamCanvasLabel = nullptr;
 	QLabel *mainRecordCanvasLabel = nullptr;

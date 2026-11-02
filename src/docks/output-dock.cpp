@@ -14,6 +14,7 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QScrollArea>
+#include <QTabWidget>
 #include <QTime>
 #include <QToolBar>
 #include <src/utils/color.hpp>
@@ -104,17 +105,33 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 
 	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 
-	auto t = new QWidget;
+	auto makePage = [](QVBoxLayout **outLayout) {
+		auto *page = new QWidget;
+		auto *scroll = new QScrollArea;
+		scroll->setWidgetResizable(true);
+		scroll->setLineWidth(0);
+		scroll->setFrameShape(QFrame::NoFrame);
+		auto *inner = new QWidget;
+		auto *rows = new QVBoxLayout(inner);
+		rows->setContentsMargins(0, 0, 0, 0);
+		scroll->setWidget(inner);
+		auto *outer = new QVBoxLayout(page);
+		outer->setContentsMargins(0, 0, 0, 0);
+		outer->addWidget(scroll);
+		*outLayout = rows;
+		return page;
+	};
 
-	QScrollArea *scrollArea = new QScrollArea;
-	scrollArea->setWidget(t);
-	scrollArea->setWidgetResizable(true);
-	scrollArea->setLineWidth(0);
-	scrollArea->setFrameShape(QFrame::NoFrame);
+	auto *tabs = new QTabWidget;
+	tabs->setObjectName(QStringLiteral("outputTabs"));
+	tabs->setDocumentMode(true);
+	tabs->setTabPosition(QTabWidget::North);
+	tabs->addTab(makePage(&streamLayout), QString::fromUtf8(obs_module_text("OutputTabStreams")));
+	tabs->addTab(makePage(&recordLayout), QString::fromUtf8(obs_module_text("OutputTabRecordings")));
 
 	auto layout = new QVBoxLayout;
 	layout->setContentsMargins(0, 0, 0, 0);
-	layout->addWidget(scrollArea);
+	layout->addWidget(tabs);
 
 	auto toolbar = new QToolBar();
 
@@ -136,18 +153,20 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	toolbar->widgetForAction(a)->setProperty("class", "icon-plus");
 
 	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/stream.svg")), QString::fromUtf8(obs_module_text("Stream")),
-			       [this] { open_config_dialog(1, "stream"); });
+			       [this, tabs] {
+				       tabs->setCurrentIndex(0);
+				       open_config_dialog(1, "stream");
+			       });
 
 	a = addMenu->addAction(QIcon(QString::fromUtf8(":/aitum/media/record.svg")), QString::fromUtf8(obs_module_text("Record")),
-			       [this] { open_config_dialog(1, "record"); });
+			       [this, tabs] {
+				       tabs->setCurrentIndex(1);
+				       open_config_dialog(1, "record");
+			       });
 
 	layout->addWidget(toolbar);
 
 	setLayout(layout);
-
-	mainLayout = new QVBoxLayout;
-	mainLayout->setContentsMargins(0, 0, 0, 0);
-	t->setLayout(mainLayout);
 
 	mainPlatformIconLabel = new QLabel;
 	mainPlatformIconLabel->setFixedSize(outputPlatformIconSize, outputPlatformIconSize);
@@ -206,7 +225,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 
 	mainRecordGroup = new QFrame;
 	mainRecordGroup->setLayout(l2);
-	mainLayout->addWidget(mainRecordGroup);
+	recordLayout->addWidget(mainRecordGroup);
 
 	l2 = new QHBoxLayout;
 	l2->setContentsMargins(8, 4, 8, 4);
@@ -287,7 +306,7 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 	mainStreamGroup = new QFrame;
 	mainStreamGroup->setLayout(streamColumn);
 
-	mainLayout->addWidget(mainStreamGroup);
+	streamLayout->addWidget(mainStreamGroup);
 
 	connect(&videoCheckTimer, &QTimer::timeout, [this] {
 		if (exiting) {
@@ -417,7 +436,10 @@ OutputDock::~OutputDock()
 	obs_frontend_add_event_callback(frontend_event, this);
 	videoCheckTimer.stop();
 	for (auto it = outputWidgets.begin(); it != outputWidgets.end(); it++) {
-		mainLayout->removeWidget(*it);
+		if (streamLayout)
+			streamLayout->removeWidget(*it);
+		if (recordLayout)
+			recordLayout->removeWidget(*it);
 		RemoveWidget(*it);
 	}
 	outputWidgets.clear();
@@ -426,54 +448,56 @@ OutputDock::~OutputDock()
 
 extern obs_data_t *current_profile_config;
 
-void OutputDock::ReorderOutputRows()
+static void TakeOutputRows(QVBoxLayout *layout, QFrame *recordGroup, QFrame *streamGroup, const std::vector<OutputWidget *> &widgets)
 {
-	if (!mainLayout) {
+	if (!layout)
 		return;
-	}
-
-	while (QLayoutItem *item = mainLayout->takeAt(0)) {
+	while (QLayoutItem *item = layout->takeAt(0)) {
 		QWidget *w = item->widget();
 		delete item;
-		if (!w) {
+		if (!w)
 			continue;
-		}
-		if (w == mainRecordGroup || w == mainStreamGroup) {
+		if (w == recordGroup || w == streamGroup)
 			continue;
-		}
 		bool isOutput = false;
-		for (auto *ow : outputWidgets) {
+		for (auto *ow : widgets) {
 			if (ow == w) {
 				isOutput = true;
 				break;
 			}
 		}
-		if (!isOutput) {
+		if (!isOutput)
 			w->deleteLater();
-		}
 	}
+}
 
-	/* Records first (builtin + extras), then streams. */
-	if (mainRecordGroup) {
-		mainLayout->addWidget(mainRecordGroup);
-	}
-	for (auto *ow : outputWidgets) {
-		if (ow && ow->IsRecord()) {
-			mainLayout->addWidget(ow);
-		}
-	}
-	if (mainStreamGroup) {
-		mainLayout->addWidget(mainStreamGroup);
-	}
-	for (auto *ow : outputWidgets) {
-		if (ow && !ow->IsRecord()) {
-			mainLayout->addWidget(ow);
-		}
-	}
+void OutputDock::ReorderOutputRows()
+{
+	if (!streamLayout || !recordLayout)
+		return;
 
-	auto *spacer = new QWidget();
-	spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-	mainLayout->addWidget(spacer);
+	TakeOutputRows(streamLayout, mainRecordGroup, mainStreamGroup, outputWidgets);
+	TakeOutputRows(recordLayout, mainRecordGroup, mainStreamGroup, outputWidgets);
+
+	if (mainStreamGroup)
+		streamLayout->addWidget(mainStreamGroup);
+	for (auto *ow : outputWidgets) {
+		if (ow && !ow->IsRecord())
+			streamLayout->addWidget(ow);
+	}
+	auto *streamSpacer = new QWidget;
+	streamSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	streamLayout->addWidget(streamSpacer);
+
+	if (mainRecordGroup)
+		recordLayout->addWidget(mainRecordGroup);
+	for (auto *ow : outputWidgets) {
+		if (ow && ow->IsRecord())
+			recordLayout->addWidget(ow);
+	}
+	auto *recordSpacer = new QWidget;
+	recordSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+	recordLayout->addWidget(recordSpacer);
 }
 
 void OutputDock::LoadSettings()
@@ -509,7 +533,10 @@ void OutputDock::LoadSettings()
 			obs_data_release(data2);
 		}
 		if (!found) {
-			mainLayout->removeWidget(*it);
+			if (streamLayout)
+				streamLayout->removeWidget(*it);
+			if (recordLayout)
+				recordLayout->removeWidget(*it);
 			RemoveWidget(*it);
 			it = outputWidgets.erase(it);
 		} else {
