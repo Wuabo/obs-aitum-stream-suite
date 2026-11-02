@@ -52,7 +52,7 @@ static void SetToolbarClass(QToolBar *toolbar, QAction *action, const char *cls)
 	button->style()->polish(button);
 }
 
-SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
+SourcesDock::SourcesDock(QWidget *parent, CanvasDock *canvas_dock) : QFrame(parent), canvasDock(canvas_dock)
 {
 	setObjectName(QString::fromUtf8("AitumStreamSuiteSourcesDock"));
 	setFrameShape(QFrame::NoFrame);
@@ -74,7 +74,7 @@ SourcesDock::SourcesDock(QWidget *parent) : QFrame(parent)
 			obs_source_release(s);
 			return scene;
 		},
-		this, nullptr, this);
+		this, canvasDock, this);
 
 	/* Must not collide with OBSBasic's native SourceTree objectName. */
 	sourceList->setObjectName(QString::fromUtf8("AitumSourcesList"));

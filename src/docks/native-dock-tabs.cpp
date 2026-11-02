@@ -242,7 +242,7 @@ public:
 		auto layout = new QVBoxLayout(this);
 		layout->setContentsMargins(0, 0, 0, 0);
 		layout->setSpacing(0);
-		sources = new SourcesDock(this);
+		sources = new SourcesDock(this, dock);
 		layout->addWidget(sources);
 		/* Polish toolbar only — polishing SourceTree/checkboxes here
 		 * (and again after hide/show) desyncs indicator geometry. */

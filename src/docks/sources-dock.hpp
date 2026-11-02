@@ -7,6 +7,7 @@
 
 class QAction;
 class QToolBar;
+class CanvasDock;
 
 class SourcesDock : public QFrame {
 	Q_OBJECT
@@ -15,6 +16,7 @@ private:
 
 	obs_weak_source_t *scene = nullptr;
 	SourceTree *sourceList;
+	CanvasDock *canvasDock = nullptr;
 	QToolBar *sourceToolbar = nullptr;
 	QAction *removeAction = nullptr;
 	QAction *propertiesAction = nullptr;
@@ -39,7 +41,7 @@ private slots:
 	void OpenSourceProjector();
 	void ColorChange();
 public:
-	SourcesDock(QWidget *parent = nullptr);
+	explicit SourcesDock(QWidget *parent = nullptr, CanvasDock *canvas_dock = nullptr);
 	~SourcesDock();
 	void SetScene(obs_source_t *scene);
 	void Shutdown() { SetScene(nullptr); }
