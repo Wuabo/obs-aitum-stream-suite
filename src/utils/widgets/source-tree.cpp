@@ -1042,9 +1042,9 @@ SourceTree::SourceTree(std::mutex *select_mutex, std::vector<obs_sceneitem_t *> 
 {
 	SourceTreeModel *stm_ = new SourceTreeModel(this);
 	setModel(stm_);
-	/* App Yami type selectors (SourceTree / SourceTreeItem) do not match
-	 * plugin widgets; setting a local sheet also isolates descendants from
-	 * app .checkbox-icon rules. Mirror Yami defaults for obsPadding=4. */
+	/* Same as native OBS SourceTree: only bgColor presets here.
+	 * All SourceTreeItem / .checkbox-icon / indicator rules come from the
+	 * app Yami sheet. Extra local QSS overrides those and breaks sizing. */
 	setStyleSheet(QStringLiteral(
 		"*[bgColor=\"1\"]{background-color:rgba(255,68,68,33%);}"
 		"*[bgColor=\"2\"]{background-color:rgba(255,255,68,33%);}"
@@ -1053,69 +1053,9 @@ SourceTree::SourceTree(std::mutex *select_mutex, std::vector<obs_sceneitem_t *> 
 		"*[bgColor=\"5\"]{background-color:rgba(68,68,255,33%);}"
 		"*[bgColor=\"6\"]{background-color:rgba(255,68,255,33%);}"
 		"*[bgColor=\"7\"]{background-color:rgba(68,68,68,33%);}"
-		"*[bgColor=\"8\"]{background-color:rgba(255,255,255,33%);}"
-		"SourceTreeItem {"
-		"  padding: 4px;"
-		"  border-radius: 4px;"
-		"  color: #ffffff;"
-		"  min-height: 12px;"
-		"}"
-		/* Yami .checkbox-icon (icon_base=16, padding_base=2) */
-		".checkbox-icon {"
-		"  outline: none;"
-		"  background: transparent;"
-		"  max-width: 16px;"
-		"  max-height: 16px;"
-		"  padding: 2px;"
-		"  margin-right: 4px;"
-		"  border: 1px solid transparent;"
-		"  border-radius: 4px;"
-		"}"
-		".checkbox-icon::indicator {"
-		"  width: 16px;"
-		"  height: 16px;"
-		"}"
-		"SourceTreeItem .checkbox-icon {"
-		"  margin-left: 4px;"
-		"  margin-right: 0px;"
-		"}"
-		".indicator-expand {"
-		"  margin-left: 0px;"
-		"  margin-right: 4px;"
-		"}"
-		".indicator-expand::indicator:checked,"
-		".indicator-expand::indicator:checked:hover {"
-		"  image: url(theme:Dark/expand.svg);"
-		"}"
-		".indicator-expand::indicator:unchecked,"
-		".indicator-expand::indicator:unchecked:hover {"
-		"  image: url(theme:Dark/collapse.svg);"
-		"}"
-		".indicator-visibility::indicator:checked,"
-		".indicator-visibility::indicator:checked:hover {"
-		"  image: url(theme:Dark/visible.svg);"
-		"}"
-		".indicator-visibility::indicator:unchecked,"
-		".indicator-visibility::indicator:unchecked:hover {"
-		"  image: url(:res/images/invisible.svg);"
-		"}"
-		".indicator-lock::indicator:checked,"
-		".indicator-lock::indicator:checked:hover {"
-		"  image: url(theme:Dark/locked.svg);"
-		"}"
-		".indicator-lock::indicator:unchecked,"
-		".indicator-lock::indicator:unchecked:hover {"
-		"  image: url(:res/images/unlocked.svg);"
-		"}"
-		".source-icon {"
-		"  margin-right: 4px;"
-		"}"
-		".text-muted {"
-		"  color: #969696;"
-		"}"));
+		"*[bgColor=\"8\"]{background-color:rgba(255,255,255,33%);}"));
 
 	setSpacing(0);
-	setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
 	UpdateNoSourcesMessage();
 
