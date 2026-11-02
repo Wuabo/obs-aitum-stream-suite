@@ -24,6 +24,7 @@
 #include <QListView>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QAction>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
@@ -3700,6 +3701,135 @@ void CanvasDock::ShowSourcesContextMenu(obs_sceneitem_t *item)
 	menu.exec(QCursor::pos());
 }
 
+/* Shared with native OBS Copy Transform so paste works across main ↔ suite canvases. */
+static obs_transform_info suiteCopiedTransformInfo{};
+static obs_sceneitem_crop suiteCopiedCropInfo{};
+static bool suiteHasCopiedTransform = false;
+
+static void EnsureNativeTransformCopyHook()
+{
+	static bool hooked = false;
+	if (hooked) {
+		return;
+	}
+	auto *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	if (!main) {
+		return;
+	}
+	auto *copyAction = main->findChild<QAction *>(QStringLiteral("actionCopyTransform"));
+	if (!copyAction) {
+		return;
+	}
+	QObject::connect(copyAction, &QAction::triggered, [] {
+		OBSSourceAutoRelease sceneSource = obs_frontend_preview_program_mode_active()
+							   ? obs_frontend_get_current_preview_scene()
+							   : obs_frontend_get_current_scene();
+		OBSSceneItem item;
+		obs_scene_enum_items(
+			obs_scene_from_source(sceneSource),
+			[](obs_scene_t *, obs_sceneitem_t *si, void *param) {
+				OBSSceneItem &dst = *static_cast<OBSSceneItem *>(param);
+				if (obs_sceneitem_selected(si)) {
+					dst = si;
+					return false;
+				}
+				if (obs_sceneitem_is_group(si)) {
+					obs_sceneitem_group_enum_items(si,
+								      [](obs_scene_t *, obs_sceneitem_t *child, void *p) {
+									      OBSSceneItem &d = *static_cast<OBSSceneItem *>(p);
+									      if (obs_sceneitem_selected(child)) {
+										      d = child;
+										      return false;
+									      }
+									      return true;
+								      },
+								      param);
+					if (dst) {
+						return false;
+					}
+				}
+				return true;
+			},
+			&item);
+		if (!item) {
+			return;
+		}
+		obs_sceneitem_get_info2(item, &suiteCopiedTransformInfo);
+		obs_sceneitem_get_crop(item, &suiteCopiedCropInfo);
+		suiteHasCopiedTransform = true;
+	});
+	hooked = true;
+}
+
+static void GetSceneCanvasSize(obs_scene_t *scene, float &cx, float &cy)
+{
+	cx = cy = 0.0f;
+	if (!scene) {
+		return;
+	}
+	obs_source_t *src = obs_scene_get_source(scene);
+	OBSCanvasAutoRelease canvas = obs_source_get_canvas(src);
+	obs_video_info ovi;
+	if (canvas && obs_canvas_get_video_info(canvas, &ovi)) {
+		cx = float(ovi.base_width);
+		cy = float(ovi.base_height);
+		return;
+	}
+	cx = float(obs_source_get_base_width(src));
+	cy = float(obs_source_get_base_height(src));
+}
+
+static bool reset_tr(obs_scene_t *, obs_sceneitem_t *item, void *)
+{
+	if (obs_sceneitem_is_group(item)) {
+		obs_sceneitem_group_enum_items(item, reset_tr, nullptr);
+	}
+	if (!obs_sceneitem_selected(item)) {
+		return true;
+	}
+	if (obs_sceneitem_locked(item)) {
+		return true;
+	}
+
+	obs_sceneitem_defer_update_begin(item);
+
+	obs_transform_info info;
+	vec2_set(&info.pos, 0.0f, 0.0f);
+	vec2_set(&info.scale, 1.0f, 1.0f);
+	info.rot = 0.0f;
+	info.alignment = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
+	info.bounds_type = OBS_BOUNDS_NONE;
+	info.bounds_alignment = OBS_ALIGN_CENTER;
+	info.crop_to_bounds = false;
+	vec2_set(&info.bounds, 0.0f, 0.0f);
+	obs_sceneitem_set_info2(item, &info);
+
+	obs_sceneitem_crop crop = {};
+	obs_sceneitem_set_crop(item, &crop);
+
+	obs_sceneitem_defer_update_end(item);
+	return true;
+}
+
+static bool paste_transform_cb(obs_scene_t *, obs_sceneitem_t *item, void *)
+{
+	if (obs_sceneitem_is_group(item)) {
+		obs_sceneitem_group_enum_items(item, paste_transform_cb, nullptr);
+	}
+	if (!obs_sceneitem_selected(item)) {
+		return true;
+	}
+	if (obs_sceneitem_locked(item)) {
+		return true;
+	}
+
+	obs_sceneitem_defer_update_begin(item);
+	obs_sceneitem_set_info2(item, &suiteCopiedTransformInfo);
+	obs_sceneitem_set_crop(item, &suiteCopiedCropInfo);
+	obs_sceneitem_defer_update_end(item);
+	return true;
+}
+
 void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 {
 	QObject *parent = popup->parent();
@@ -3812,66 +3942,71 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 							  undo_json.c_str(), redo_json.c_str(), false);
 		});
 
+	EnsureNativeTransformCopyHook();
+
+	auto getRootScene = [parent, sceneItem]() -> obs_scene_t * {
+		if (auto *cd = qobject_cast<CanvasDock *>(parent)) {
+			return cd->scene;
+		}
+		if (auto *sd = qobject_cast<SourcesDock *>(parent)) {
+			OBSSourceAutoRelease ss = obs_weak_source_get_source(sd->scene);
+			return obs_scene_from_source(ss);
+		}
+		return sceneItem ? obs_sceneitem_get_scene(sceneItem) : nullptr;
+	};
+
 	auto transformMenu = popup->addMenu(QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform")));
+	/* Same entry point OBSBasic uses — opens OBSBasicTransform bound to this item's scene. */
 	transformMenu->addAction(
-		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.EditTransform")), [sceneItem] {
-			const auto mainDialog = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-			if (!mainDialog) {
-				return;
-			}
-			auto transformDialog = mainDialog->findChild<QDialog *>("OBSBasicTransform");
-			if (!transformDialog) {
-				// make sure there is an item selected on the main canvas before starting the transform dialog
-				const auto currentScene = obs_frontend_preview_program_mode_active()
-								  ? obs_frontend_get_current_preview_scene()
-								  : obs_frontend_get_current_scene();
-				auto selected = GetSelectedItem(obs_scene_from_source(currentScene));
-				if (!selected) {
-					obs_scene_enum_items(
-						obs_scene_from_source(currentScene),
-						[](obs_scene_t *, obs_sceneitem_t *item, void *) {
-							obs_sceneitem_select(item, true);
-							return false;
-						},
-						nullptr);
-				}
-				obs_source_release(currentScene);
-				QMetaObject::invokeMethod(mainDialog, "on_actionEditTransform_triggered");
-				transformDialog = mainDialog->findChild<QDialog *>("OBSBasicTransform");
-			}
-			if (!transformDialog) {
-				return;
-			}
-			QMetaObject::invokeMethod(transformDialog,
-						  obs_get_version() >= MAKE_SEMANTIC_VERSION(32, 1, 0) ? "setItemQt" : "SetItemQt",
-						  Q_ARG(OBSSceneItem, OBSSceneItem(sceneItem)));
-		});
-	transformMenu->addAction(
-		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.ResetTransform")), parent,
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.EditTransform")),
 		[sceneItem] {
-			if (!sceneItem) {
-				return;
+			if (sceneItem) {
+				obs_frontend_open_sceneitem_edit_transform(sceneItem);
 			}
-			auto scene = obs_sceneitem_get_scene(sceneItem);
-			if (!scene) {
+		});
+	auto *pasteTransform = transformMenu->addAction(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.PasteTransform")), parent,
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene || !suiteHasCopiedTransform) {
 				return;
 			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
-			obs_sceneitem_defer_update_begin(sceneItem);
-			obs_sceneitem_set_alignment(sceneItem, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
-			obs_sceneitem_set_bounds_type(sceneItem, OBS_BOUNDS_NONE);
-			vec2 scale;
-			scale.x = 1.0f;
-			scale.y = 1.0f;
-			obs_sceneitem_set_scale(sceneItem, &scale);
-			vec2 pos;
-			pos.x = 0.0f;
-			pos.y = 0.0f;
-			obs_sceneitem_set_pos(sceneItem, &pos);
-			obs_sceneitem_crop crop = {0, 0, 0, 0};
-			obs_sceneitem_set_crop(sceneItem, &crop);
-			obs_sceneitem_set_rot(sceneItem, 0.0f);
-			obs_sceneitem_defer_update_end(sceneItem);
+			obs_scene_enum_items(scene, paste_transform_cb, nullptr);
+			OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(scene, false);
+			auto undoName = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Transform.Paste"))
+						.arg(QString::fromUtf8(obs_source_get_name(obs_scene_get_source(scene))));
+			obs_frontend_add_undo_redo_action(
+				undoName.toUtf8().constData(), [](const char *data) { obs_scene_load_transform_states(data); },
+				[](const char *data) { obs_scene_load_transform_states(data); }, obs_data_get_json(wrapper),
+				obs_data_get_json(rwrapper), false);
+		});
+	pasteTransform->setEnabled(suiteHasCopiedTransform);
+	/* Insert Copy before Paste to match OBSBasic transform menu order. */
+	auto *copyTransform = new QAction(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.CopyTransform")), transformMenu);
+	transformMenu->insertAction(pasteTransform, copyTransform);
+	QObject::connect(copyTransform, &QAction::triggered, parent, [sceneItem, pasteTransform] {
+		if (!sceneItem) {
+			return;
+		}
+		obs_sceneitem_get_info2(sceneItem, &suiteCopiedTransformInfo);
+		obs_sceneitem_get_crop(sceneItem, &suiteCopiedCropInfo);
+		suiteHasCopiedTransform = true;
+		pasteTransform->setEnabled(true);
+	});
+	transformMenu->addAction(
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.ResetTransform")), parent,
+		[getRootScene, sceneItem] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
+			if (sceneItem) {
+				obs_sceneitem_select(sceneItem, true);
+			}
+			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
+			obs_scene_enum_items(scene, reset_tr, nullptr);
 			OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(scene, false);
 			auto undoName = QString::fromUtf8(obs_frontend_get_locale_string("Undo.Transform.Reset"))
 						.arg(QString::fromUtf8(obs_source_get_name(obs_scene_get_source(scene))));
@@ -3882,8 +4017,12 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addSeparator();
 	transformMenu->addAction(
-		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate90CW")), parent, [sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate90CW")), parent,
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			float rotation = 90.0f;
 			obs_scene_enum_items(scene, RotateSelectedSources, &rotation);
@@ -3897,8 +4036,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate90CCW")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			float rotation = -90.0f;
 			obs_scene_enum_items(scene, RotateSelectedSources, &rotation);
@@ -3911,8 +4053,12 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 				obs_data_get_json(rwrapper), false);
 		});
 	transformMenu->addAction(
-		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate180")), parent, [sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.Rotate180")), parent,
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			float rotation = 180.0f;
 			obs_scene_enum_items(scene, RotateSelectedSources, &rotation);
@@ -3927,8 +4073,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 	transformMenu->addSeparator();
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.FlipHorizontal")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			vec2 scale;
 			vec2_set(&scale, -1.0f, 1.0f);
@@ -3943,8 +4092,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.FlipVertical")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			vec2 scale;
 			vec2_set(&scale, 1.0f, -1.0f);
@@ -3960,8 +4112,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 	transformMenu->addSeparator();
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.FitToScreen")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			obs_bounds_type boundsType = OBS_BOUNDS_SCALE_INNER;
 			obs_scene_enum_items(scene, CenterAlignSelectedItems, &boundsType);
@@ -3975,8 +4130,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.StretchToScreen")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			obs_bounds_type boundsType = OBS_BOUNDS_STRETCH;
 			obs_scene_enum_items(scene, CenterAlignSelectedItems, &boundsType);
@@ -3990,8 +4148,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.CenterToScreen")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			CenterSelectedItems(CenterType::Scene, scene);
 			OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(scene, false);
@@ -4004,8 +4165,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.VerticalCenter")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			CenterSelectedItems(CenterType::Vertical, scene);
 			OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(scene, false);
@@ -4018,8 +4182,11 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.HorizontalCenter")), parent,
-		[sceneItem] {
-			auto scene = obs_sceneitem_get_scene(sceneItem);
+		[getRootScene] {
+			obs_scene_t *scene = getRootScene();
+			if (!scene) {
+				return;
+			}
 			OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 			CenterSelectedItems(CenterType::Horizontal, scene);
 			OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(scene, false);
@@ -4335,7 +4502,9 @@ bool CanvasDock::CenterAlignSelectedItems(obs_scene_t *scene, obs_sceneitem_t *i
 		return true;
 	}
 
-	obs_source_t *scene_source = obs_scene_get_source(scene);
+	/* Match OBSBasic: fit/stretch to the canvas base size, not a parent group. */
+	float cx = 0.0f, cy = 0.0f;
+	GetSceneCanvasSize(scene, cx, cy);
 
 	obs_transform_info itemInfo;
 	vec2_set(&itemInfo.pos, 0.0f, 0.0f);
@@ -4343,7 +4512,7 @@ bool CanvasDock::CenterAlignSelectedItems(obs_scene_t *scene, obs_sceneitem_t *i
 	itemInfo.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
 	itemInfo.rot = 0.0f;
 
-	vec2_set(&itemInfo.bounds, float(obs_source_get_base_width(scene_source)), float(obs_source_get_base_height(scene_source)));
+	vec2_set(&itemInfo.bounds, cx, cy);
 	itemInfo.bounds_type = boundsType;
 	itemInfo.bounds_alignment = OBS_ALIGN_CENTER;
 	itemInfo.crop_to_bounds = obs_sceneitem_get_bounds_crop(item);
@@ -4466,11 +4635,11 @@ void CanvasDock::CenterSelectedItems(CenterType centerType, obs_scene_t *scene)
 	center.y = (top + bottom) / 2.0f;
 	center.z = 0.0f;
 
-	// Get coordinates of screen center
+	/* Match OBSBasic CenterSelectedSceneItems — canvas base size, not group size. */
+	float cx = 0.0f, cy = 0.0f;
+	GetSceneCanvasSize(scene, cx, cy);
 	vec3 screenCenter;
-
-	obs_source_t *scene_source = obs_scene_get_source(scene);
-	vec3_set(&screenCenter, float(obs_source_get_width(scene_source)), float(obs_source_get_height(scene_source)), 0.0f);
+	vec3_set(&screenCenter, cx, cy, 0.0f);
 
 	vec3_mulf(&screenCenter, &screenCenter, 0.5f);
 
