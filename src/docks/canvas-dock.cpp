@@ -4592,6 +4592,13 @@ void CanvasDock::LoadScenes()
 		[](void *param, obs_source_t *src) {
 			auto t = (CanvasDock *)param;
 
+			/* obs_canvas_enum_scenes yields every OBS_SOURCE_TYPE_SCENE,
+			 * including groups. Match OBSBasic::SourceCreated which only
+			 * adds real scenes (obs_scene_from_source / obs_source_is_scene). */
+			if (!obs_source_is_scene(src)) {
+				return true;
+			}
+
 			std::string ssn = obs_canvas_get_name(t->canvas);
 			ssn += " ";
 			ssn += obs_frontend_get_locale_string("Basic.Hotkeys.SelectScene");
@@ -4866,7 +4873,9 @@ void CanvasDock::source_add(void *data, calldata_t *calldata)
 void CanvasDock::SceneAdded(const QString sn)
 {
 	auto scene = obs_canvas_get_source_by_name(canvas, sn.toUtf8().constData());
-	if (!scene) {
+	/* Groups share OBS_SOURCE_TYPE_SCENE but must not appear in the scenes dock. */
+	if (!scene || !obs_source_is_scene(scene)) {
+		obs_source_release(scene);
 		return;
 	}
 	std::string ssn = obs_canvas_get_name(canvas);
@@ -4897,6 +4906,7 @@ void CanvasDock::SceneAdded(const QString sn)
 	if (sceneCombo) {
 		sceneCombo->addItem(sn);
 	}
+	obs_source_release(scene);
 }
 
 void CanvasDock::source_remove(void *data, calldata_t *calldata)

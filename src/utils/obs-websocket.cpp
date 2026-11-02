@@ -128,6 +128,10 @@ void vendor_request_get_scenes(obs_data_t *request_data, obs_data_t *response_da
 		obs_canvas_enum_scenes(
 			canvas,
 			[](void *param, obs_source_t *scene) {
+				/* Skip groups — same filter as OBSBasic scene list. */
+				if (!obs_source_is_scene(scene)) {
+					return true;
+				}
 				auto a = (obs_data_array_t *)param;
 				auto s = obs_data_create();
 				obs_data_set_string(s, "name", obs_source_get_name(scene));
