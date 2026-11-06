@@ -912,6 +912,7 @@ bool obs_module_load(void)
 	blog(LOG_INFO, "[Stream Suite] loaded version %s", PROJECT_VERSION);
 
 	obs_register_source(&component_info);
+	countdowns_register_source();
 
 	obs_frontend_add_event_callback(frontend_event, nullptr);
 

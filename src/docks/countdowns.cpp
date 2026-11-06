@@ -1,11 +1,11 @@
 #include "countdowns.hpp"
-#include "canvas-dock.hpp"
 
 #include <src/utils/widgets/hotkey-edit.hpp>
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <obs.h>
+#include <graphics/graphics.h>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -16,11 +16,14 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFontDatabase>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPointer>
 #include <QPushButton>
 #include <QFrame>
@@ -33,14 +36,242 @@
 #include <QVector>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
-#include <list>
+#include <mutex>
 #include <string>
 #include <vector>
 
+namespace {
+
+const char *kCountdownDrawId = "aitum_countdown_draw";
+const char *kCountdownDrawName = "Aitum Countdown";
+
+struct CountdownDraw {
+	obs_source_t *source = nullptr;
+	gs_texture_t *tex = nullptr;
+	std::atomic<uint32_t> cx{0};
+	std::atomic<uint32_t> cy{0};
+	std::mutex mutex;
+	std::vector<uint8_t> pending;
+	uint32_t pendingW = 0;
+	uint32_t pendingH = 0;
+	bool dirty = false;
+};
+
+void countdown_draw_set_image(void *data, calldata_t *cd)
+{
+	auto *draw = static_cast<CountdownDraw *>(data);
+	const auto *bytes = static_cast<const uint8_t *>(calldata_ptr(cd, "bytes"));
+	const auto width = (uint32_t)calldata_int(cd, "width");
+	const auto height = (uint32_t)calldata_int(cd, "height");
+	if (!bytes || width == 0 || height == 0 || width > 4096 || height > 2048) {
+		return;
+	}
+	const size_t count = (size_t)width * height * 4u;
+	std::vector<uint8_t> copy(bytes, bytes + count);
+	std::lock_guard<std::mutex> lock(draw->mutex);
+	draw->pending = std::move(copy);
+	draw->pendingW = width;
+	draw->pendingH = height;
+	draw->dirty = true;
+	draw->cx.store(width);
+	draw->cy.store(height);
+}
+
+void countdown_draw_upload(CountdownDraw *draw)
+{
+	std::vector<uint8_t> pixels;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	{
+		std::lock_guard<std::mutex> lock(draw->mutex);
+		if (!draw->dirty) {
+			return;
+		}
+		pixels.swap(draw->pending);
+		width = draw->pendingW;
+		height = draw->pendingH;
+		draw->dirty = false;
+	}
+	if (pixels.empty() || width == 0 || height == 0) {
+		return;
+	}
+	if (draw->tex && (gs_texture_get_width(draw->tex) != width || gs_texture_get_height(draw->tex) != height)) {
+		gs_texture_destroy(draw->tex);
+		draw->tex = nullptr;
+	}
+	if (!draw->tex) {
+		const uint8_t *rows = pixels.data();
+		draw->tex = gs_texture_create(width, height, GS_BGRA, 1, &rows, GS_DYNAMIC);
+	} else {
+		gs_texture_set_image(draw->tex, pixels.data(), width * 4u, false);
+	}
+}
+
+void *countdown_draw_create(obs_data_t *, obs_source_t *source)
+{
+	auto *draw = new CountdownDraw;
+	draw->source = source;
+	proc_handler_t *handler = obs_source_get_proc_handler(source);
+	proc_handler_add(handler, "void set_image(in ptr bytes, in int width, in int height)", countdown_draw_set_image, draw);
+	return draw;
+}
+
+void countdown_draw_destroy(void *data)
+{
+	auto *draw = static_cast<CountdownDraw *>(data);
+	obs_enter_graphics();
+	if (draw->tex) {
+		gs_texture_destroy(draw->tex);
+	}
+	obs_leave_graphics();
+	delete draw;
+}
+
+const char *countdown_draw_get_name(void *)
+{
+	return obs_module_text("CountdownDraw");
+}
+
+uint32_t countdown_draw_width(void *data)
+{
+	auto *draw = static_cast<CountdownDraw *>(data);
+	const uint32_t width = draw->cx.load();
+	if (width) {
+		return width;
+	}
+	obs_source_t *target = obs_filter_get_target(draw->source);
+	return target ? obs_source_get_base_width(target) : 0;
+}
+
+uint32_t countdown_draw_height(void *data)
+{
+	auto *draw = static_cast<CountdownDraw *>(data);
+	const uint32_t height = draw->cy.load();
+	if (height) {
+		return height;
+	}
+	obs_source_t *target = obs_filter_get_target(draw->source);
+	return target ? obs_source_get_base_height(target) : 0;
+}
+
+void countdown_draw_render(void *data, gs_effect_t *)
+{
+	auto *draw = static_cast<CountdownDraw *>(data);
+	countdown_draw_upload(draw);
+	if (!draw->tex) {
+		obs_source_skip_video_filter(draw->source);
+		return;
+	}
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
+	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+	const bool previous = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	gs_effect_set_texture_srgb(image, draw->tex);
+	const size_t passes = gs_technique_begin(tech);
+	for (size_t i = 0; i < passes; i++) {
+		gs_technique_begin_pass(tech, i);
+		gs_draw_sprite(draw->tex, 0, draw->cx.load(), draw->cy.load());
+		gs_technique_end_pass(tech);
+	}
+	gs_technique_end(tech);
+	gs_blend_state_pop();
+	gs_enable_framebuffer_srgb(previous);
+}
+
+obs_properties_t *countdown_draw_properties(void *)
+{
+	return obs_properties_create();
+}
+
+enum gs_color_space countdown_draw_color_space(void *, size_t, const enum gs_color_space *)
+{
+	return GS_CS_SRGB;
+}
+
+obs_source_t *countdown_draw_find(obs_source_t *text)
+{
+	obs_source_t *filter = obs_source_get_filter_by_name(text, kCountdownDrawName);
+	if (!filter) {
+		return nullptr;
+	}
+	const char *id = obs_source_get_unversioned_id(filter);
+	if (!id || strcmp(id, kCountdownDrawId) != 0) {
+		obs_source_release(filter);
+		return nullptr;
+	}
+	return filter;
+}
+
+void countdown_draw_remove(obs_source_t *text)
+{
+	obs_source_t *filter = countdown_draw_find(text);
+	if (!filter) {
+		return;
+	}
+	obs_source_filter_remove(text, filter);
+	obs_source_release(filter);
+}
+
+obs_source_t *countdown_draw_ensure(obs_source_t *text)
+{
+	if (obs_source_t *existing = countdown_draw_find(text)) {
+		return existing;
+	}
+	obs_source_t *filter = obs_source_create(kCountdownDrawId, kCountdownDrawName, nullptr, nullptr);
+	if (!filter) {
+		return nullptr;
+	}
+	obs_source_filter_add(text, filter);
+	obs_source_release(filter);
+	return countdown_draw_find(text);
+}
+
+void countdown_draw_set(obs_source_t *filter, const QImage &image)
+{
+	if (!filter || image.isNull()) {
+		return;
+	}
+	QImage pixels = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+	std::vector<uint8_t> packed((size_t)pixels.width() * pixels.height() * 4u);
+	for (int y = 0; y < pixels.height(); y++) {
+		memcpy(packed.data() + (size_t)y * pixels.width() * 4u, pixels.constScanLine(y), (size_t)pixels.width() * 4u);
+	}
+	calldata_t cd;
+	calldata_init(&cd);
+	calldata_set_ptr(&cd, "bytes", packed.data());
+	calldata_set_int(&cd, "width", pixels.width());
+	calldata_set_int(&cd, "height", pixels.height());
+	proc_handler_t *handler = obs_source_get_proc_handler(filter);
+	proc_handler_call(handler, "set_image", &cd);
+	calldata_free(&cd);
+}
+
+} // namespace
+
+void countdowns_register_source()
+{
+	obs_source_info info = {};
+	info.id = kCountdownDrawId;
+	info.type = OBS_SOURCE_TYPE_FILTER;
+	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_SRGB;
+	info.get_name = countdown_draw_get_name;
+	info.create = countdown_draw_create;
+	info.destroy = countdown_draw_destroy;
+	info.get_width = countdown_draw_width;
+	info.get_height = countdown_draw_height;
+	info.video_render = countdown_draw_render;
+	info.get_properties = countdown_draw_properties;
+	info.video_get_color_space = countdown_draw_color_space;
+	obs_register_source(&info);
+}
+
 extern obs_data_t *current_profile_config;
 extern void save_current_profile_config(bool save_docks);
-extern std::list<CanvasDock *> canvas_docks;
 
 namespace {
 
@@ -59,6 +290,8 @@ struct Countdown {
 	int fontSize = 72;
 	bool bold = true;
 	uint32_t color = 0xFFFFFFFFu;
+	uint32_t colonColor = 0xFFFFFFFFu;
+	bool colonSame = true;
 	uint32_t warnColor = 0xFF0000FFu;
 	int warnSeconds = 10;
 	obs_hotkey_id hotkey = OBS_INVALID_HOTKEY_ID;
@@ -68,6 +301,7 @@ struct Countdown {
 	bool sourceLive = false;
 	QString lastText;
 	uint32_t lastColor = 0;
+	uint32_t lastColonColor = 0;
 	bool fontDirty = true;
 	QPointer<QLabel> timeLabel;
 	QPointer<QPushButton> toggleBtn;
@@ -177,12 +411,81 @@ uint32_t ColorFor(const Countdown &c, qint64 shownMs)
 	return c.color;
 }
 
+uint32_t ColonColorFor(const Countdown &c, uint32_t digitColor)
+{
+	return c.colonSame ? digitColor : c.colonColor;
+}
+
+QImage RenderClock(const Countdown &c, const QString &text, uint32_t digitColor)
+{
+	QFont font(c.fontFace.isEmpty() ? QStringLiteral("Arial") : c.fontFace);
+	font.setPixelSize(std::max(8, c.fontSize));
+	font.setBold(c.bold);
+	QFontMetrics metrics(font);
+	const int pad = 4;
+	const int width = std::max(8, metrics.horizontalAdvance(text) + pad * 2);
+	const int height = std::max(8, metrics.height() + pad * 2);
+	QImage image(width, height, QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+	if (text.isEmpty()) {
+		return image;
+	}
+	QPainter painter(&image);
+	painter.setFont(font);
+	painter.setRenderHint(QPainter::TextAntialiasing, true);
+	const uint32_t colonColor = ColonColorFor(c, digitColor);
+	int x = pad;
+	const int baseline = pad + metrics.ascent();
+	int index = 0;
+	while (index < text.size()) {
+		const bool colon = text.at(index) == QLatin1Char(':');
+		int end = index + 1;
+		while (end < text.size() && ((text.at(end) == QLatin1Char(':')) == colon)) {
+			end++;
+		}
+		const QString run = text.mid(index, end - index);
+		painter.setPen(UnpackColor(colon ? colonColor : digitColor));
+		painter.drawText(x, baseline, run);
+		x += metrics.horizontalAdvance(run);
+		index = end;
+	}
+	return image;
+}
+
+QString DockClock(const Countdown &c, qint64 shownMs)
+{
+	const QString text = ClockText(c, shownMs);
+	const uint32_t colonColor = ColonColorFor(c, ColorFor(c, shownMs));
+	if (c.colonSame) {
+		return text;
+	}
+	const QString colonHex = UnpackColor(colonColor).name(QColor::HexRgb);
+	QString html;
+	int index = 0;
+	while (index < text.size()) {
+		const bool colon = text.at(index) == QLatin1Char(':');
+		int end = index + 1;
+		while (end < text.size() && ((text.at(end) == QLatin1Char(':')) == colon)) {
+			end++;
+		}
+		const QString run = text.mid(index, end - index).toHtmlEscaped();
+		if (colon) {
+			html += QStringLiteral("<span style=\"color:%1\">%2</span>").arg(colonHex, run);
+		} else {
+			html += run;
+		}
+		index = end;
+	}
+	return html;
+}
+
 void WriteSource(Countdown &c, const QString &text, uint32_t color)
 {
+	const uint32_t colon = ColonColorFor(c, color);
 	if (c.sourceName.isEmpty()) {
 		return;
 	}
-	if (!c.fontDirty && text == c.lastText && color == c.lastColor) {
+	if (!c.fontDirty && text == c.lastText && color == c.lastColor && colon == c.lastColonColor) {
 		return;
 	}
 	QByteArray name = c.sourceName.toUtf8();
@@ -217,9 +520,16 @@ void WriteSource(Countdown &c, const QString &text, uint32_t color)
 	obs_data_set_int(settings, "color2", (long long)color);
 	obs_source_update(source, settings);
 	obs_data_release(settings);
+	if (c.colonSame) {
+		countdown_draw_remove(source);
+	} else if (obs_source_t *filter = countdown_draw_ensure(source)) {
+		countdown_draw_set(filter, RenderClock(c, text, color));
+		obs_source_release(filter);
+	}
 	obs_source_release(source);
 	c.lastText = text;
 	c.lastColor = color;
+	c.lastColonColor = colon;
 	c.fontDirty = false;
 }
 
@@ -239,7 +549,8 @@ void RefreshLabels()
 	for (auto &item : items) {
 		qint64 shown = ShownMs(item);
 		if (item.timeLabel) {
-			item.timeLabel->setText(ClockText(item, shown));
+			item.timeLabel->setTextFormat(item.colonSame ? Qt::PlainText : Qt::RichText);
+			item.timeLabel->setText(DockClock(item, shown));
 		}
 		if (item.toggleBtn) {
 			const char *key = item.phase == Phase::Running ? "CountdownPause" : "CountdownStart";
@@ -388,6 +699,8 @@ void Persist()
 		obs_data_set_int(data, "font_size", item.fontSize);
 		obs_data_set_bool(data, "bold", item.bold);
 		obs_data_set_int(data, "color", (long long)item.color);
+		obs_data_set_int(data, "colon_color", (long long)item.colonColor);
+		obs_data_set_bool(data, "colon_same", item.colonSame);
 		obs_data_set_int(data, "warn_color", (long long)item.warnColor);
 		obs_data_set_int(data, "warn_seconds", item.warnSeconds);
 		if (item.hotkey != OBS_INVALID_HOTKEY_ID) {
@@ -502,54 +815,6 @@ const char *TextSourceId()
 	return nullptr;
 }
 
-bool SceneAlreadyHas(obs_scene_t *scene, obs_source_t *source)
-{
-	struct Found {
-		obs_source_t *source;
-		bool found;
-	} found = {source, false};
-	obs_scene_enum_items(
-		scene,
-		[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
-			auto *found = static_cast<Found *>(param);
-			if (obs_sceneitem_get_source(item) == found->source) {
-				found->found = true;
-				return false;
-			}
-			return true;
-		},
-		&found);
-	return found.found;
-}
-
-void AddToScene(obs_scene_t *scene, obs_source_t *source)
-{
-	if (!scene || !source || SceneAlreadyHas(scene, source)) {
-		return;
-	}
-	obs_scene_add(scene, source);
-}
-
-void PlaceOnOpenScenes(obs_source_t *source)
-{
-	obs_source_t *current = obs_frontend_get_current_scene();
-	if (current) {
-		AddToScene(obs_scene_from_source(current), source);
-		obs_source_release(current);
-	}
-	for (CanvasDock *dock : canvas_docks) {
-		if (!dock) {
-			continue;
-		}
-		obs_source_t *editing = dock->GetEditingSceneSource();
-		if (!editing) {
-			continue;
-		}
-		AddToScene(obs_scene_from_source(editing), source);
-		obs_source_release(editing);
-	}
-}
-
 void RemoveIfNotText(const QString &name)
 {
 	if (name.isEmpty()) {
@@ -630,7 +895,6 @@ bool CreateTextSource(Countdown &c)
 		}
 		return false;
 	}
-	PlaceOnOpenScenes(source);
 	obs_source_release(source);
 	c.sourceName = name;
 	c.lastText.clear();
@@ -761,6 +1025,25 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 			ApplyColorButton(warnBtn, PackColor(next));
 		}
 	});
+	auto *colonSame = new QCheckBox(QString::fromUtf8(obs_module_text("CountdownColonSame")), &dialog);
+	colonSame->setChecked(c.colonSame);
+	auto *colonBtn = new QPushButton(&dialog);
+	colonBtn->setObjectName(QStringLiteral("countdownColonColor"));
+	ApplyColorButton(colonBtn, c.colonColor);
+	colonBtn->setEnabled(!c.colonSame);
+	QObject::connect(colonSame, &QCheckBox::toggled, colonBtn, [colonBtn](bool same) { colonBtn->setEnabled(!same); });
+	QObject::connect(colonBtn, &QPushButton::clicked, colonBtn, [colonBtn] {
+		const QColor next = PickColor(colonBtn);
+		if (next.isValid()) {
+			ApplyColorButton(colonBtn, PackColor(next));
+		}
+	});
+	auto *colonRow = new QWidget(&dialog);
+	auto *colonLayout = new QHBoxLayout(colonRow);
+	colonLayout->setContentsMargins(0, 0, 0, 0);
+	colonLayout->addWidget(colonSame);
+	colonLayout->addWidget(colonBtn);
+	colonLayout->addStretch(1);
 	auto *warnSeconds = new QSpinBox(&dialog);
 	warnSeconds->setRange(0, 3600);
 	warnSeconds->setValue(std::max(0, c.warnSeconds));
@@ -782,6 +1065,7 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownFontSize")), fontSize);
 	form->addRow(QString(), bold);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownColor")), colorBtn);
+	form->addRow(QString::fromUtf8(obs_module_text("CountdownColonColor")), colonRow);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownWarnColor")), warnBtn);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownWarnSeconds")), warnSeconds);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownHotkey")), hotkey);
@@ -805,6 +1089,8 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 		next.fontSize = fontSize->value();
 		next.bold = bold->isChecked();
 		next.color = ColorFromButton(colorBtn);
+		next.colonSame = colonSame->isChecked();
+		next.colonColor = ColorFromButton(colonBtn);
 		next.warnColor = ColorFromButton(warnBtn);
 		next.warnSeconds = warnSeconds->value();
 		next.fontDirty = true;
@@ -952,24 +1238,31 @@ void RebuildRows()
 		item.toggleBtn = nullptr;
 		auto *card = new QFrame;
 		card->setObjectName(QStringLiteral("countdownCard"));
+		card->setMinimumWidth(0);
 		auto *column = new QVBoxLayout(card);
-		column->setContentsMargins(8, 6, 8, 6);
-		column->setSpacing(6);
+		column->setContentsMargins(10, 8, 10, 8);
+		column->setSpacing(4);
 
-		auto *header = new QHBoxLayout;
-		header->setContentsMargins(0, 0, 0, 0);
-		header->setSpacing(8);
 		auto *title = new QLabel(item.name, card);
 		title->setObjectName(QStringLiteral("countdownName"));
 		title->setWordWrap(false);
 		title->setMinimumWidth(0);
-		title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+		title->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+		title->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		QFont nameFont = title->font();
+		nameFont.setPointSize(9);
+		nameFont.setWeight(QFont::DemiBold);
+		title->setFont(nameFont);
 		auto *time = new QLabel(card);
 		time->setObjectName(QStringLiteral("countdownTime"));
-		time->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-		time->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-		header->addWidget(title, 1);
-		header->addWidget(time, 0);
+		time->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+		time->setMinimumWidth(0);
+		time->setMinimumHeight(28);
+		time->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		QFont timeFont(QStringLiteral("Consolas"));
+		timeFont.setPixelSize(18);
+		timeFont.setWeight(QFont::DemiBold);
+		time->setFont(timeFont);
 
 		auto *buttons = new QHBoxLayout;
 		buttons->setContentsMargins(0, 0, 0, 0);
@@ -987,7 +1280,8 @@ void RebuildRows()
 			StyleCountdownButton(button);
 			buttons->addWidget(button);
 		}
-		column->addLayout(header);
+		column->addWidget(title);
+		column->addWidget(time);
 		column->addLayout(buttons);
 		listLayout->addWidget(card);
 		item.timeLabel = time;
@@ -1143,27 +1437,27 @@ QWidget *countdowns_create_page(QWidget *parent)
 	shuttingDown = false;
 	auto *root = new QWidget(parent);
 	root->setObjectName(QStringLiteral("countdownTimersPage"));
+	/* alternate-base is unset in the OBS theme, so it stays the light default and hides the light label text. */
 	root->setStyleSheet(QStringLiteral(
 		"QFrame#countdownCard {"
-		"  background-color: palette(alternate-base);"
-		"  border: 1px solid palette(mid);"
+		"  background-color: palette(base);"
+		"  border: 1px solid palette(light);"
 		"  border-radius: 4px;"
 		"}"
-		"QLabel#countdownName { font-size: 8pt; color: palette(window-text); }"
-		"QLabel#countdownTime {"
-		"  font-size: 14pt;"
-		"  font-weight: 600;"
-		"  font-family: Consolas, 'Cascadia Mono', monospace;"
+		"QLabel#countdownName, QLabel#countdownTime {"
+		"  color: palette(window-text);"
+		"  background: transparent;"
 		"}"
 		"QPushButton#countdownAction {"
-		"  padding: 1px 6px;"
+		"  padding: 2px 6px;"
 		"  margin: 0px;"
-		"  min-height: 18px;"
-		"  max-height: 24px;"
+		"  min-width: 0px;"
+		"  min-height: 22px;"
+		"  max-height: 26px;"
 		"  font-size: 8pt;"
 		"}"));
 	auto *layout = new QVBoxLayout(root);
-	layout->setContentsMargins(2, 2, 2, 2);
+	layout->setContentsMargins(6, 6, 6, 6);
 	layout->setSpacing(6);
 
 	auto *actions = new QHBoxLayout;
@@ -1188,7 +1482,9 @@ QWidget *countdowns_create_page(QWidget *parent)
 	auto *scroll = new QScrollArea(root);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
+	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	auto *listHost = new QWidget(scroll);
+	listHost->setMinimumWidth(0);
 	listLayout = new QVBoxLayout(listHost);
 	listLayout->setContentsMargins(0, 0, 0, 0);
 	listLayout->setSpacing(6);
@@ -1242,6 +1538,9 @@ void countdowns_reload()
 		}
 		item.bold = obs_data_get_bool(data, "bold") || !obs_data_has_user_value(data, "bold");
 		item.color = obs_data_has_user_value(data, "color") ? (uint32_t)obs_data_get_int(data, "color") : 0xFFFFFFFFu;
+		item.colonSame = !obs_data_has_user_value(data, "colon_same") || obs_data_get_bool(data, "colon_same");
+		item.colonColor =
+			obs_data_has_user_value(data, "colon_color") ? (uint32_t)obs_data_get_int(data, "colon_color") : item.color;
 		item.warnColor =
 			obs_data_has_user_value(data, "warn_color") ? (uint32_t)obs_data_get_int(data, "warn_color") : 0xFF0000FFu;
 		item.warnSeconds = obs_data_has_user_value(data, "warn_seconds")
@@ -1257,9 +1556,10 @@ void countdowns_reload()
 			item.sourceLive = old.sourceLive;
 			item.lastText = old.lastText;
 			item.lastColor = old.lastColor;
+			item.lastColonColor = old.lastColonColor;
 			item.hotkey = old.hotkey;
 			item.fontDirty = old.fontFace != item.fontFace || old.fontSize != item.fontSize || old.bold != item.bold ||
-					 old.color != item.color;
+					 old.color != item.color || old.colonColor != item.colonColor || old.colonSame != item.colonSame;
 			break;
 		}
 		if (item.hotkey == OBS_INVALID_HOTKEY_ID) {
