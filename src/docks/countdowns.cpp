@@ -545,16 +545,27 @@ bool CreateTextSource(Countdown &c)
 void ApplyColorButton(QPushButton *button, uint32_t color)
 {
 	button->setProperty("obsColor", QVariant::fromValue<qulonglong>(color));
+	if (button->objectName().isEmpty()) {
+		button->setObjectName(QStringLiteral("countdownColorButton"));
+	}
 	const QColor q = UnpackColor(color);
+	const QString ink = q.lightness() > 140 ? QStringLiteral("#000000") : QStringLiteral("#ffffff");
+	/* The selector is the button itself. A bare background-color rule is
+	 * inherited by every child, including the color dialog opened from it. */
+	button->setStyleSheet(QStringLiteral("QPushButton#%1 { background-color: %2; color: %3; }")
+				       .arg(button->objectName(), q.name(QColor::HexRgb), ink));
 	button->setText(q.name(QColor::HexRgb));
-	button->setStyleSheet(QStringLiteral("background-color:%1; color:%2;")
-				       .arg(q.name(QColor::HexRgb), q.lightness() > 140 ? QStringLiteral("black")
-											 : QStringLiteral("white")));
 }
 
 uint32_t ColorFromButton(QPushButton *button)
 {
 	return (uint32_t)button->property("obsColor").toULongLong();
+}
+
+QColor PickColor(QPushButton *button)
+{
+	/* Parent is the edit dialog, not the colored button. */
+	return QColorDialog::getColor(UnpackColor(ColorFromButton(button)), button->window());
 }
 
 bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
@@ -638,16 +649,18 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 
 	auto *colorBtn = new QPushButton(&dialog);
 	auto *warnBtn = new QPushButton(&dialog);
+	colorBtn->setObjectName(QStringLiteral("countdownTextColor"));
+	warnBtn->setObjectName(QStringLiteral("countdownWarnColor"));
 	ApplyColorButton(colorBtn, c.color);
 	ApplyColorButton(warnBtn, c.warnColor);
 	QObject::connect(colorBtn, &QPushButton::clicked, colorBtn, [colorBtn] {
-		const QColor next = QColorDialog::getColor(UnpackColor(ColorFromButton(colorBtn)), colorBtn);
+		const QColor next = PickColor(colorBtn);
 		if (next.isValid()) {
 			ApplyColorButton(colorBtn, PackColor(next));
 		}
 	});
 	QObject::connect(warnBtn, &QPushButton::clicked, warnBtn, [warnBtn] {
-		const QColor next = QColorDialog::getColor(UnpackColor(ColorFromButton(warnBtn)), warnBtn);
+		const QColor next = PickColor(warnBtn);
 		if (next.isValid()) {
 			ApplyColorButton(warnBtn, PackColor(next));
 		}
