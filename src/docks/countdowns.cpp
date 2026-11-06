@@ -924,6 +924,18 @@ void ResetActive()
 	}
 }
 
+void StyleCountdownButton(QPushButton *button)
+{
+	button->setObjectName(QStringLiteral("countdownAction"));
+	button->setMinimumWidth(0);
+	button->setMinimumHeight(0);
+	button->setMaximumHeight(24);
+	button->setAutoDefault(false);
+	button->setDefault(false);
+	button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	button->setCursor(Qt::PointingHandCursor);
+}
+
 void RebuildRows()
 {
 	if (!listLayout) {
@@ -938,35 +950,46 @@ void RebuildRows()
 	for (auto &item : items) {
 		item.timeLabel = nullptr;
 		item.toggleBtn = nullptr;
-		auto *row = new QWidget;
-		auto *column = new QVBoxLayout(row);
-		column->setContentsMargins(0, 4, 0, 4);
-		column->setSpacing(2);
-		auto *title = new QLabel(item.name, row);
-		title->setWordWrap(true);
-		auto *time = new QLabel(row);
-		time->setAlignment(Qt::AlignLeft);
+		auto *card = new QFrame;
+		card->setObjectName(QStringLiteral("countdownCard"));
+		auto *column = new QVBoxLayout(card);
+		column->setContentsMargins(8, 6, 8, 6);
+		column->setSpacing(6);
+
+		auto *header = new QHBoxLayout;
+		header->setContentsMargins(0, 0, 0, 0);
+		header->setSpacing(8);
+		auto *title = new QLabel(item.name, card);
+		title->setObjectName(QStringLiteral("countdownName"));
+		title->setWordWrap(false);
+		title->setMinimumWidth(0);
+		title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+		auto *time = new QLabel(card);
+		time->setObjectName(QStringLiteral("countdownTime"));
+		time->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+		time->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+		header->addWidget(title, 1);
+		header->addWidget(time, 0);
+
 		auto *buttons = new QHBoxLayout;
 		buttons->setContentsMargins(0, 0, 0, 0);
 		buttons->setSpacing(4);
-		auto *toggle = new QPushButton(row);
-		auto *reset = new QPushButton(QString::fromUtf8(obs_module_text("CountdownReset")), row);
-		auto *edit = new QPushButton(QString::fromUtf8(obs_module_text("CountdownEdit")), row);
-		auto *remove = new QPushButton(QString::fromUtf8(obs_module_text("CountdownRemove")), row);
+		auto *toggle = new QPushButton(card);
+		auto *reset = new QPushButton(QString::fromUtf8(obs_module_text("CountdownReset")), card);
+		auto *edit = new QPushButton(QString::fromUtf8(obs_module_text("CountdownEdit")), card);
+		auto *remove = new QPushButton(QString::fromUtf8(obs_module_text("CountdownRemove")), card);
 		const QString id = item.id;
-		QObject::connect(toggle, &QPushButton::clicked, row, [id] { OnStartPause(id); });
-		QObject::connect(reset, &QPushButton::clicked, row, [id] { OnReset(id); });
-		QObject::connect(edit, &QPushButton::clicked, row, [id] { OnEdit(id); });
-		QObject::connect(remove, &QPushButton::clicked, row, [id] { OnRemove(id); });
+		QObject::connect(toggle, &QPushButton::clicked, card, [id] { OnStartPause(id); });
+		QObject::connect(reset, &QPushButton::clicked, card, [id] { OnReset(id); });
+		QObject::connect(edit, &QPushButton::clicked, card, [id] { OnEdit(id); });
+		QObject::connect(remove, &QPushButton::clicked, card, [id] { OnRemove(id); });
 		for (QPushButton *button : {toggle, reset, edit, remove}) {
-			button->setMinimumWidth(0);
-			button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+			StyleCountdownButton(button);
 			buttons->addWidget(button);
 		}
-		column->addWidget(title);
-		column->addWidget(time);
+		column->addLayout(header);
 		column->addLayout(buttons);
-		listLayout->addWidget(row);
+		listLayout->addWidget(card);
 		item.timeLabel = time;
 		item.toggleBtn = toggle;
 	}
@@ -1120,13 +1143,42 @@ QWidget *countdowns_create_page(QWidget *parent)
 	shuttingDown = false;
 	auto *root = new QWidget(parent);
 	root->setObjectName(QStringLiteral("countdownTimersPage"));
+	root->setStyleSheet(QStringLiteral(
+		"QFrame#countdownCard {"
+		"  background-color: palette(alternate-base);"
+		"  border: 1px solid palette(mid);"
+		"  border-radius: 4px;"
+		"}"
+		"QLabel#countdownName { font-size: 8pt; color: palette(window-text); }"
+		"QLabel#countdownTime {"
+		"  font-size: 14pt;"
+		"  font-weight: 600;"
+		"  font-family: Consolas, 'Cascadia Mono', monospace;"
+		"}"
+		"QPushButton#countdownAction {"
+		"  padding: 1px 6px;"
+		"  margin: 0px;"
+		"  min-height: 18px;"
+		"  max-height: 24px;"
+		"  font-size: 8pt;"
+		"}"));
 	auto *layout = new QVBoxLayout(root);
-	layout->setContentsMargins(4, 4, 4, 4);
-	layout->setSpacing(4);
+	layout->setContentsMargins(2, 2, 2, 2);
+	layout->setSpacing(6);
 
 	auto *actions = new QHBoxLayout;
+	actions->setSpacing(4);
 	auto *add = new QPushButton(QString::fromUtf8(obs_module_text("CountdownAdd")), root);
 	auto *resetActive = new QPushButton(QString::fromUtf8(obs_module_text("CountdownResetActive")), root);
+	for (QPushButton *button : {add, resetActive}) {
+		button->setObjectName(QStringLiteral("countdownAction"));
+		button->setMinimumWidth(0);
+		button->setMinimumHeight(0);
+		button->setMaximumHeight(24);
+		button->setAutoDefault(false);
+		button->setDefault(false);
+		button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	}
 	QObject::connect(add, &QPushButton::clicked, root, [] { AddCountdown(); });
 	QObject::connect(resetActive, &QPushButton::clicked, root, [] { ResetActive(); });
 	actions->addWidget(add);
@@ -1139,7 +1191,7 @@ QWidget *countdowns_create_page(QWidget *parent)
 	auto *listHost = new QWidget(scroll);
 	listLayout = new QVBoxLayout(listHost);
 	listLayout->setContentsMargins(0, 0, 0, 0);
-	listLayout->setSpacing(0);
+	listLayout->setSpacing(6);
 	scroll->setWidget(listHost);
 	layout->addWidget(scroll, 1);
 

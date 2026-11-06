@@ -179,6 +179,137 @@ bool CanvasDock::save_undo_source_enum(obs_scene_t * /* scene */, obs_sceneitem_
 
 static bool undoing = false;
 
+struct UuidFind {
+	const char *uuid;
+	obs_source_t *found;
+};
+
+static bool FindSceneSourceByUuid(void *param, obs_source_t *source)
+{
+	auto *find = static_cast<UuidFind *>(param);
+	const char *uuid = obs_source_get_uuid(source);
+	if (uuid && find->uuid && strcmp(uuid, find->uuid) == 0) {
+		find->found = obs_source_get_ref(source);
+		return false;
+	}
+	return true;
+}
+
+static bool FindCanvasSourceByUuid(void *param, obs_canvas_t *canvas)
+{
+	auto *find = static_cast<UuidFind *>(param);
+	obs_canvas_enum_scenes(canvas, FindSceneSourceByUuid, find);
+	return find->found == nullptr;
+}
+
+/* obs_get_source_by_uuid only sees the main canvas. Scenes and groups on an
+ * extra canvas have to be found on that canvas. */
+static obs_source_t *FindSourceByUuid(const char *uuid)
+{
+	if (!uuid || !*uuid) {
+		return nullptr;
+	}
+	if (obs_source_t *source = obs_get_source_by_uuid(uuid)) {
+		return source;
+	}
+	UuidFind find = {uuid, nullptr};
+	obs_enum_canvases(FindCanvasSourceByUuid, &find);
+	return find.found;
+}
+
+static bool SceneContainsSource(obs_scene_t *scene, obs_source_t *source)
+{
+	struct Hit {
+		obs_source_t *source;
+		bool found;
+	} hit = {source, false};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+			auto *hit = static_cast<Hit *>(param);
+			if (obs_sceneitem_get_source(item) == hit->source) {
+				hit->found = true;
+				return false;
+			}
+			return true;
+		},
+		&hit);
+	return hit.found;
+}
+
+static void ApplySavedSceneItem(obs_sceneitem_t *item, obs_data_t *itemData)
+{
+	obs_transform_info info = {};
+	info.alignment = (uint32_t)obs_data_get_int(itemData, "align");
+	info.rot = (float)obs_data_get_double(itemData, "rot");
+	obs_data_get_vec2(itemData, "pos", &info.pos);
+	obs_data_get_vec2(itemData, "scale", &info.scale);
+	info.bounds_type = (enum obs_bounds_type)obs_data_get_int(itemData, "bounds_type");
+	info.bounds_alignment = (uint32_t)obs_data_get_int(itemData, "bounds_align");
+	info.crop_to_bounds = obs_data_get_bool(itemData, "bounds_crop");
+	obs_data_get_vec2(itemData, "bounds", &info.bounds);
+	obs_sceneitem_set_info2(item, &info);
+
+	obs_sceneitem_crop crop = {};
+	crop.left = (int)obs_data_get_int(itemData, "crop_left");
+	crop.top = (int)obs_data_get_int(itemData, "crop_top");
+	crop.right = (int)obs_data_get_int(itemData, "crop_right");
+	crop.bottom = (int)obs_data_get_int(itemData, "crop_bottom");
+	obs_sceneitem_set_crop(item, &crop);
+	if (obs_data_has_user_value(itemData, "visible")) {
+		obs_sceneitem_set_visible(item, obs_data_get_bool(itemData, "visible"));
+	}
+	obs_sceneitem_set_locked(item, obs_data_get_bool(itemData, "locked"));
+	obs_sceneitem_select(item, false);
+}
+
+/* scene_load looks sources up with obs_get_source_by_uuid, which misses
+ * scenes and groups that live on an extra canvas. Put those items back. */
+static void RestoreCanvasSceneItems(obs_source_t *sceneSource)
+{
+	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
+	if (!scene) {
+		return;
+	}
+	obs_data_t *settings = obs_source_get_settings(sceneSource);
+	obs_data_array_t *items = settings ? obs_data_get_array(settings, "items") : nullptr;
+	if (settings) {
+		obs_data_release(settings);
+	}
+	if (!items) {
+		return;
+	}
+	const size_t count = obs_data_array_count(items);
+	for (size_t i = 0; i < count; i++) {
+		obs_data_t *itemData = obs_data_array_item(items, i);
+		if (!obs_data_get_bool(itemData, "group_item_backup")) {
+			const char *uuid = obs_data_get_string(itemData, "source_uuid");
+			obs_source_t *source = FindSourceByUuid(uuid);
+			if (!source) {
+				source = obs_get_source_by_name(obs_data_get_string(itemData, "name"));
+			}
+			if (source && !SceneContainsSource(scene, source)) {
+				obs_sceneitem_t *item = obs_scene_add(scene, source);
+				if (item) {
+					ApplySavedSceneItem(item, itemData);
+				}
+			}
+			obs_source_release(source);
+		}
+		obs_data_release(itemData);
+	}
+	obs_data_array_release(items);
+}
+
+static bool DeselectSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *)
+{
+	if (obs_sceneitem_is_group(item)) {
+		obs_sceneitem_group_enum_items(item, DeselectSceneItem, nullptr);
+	}
+	obs_sceneitem_select(item, false);
+	return true;
+}
+
 void CanvasDock::undo_redo_scene(const char *json)
 {
 	OBSDataAutoRelease base = obs_data_create_from_json(json);
@@ -221,8 +352,31 @@ void CanvasDock::undo_redo_scene(const char *json)
 	for (obs_source_t *source : sources) {
 		obs_source_load2(source);
 	}
+	for (obs_source_t *source : sources) {
+		RestoreCanvasSceneItems(source);
+	}
 
 	undoing = false;
+
+	for (CanvasDock *dock : canvas_docks) {
+		if (!dock) {
+			continue;
+		}
+		{
+			std::lock_guard<std::mutex> lock(dock->selectMutex);
+			dock->hoveredPreviewItems.clear();
+			dock->selectedItems.clear();
+		}
+		dock->stretchItem = nullptr;
+		dock->stretchGroup = nullptr;
+		dock->selectionBox = false;
+		if (dock->scene) {
+			obs_scene_enum_items(dock->scene, DeselectSceneItem, nullptr);
+		}
+		if (dock->sourceList) {
+			dock->sourceList->RefreshItems();
+		}
+	}
 }
 
 std::string CanvasDock::backup_scene(obs_scene_t *scene)
@@ -5274,14 +5428,16 @@ void CanvasDock::SceneRemoved(const QString name)
 
 void CanvasDock::AddSceneItem(OBSSceneItem item, bool no_select)
 {
+	/* Undo reloads every item. Inserting each one also selects it, so the
+	 * red box flashes across the whole scene. The undo path refreshes once. */
+	if (no_select) {
+		return;
+	}
+
 	obs_scene_t *add_scene = obs_sceneitem_get_scene(item);
 
 	if (scene == add_scene) {
 		sourceList->Add(item);
-	}
-
-	if (no_select) {
-		return;
 	}
 
 	obs_scene_enum_items(add_scene, select_one, (obs_sceneitem_t *)item);
