@@ -1,4 +1,5 @@
 #include "countdowns.hpp"
+#include "canvas-dock.hpp"
 
 #include <src/utils/widgets/hotkey-edit.hpp>
 
@@ -38,6 +39,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <list>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -272,6 +274,7 @@ void countdowns_register_source()
 
 extern obs_data_t *current_profile_config;
 extern void save_current_profile_config(bool save_docks);
+extern std::list<CanvasDock *> canvas_docks;
 
 namespace {
 
@@ -860,6 +863,128 @@ QString UniqueSourceName(const QString &base)
 	}
 }
 
+bool SceneHasSource(obs_scene_t *scene, obs_source_t *source)
+{
+	struct Found {
+		obs_source_t *source;
+		bool found;
+	} found = {source, false};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+			auto *found = static_cast<Found *>(param);
+			if (obs_sceneitem_get_source(item) == found->source) {
+				found->found = true;
+				return false;
+			}
+			return true;
+		},
+		&found);
+	return found.found;
+}
+
+bool PlaceOnScene(const QString &sourceName, const QString &canvasName, const QString &sceneName)
+{
+	if (sourceName.isEmpty() || canvasName.isEmpty() || sceneName.isEmpty()) {
+		return false;
+	}
+	QByteArray sourceUtf8 = sourceName.toUtf8();
+	QByteArray canvasUtf8 = canvasName.toUtf8();
+	QByteArray sceneUtf8 = sceneName.toUtf8();
+	obs_source_t *source = obs_get_source_by_name(sourceUtf8.constData());
+	if (!source) {
+		return false;
+	}
+	obs_canvas_t *canvas = obs_get_canvas_by_name(canvasUtf8.constData());
+	if (!canvas) {
+		obs_source_release(source);
+		return false;
+	}
+	obs_scene_t *scene = obs_canvas_get_scene_by_name(canvas, sceneUtf8.constData());
+	obs_canvas_release(canvas);
+	if (!scene) {
+		obs_source_release(source);
+		return false;
+	}
+	if (!SceneHasSource(scene, source)) {
+		obs_scene_add(scene, source);
+	}
+	obs_scene_release(scene);
+	obs_source_release(source);
+	return true;
+}
+
+QStringList SceneNames(const QString &canvasName)
+{
+	QStringList names;
+	if (canvasName.isEmpty()) {
+		return names;
+	}
+	QByteArray canvasUtf8 = canvasName.toUtf8();
+	obs_canvas_t *canvas = obs_get_canvas_by_name(canvasUtf8.constData());
+	if (!canvas) {
+		return names;
+	}
+	obs_canvas_enum_scenes(
+		canvas,
+		[](void *param, obs_source_t *source) {
+			if (!source || obs_source_is_group(source)) {
+				return true;
+			}
+			const char *name = obs_source_get_name(source);
+			if (name && *name) {
+				static_cast<QStringList *>(param)->append(QString::fromUtf8(name));
+			}
+			return true;
+		},
+		&names);
+	obs_canvas_release(canvas);
+	names.sort(Qt::CaseInsensitive);
+	return names;
+}
+
+QString PreferredScene(const QString &canvasName)
+{
+	obs_source_t *current = obs_frontend_get_current_scene();
+	if (current) {
+		obs_canvas_t *canvas = obs_source_get_canvas(current);
+		const char *name = canvas ? obs_canvas_get_name(canvas) : nullptr;
+		const bool same = name && QString::fromUtf8(name) == canvasName;
+		QString sceneName;
+		if (same) {
+			const char *scene = obs_source_get_name(current);
+			if (scene && *scene) {
+				sceneName = QString::fromUtf8(scene);
+			}
+		}
+		if (canvas) {
+			obs_canvas_release(canvas);
+		}
+		obs_source_release(current);
+		if (!sceneName.isEmpty()) {
+			return sceneName;
+		}
+	}
+	for (CanvasDock *dock : canvas_docks) {
+		if (!dock || !dock->GetCanvas()) {
+			continue;
+		}
+		const char *name = obs_canvas_get_name(dock->GetCanvas());
+		if (!name || QString::fromUtf8(name) != canvasName) {
+			continue;
+		}
+		obs_source_t *editing = dock->GetEditingSceneSource();
+		if (!editing) {
+			return QString();
+		}
+		const char *scene = obs_source_get_name(editing);
+		QString sceneName = scene ? QString::fromUtf8(scene) : QString();
+		obs_source_release(editing);
+		return sceneName;
+	}
+	return QString();
+}
+
 bool CreateTextSource(Countdown &c)
 {
 	const char *id = TextSourceId();
@@ -989,6 +1114,54 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 	int sourceIndex = c.sourceName.isEmpty() ? 0 : source->findData(c.sourceName);
 	source->setCurrentIndex(sourceIndex < 0 ? 0 : sourceIndex);
 
+	auto *canvasBox = new QComboBox(&dialog);
+	auto *sceneBox = new QComboBox(&dialog);
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) {
+			const char *name = canvas ? obs_canvas_get_name(canvas) : nullptr;
+			if (!name || !*name) {
+				return true;
+			}
+			QString canvasName = QString::fromUtf8(name);
+			static_cast<QComboBox *>(param)->addItem(canvasName, canvasName);
+			return true;
+		},
+		canvasBox);
+	auto fillScenes = [&]() {
+		const QString canvasName = canvasBox->currentData().toString();
+		const QString prefer = PreferredScene(canvasName);
+		sceneBox->clear();
+		const QStringList scenes = SceneNames(canvasName);
+		for (const QString &sceneName : scenes) {
+			sceneBox->addItem(sceneName, sceneName);
+		}
+		const int sceneIndex = sceneBox->findData(prefer);
+		if (sceneIndex >= 0) {
+			sceneBox->setCurrentIndex(sceneIndex);
+		}
+	};
+	canvasBox->blockSignals(true);
+	QString preferCanvas;
+	obs_source_t *currentScene = obs_frontend_get_current_scene();
+	if (currentScene) {
+		obs_canvas_t *currentCanvas = obs_source_get_canvas(currentScene);
+		const char *canvasName = currentCanvas ? obs_canvas_get_name(currentCanvas) : nullptr;
+		if (canvasName && *canvasName) {
+			preferCanvas = QString::fromUtf8(canvasName);
+		}
+		if (currentCanvas) {
+			obs_canvas_release(currentCanvas);
+		}
+		obs_source_release(currentScene);
+	}
+	const int canvasIndex = canvasBox->findData(preferCanvas);
+	if (canvasIndex >= 0) {
+		canvasBox->setCurrentIndex(canvasIndex);
+	}
+	canvasBox->blockSignals(false);
+	fillScenes();
+	QObject::connect(canvasBox, &QComboBox::currentIndexChanged, &dialog, fillScenes);
+
 	auto *font = new QComboBox(&dialog);
 	font->setEditable(true);
 	const QStringList families = QFontDatabase::families();
@@ -1061,6 +1234,8 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownEndText")), endEdit);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownFormat")), format);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownSource")), source);
+	form->addRow(QString::fromUtf8(obs_module_text("CountdownCanvas")), canvasBox);
+	form->addRow(QString::fromUtf8(obs_module_text("CountdownScene")), sceneBox);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownFont")), font);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownFontSize")), fontSize);
 	form->addRow(QString(), bold);
@@ -1069,6 +1244,20 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownWarnColor")), warnBtn);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownWarnSeconds")), warnSeconds);
 	form->addRow(QString::fromUtf8(obs_module_text("CountdownHotkey")), hotkey);
+
+	auto updatePlace = [&]() {
+		const bool create = source->currentData().toString().isEmpty();
+		canvasBox->setVisible(create);
+		sceneBox->setVisible(create);
+		if (QWidget *label = form->labelForField(canvasBox)) {
+			label->setVisible(create);
+		}
+		if (QWidget *label = form->labelForField(sceneBox)) {
+			label->setVisible(create);
+		}
+	};
+	updatePlace();
+	QObject::connect(source, &QComboBox::currentIndexChanged, &dialog, updatePlace);
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
 	form->addRow(buttons);
@@ -1096,9 +1285,28 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 		next.fontDirty = true;
 		const QString picked = source->currentData().toString();
 		if (picked.isEmpty()) {
+			const QString canvasName = canvasBox->currentData().toString();
+			const QString sceneName = sceneBox->currentData().toString();
+			if (canvasName.isEmpty() || sceneName.isEmpty()) {
+				QMessageBox::warning(&dialog, dialog.windowTitle(),
+						     QString::fromUtf8(obs_module_text("CountdownNoScene")));
+				return;
+			}
 			if (!CreateTextSource(next)) {
 				QMessageBox::warning(&dialog, dialog.windowTitle(),
 						     QString::fromUtf8(obs_module_text("CountdownCreateFailed")));
+				return;
+			}
+			if (!PlaceOnScene(next.sourceName, canvasName, sceneName)) {
+				QByteArray createdName = next.sourceName.toUtf8();
+				obs_source_t *created = obs_get_source_by_name(createdName.constData());
+				if (created) {
+					obs_source_remove(created);
+					obs_source_release(created);
+				}
+				next.sourceName.clear();
+				QMessageBox::warning(&dialog, dialog.windowTitle(),
+						     QString::fromUtf8(obs_module_text("CountdownPlaceFailed")));
 				return;
 			}
 		} else if (picked != c.sourceName) {
