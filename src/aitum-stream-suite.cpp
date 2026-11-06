@@ -9,6 +9,7 @@
 #include "docks/chat-dock.hpp"
 #include "docks/alerts-dock.hpp"
 #include "docks/channel-dock.hpp"
+#include "docks/countdowns.hpp"
 #include "utils/icon.hpp"
 #include "utils/obs-websocket-api.h"
 #include "version.h"
@@ -547,6 +548,7 @@ void load_current_profile_config()
 	load_outputs();
 
 	QMetaObject::invokeMethod(qApp, [] { load_dock_state(kDefaultMode); }, Qt::QueuedConnection);
+	countdowns_reload();
 }
 
 

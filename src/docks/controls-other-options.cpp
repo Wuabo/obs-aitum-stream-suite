@@ -1,4 +1,5 @@
 #include "controls-other-options.hpp"
+#include "countdowns.hpp"
 #include "native-dock-tabs.hpp"
 #include "output-dock.hpp"
 
@@ -28,6 +29,7 @@ namespace {
 QPointer<QWidget> tabHost;
 QPointer<QTabBar> tabs;
 QPointer<QWidget> otherPage;
+QPointer<QWidget> timersPage;
 QPointer<QWidget> controlsFrame;
 QPointer<QPushButton> startStreamsBtn;
 QPointer<QPushButton> stopStreamsBtn;
@@ -51,14 +53,19 @@ void ApplyTab(int index)
 	if (!controlsFrame || !otherPage) {
 		return;
 	}
-	const bool main = index <= 0;
-	controlsFrame->setVisible(main);
-	otherPage->setVisible(!main);
+	controlsFrame->setVisible(index <= 0);
+	otherPage->setVisible(index == 1);
+	if (timersPage) {
+		timersPage->setVisible(index == 2);
+	}
+	countdowns_set_visible(index == 2);
 	if (refreshTimer) {
-		if (main) {
+		if (index == 1) {
+			if (!refreshTimer->isActive()) {
+				refreshTimer->start();
+			}
+		} else {
 			refreshTimer->stop();
-		} else if (!refreshTimer->isActive()) {
-			refreshTimer->start();
 		}
 	}
 }
@@ -212,7 +219,7 @@ QWidget *BuildOtherPage(QWidget *parent)
 
 void install_controls_other_options_tab()
 {
-	if (installed && tabHost && tabs && otherPage && controlsFrame) {
+	if (installed && tabHost && tabs && otherPage && timersPage && controlsFrame) {
 		RefreshActionButtons();
 		return;
 	}
@@ -276,8 +283,14 @@ void install_controls_other_options_tab()
 	if (controlsTitle.isEmpty()) {
 		controlsTitle = QStringLiteral("Controls");
 	}
+	if (!timersPage) {
+		timersPage = countdowns_create_page(root);
+		layout->addWidget(timersPage);
+	}
+
 	tabs->addTab(controlsTitle);
 	tabs->addTab(QString::fromUtf8(obs_module_text("OtherOptions")));
+	tabs->addTab(QString::fromUtf8(obs_module_text("CountdownTimers")));
 	tabs->setCurrentIndex(0);
 	tabs->blockSignals(false);
 
@@ -302,10 +315,16 @@ void shutdown_controls_other_options_tab()
 	if (controlsFrame) {
 		controlsFrame->setVisible(true);
 	}
+	countdowns_shutdown();
 	if (otherPage) {
 		otherPage->hide();
 		delete otherPage;
 		otherPage = nullptr;
+	}
+	if (timersPage) {
+		timersPage->hide();
+		delete timersPage;
+		timersPage = nullptr;
 	}
 	if (tabHost) {
 		delete tabHost;

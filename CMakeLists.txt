@@ -74,6 +74,8 @@ target_sources(${PROJECT_NAME} PRIVATE
   src/docks/main-canvas-context-fix.hpp
   src/docks/controls-other-options.cpp
   src/docks/controls-other-options.hpp
+  src/docks/countdowns.cpp
+  src/docks/countdowns.hpp
   src/docks/output-dock.cpp
   src/docks/output-dock.hpp
   src/docks/stream-info-dock.cpp
