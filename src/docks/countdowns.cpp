@@ -1,4 +1,5 @@
 #include "countdowns.hpp"
+#include "canvas-dock.hpp"
 
 #include <src/utils/widgets/hotkey-edit.hpp>
 
@@ -33,11 +34,13 @@
 
 #include <algorithm>
 #include <cstring>
+#include <list>
 #include <string>
 #include <vector>
 
 extern obs_data_t *current_profile_config;
 extern void save_current_profile_config(bool save_docks);
+extern std::list<CanvasDock *> canvas_docks;
 
 namespace {
 
@@ -487,6 +490,96 @@ QString DefaultFace()
 	return families.isEmpty() ? QString() : families.front();
 }
 
+const char *TextSourceId()
+{
+	const char *const bases[] = {"text_gdiplus", "text_ft2_source"};
+	for (const char *base : bases) {
+		const char *latest = obs_get_latest_input_type_id(base);
+		if (latest && *latest && obs_source_get_display_name(latest)) {
+			return latest;
+		}
+	}
+	return nullptr;
+}
+
+bool SceneAlreadyHas(obs_scene_t *scene, obs_source_t *source)
+{
+	struct Found {
+		obs_source_t *source;
+		bool found;
+	} found = {source, false};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+			auto *found = static_cast<Found *>(param);
+			if (obs_sceneitem_get_source(item) == found->source) {
+				found->found = true;
+				return false;
+			}
+			return true;
+		},
+		&found);
+	return found.found;
+}
+
+void AddToScene(obs_scene_t *scene, obs_source_t *source)
+{
+	if (!scene || !source || SceneAlreadyHas(scene, source)) {
+		return;
+	}
+	obs_scene_add(scene, source);
+}
+
+void PlaceOnOpenScenes(obs_source_t *source)
+{
+	obs_source_t *current = obs_frontend_get_current_scene();
+	if (current) {
+		AddToScene(obs_scene_from_source(current), source);
+		obs_source_release(current);
+	}
+	for (CanvasDock *dock : canvas_docks) {
+		if (!dock) {
+			continue;
+		}
+		obs_source_t *editing = dock->GetEditingSceneSource();
+		if (!editing) {
+			continue;
+		}
+		AddToScene(obs_scene_from_source(editing), source);
+		obs_source_release(editing);
+	}
+}
+
+void RemoveIfNotText(const QString &name)
+{
+	if (name.isEmpty()) {
+		return;
+	}
+	QByteArray utf8 = name.toUtf8();
+	obs_source_t *existing = obs_get_source_by_name(utf8.constData());
+	if (!existing) {
+		return;
+	}
+	if (!IsTextSource(existing)) {
+		obs_source_remove(existing);
+	}
+	obs_source_release(existing);
+}
+
+bool SourceIsRealText(const QString &name)
+{
+	if (name.isEmpty()) {
+		return false;
+	}
+	QByteArray utf8 = name.toUtf8();
+	obs_source_t *source = obs_get_source_by_name(utf8.constData());
+	const bool real = IsTextSource(source);
+	if (source) {
+		obs_source_release(source);
+	}
+	return real;
+}
+
 QString UniqueSourceName(const QString &base)
 {
 	QString name = base.isEmpty() ? QString::fromUtf8(obs_module_text("CountdownTimers")) : base;
@@ -504,6 +597,11 @@ QString UniqueSourceName(const QString &base)
 
 bool CreateTextSource(Countdown &c)
 {
+	const char *id = TextSourceId();
+	if (!id) {
+		return false;
+	}
+	RemoveIfNotText(c.name);
 	const QString name = UniqueSourceName(c.name);
 	QByteArray nameUtf8 = name.toUtf8();
 	QByteArray textUtf8 = ClockText(c, DurationMs(c)).toUtf8();
@@ -523,18 +621,16 @@ bool CreateTextSource(Countdown &c)
 	obs_data_set_int(settings, "color1", (long long)c.color);
 	obs_data_set_int(settings, "color2", (long long)c.color);
 
-	const char *ids[] = {"text_gdiplus_v2", "text_gdiplus", "text_ft2_source"};
-	obs_source_t *source = nullptr;
-	for (const char *id : ids) {
-		source = obs_source_create(id, nameUtf8.constData(), settings, nullptr);
-		if (source) {
-			break;
-		}
-	}
+	obs_source_t *source = obs_source_create(id, nameUtf8.constData(), settings, nullptr);
 	obs_data_release(settings);
-	if (!source) {
+	if (!IsTextSource(source)) {
+		if (source) {
+			obs_source_remove(source);
+			obs_source_release(source);
+		}
 		return false;
 	}
+	PlaceOnOpenScenes(source);
 	obs_source_release(source);
 	c.sourceName = name;
 	c.lastText.clear();
@@ -1141,7 +1237,11 @@ void countdowns_reload()
 		}
 	}
 	items = loaded;
+	bool createdSource = false;
 	for (auto &item : items) {
+		if (!SourceIsRealText(item.sourceName)) {
+			createdSource = CreateTextSource(item) || createdSource;
+		}
 		bool live = false;
 		if (!item.sourceName.isEmpty()) {
 			QByteArray sourceName = item.sourceName.toUtf8();
@@ -1164,6 +1264,9 @@ void countdowns_reload()
 	}
 	RebuildRows();
 	EnsureTick();
+	if (createdSource) {
+		Persist();
+	}
 }
 
 void countdowns_shutdown()
