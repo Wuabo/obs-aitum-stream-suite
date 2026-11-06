@@ -1098,6 +1098,10 @@ void ChatDock::showEvent(QShowEvent *event)
 void ChatDock::hideEvent(QHideEvent *event)
 {
 	QFrame::hideEvent(event);
+	/* Viewer count is only for the open dock. Chat polls stay up. */
+	if (viewerTimer) {
+		viewerTimer->stop();
+	}
 	/* Twitch and Kick stay connected. YouTube Data API and the site chat
 	 * poll stop until the dock is visible again. */
 	PauseYouTube();

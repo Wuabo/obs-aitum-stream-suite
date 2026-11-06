@@ -428,17 +428,6 @@ void ShowMain(bool main)
 		}
 	}
 
-	for (auto &page : pages) {
-		if (!page.sources || !page.sources->isVisible()) {
-			continue;
-		}
-		if (auto *dock = page.sources->findChild<SourcesDock *>()) {
-			/* Ensure paint is on — a nested updatesEnabled(false) can stick. */
-			dock->setUpdatesEnabled(true);
-			dock->RelayoutSourceList();
-		}
-	}
-
 	SetNativeRemoveShortcutsEnabled(main);
 	SyncVisibleToolbarIcons();
 }

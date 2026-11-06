@@ -27,6 +27,7 @@
 #include <QSizePolicy>
 #include <QTimer>
 #include <util/dstr.h>
+#include <vector>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_AUTHOR("Aitum");
@@ -198,6 +199,42 @@ void transition_start(void *, calldata_t *)
 	for (const auto &it : canvas_docks) {
 		QMetaObject::invokeMethod(it, "MainSceneChanged", Qt::QueuedConnection);
 	}
+}
+
+static std::vector<obs_weak_source_t *> hooked_transitions;
+
+static void disconnect_transition_hooks()
+{
+	for (obs_weak_source_t *weak : hooked_transitions) {
+		obs_source_t *source = obs_weak_source_get_source(weak);
+		if (source) {
+			signal_handler_t *sh = obs_source_get_signal_handler(source);
+			if (sh) {
+				signal_handler_disconnect(sh, "transition_start", transition_start, nullptr);
+			}
+			obs_source_release(source);
+		}
+		obs_weak_source_release(weak);
+	}
+	hooked_transitions.clear();
+}
+
+static void connect_transition_hooks()
+{
+	disconnect_transition_hooks();
+	struct obs_frontend_source_list transitions = {};
+	obs_frontend_get_transitions(&transitions);
+	for (size_t i = 0; i < transitions.sources.num; i++) {
+		obs_source_t *source = transitions.sources.array[i];
+		signal_handler_t *sh = source ? obs_source_get_signal_handler(source) : nullptr;
+		if (sh) {
+			signal_handler_connect(sh, "transition_start", transition_start, nullptr);
+		}
+		if (source) {
+			hooked_transitions.push_back(obs_source_get_weak_source(source));
+		}
+	}
+	obs_frontend_source_list_free(&transitions);
 }
 
 /* Persist per-dock widget settings only (canvas panels).
@@ -551,12 +588,12 @@ static void log_same_sources()
 						if (settings_b) {
 							const char *json_b = obs_data_get_json(settings_b);
 							if (strcmp(json_a, json_b) == 0) {
-								blog(LOG_WARNING,
+								blog(LOG_DEBUG,
 								     "[Aitum Stream Suite] Duplicate source found: '%s', '%s'",
 								     obs_source_get_name(source), obs_source_get_name(it));
 							} else if (do_not_duplicate &&
 								   all_string_settings_the_same(settings_a, settings_b)) {
-								blog(LOG_WARNING,
+								blog(LOG_DEBUG,
 								     "[Aitum Stream Suite] Similar source found: '%s', '%s'",
 								     obs_source_get_name(source), obs_source_get_name(it));
 							}
@@ -581,13 +618,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
 		finished_loading = true;
 		log_same_sources();
-		struct obs_frontend_source_list transitions = {};
-		obs_frontend_get_transitions(&transitions);
-		for (size_t i = 0; i < transitions.sources.num; i++) {
-			auto sh = obs_source_get_signal_handler(transitions.sources.array[i]);
-			signal_handler_connect(sh, "transition_start", transition_start, nullptr);
-		}
-		obs_frontend_source_list_free(&transitions);
+		connect_transition_hooks();
 
 		load_current_profile_config();
 		if (stream_info_dock)
@@ -643,6 +674,7 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 			if (output_dock)
 				output_dock->Exiting();
 		}
+		disconnect_transition_hooks();
 		CancelSourcePreviews();
 		if (current_profile_config) {
 			obs_data_release(current_profile_config);
@@ -727,17 +759,12 @@ static void frontend_event(enum obs_frontend_event event, void *private_data)
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED) {
 		if (finished_loading) {
 			log_same_sources();
-			struct obs_frontend_source_list transitions = {};
-			obs_frontend_get_transitions(&transitions);
-			for (size_t i = 0; i < transitions.sources.num; i++) {
-				auto sh = obs_source_get_signal_handler(transitions.sources.array[i]);
-				signal_handler_connect(sh, "transition_start", transition_start, nullptr);
-			}
-			obs_frontend_source_list_free(&transitions);
+			connect_transition_hooks();
 			load_current_profile_config();
 		}
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING) {
 		scene_collection_changing = true;
+		disconnect_transition_hooks();
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
 		for (auto i = canvas_clone_docks.size(); i > 0; i--) {
 			auto it = canvas_clone_docks.begin();

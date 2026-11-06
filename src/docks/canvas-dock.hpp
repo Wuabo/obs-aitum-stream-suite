@@ -17,7 +17,9 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QHideEvent>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QScrollBar>
 #include <QSpinBox>
 #include <QSplitter>
@@ -166,6 +168,9 @@ private:
 	QWidget *CreateContextBarWidget(obs_source_t *source);
 	void UpdateContextBar(bool force = false);
 	void UpdateContextBarVisibility();
+	void HookPreviewVisibility();
+	void showEvent(QShowEvent *event) override;
+	void hideEvent(QHideEvent *event) override;
 	void resizeEvent(QResizeEvent *event) override;
 	vec2 GetMouseEventPos(QMouseEvent *event);
 	bool SelectedAtPos(obs_scene_t *scene, const vec2 &pos);
@@ -333,6 +338,7 @@ private slots:
 public:
 	CanvasDock(obs_data_t *settings, QWidget *parent = nullptr);
 	~CanvasDock();
+	void SyncPreviewDisplay();
 
 	obs_canvas_t *GetCanvas() const { return canvas; }
 	obs_source_t *GetEditingSceneSource() const;

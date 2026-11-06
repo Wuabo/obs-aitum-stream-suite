@@ -6,6 +6,7 @@
 #include <obs-module.h>
 
 #include <QDockWidget>
+#include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -53,6 +54,13 @@ void ApplyTab(int index)
 	const bool main = index <= 0;
 	controlsFrame->setVisible(main);
 	otherPage->setVisible(!main);
+	if (refreshTimer) {
+		if (main) {
+			refreshTimer->stop();
+		} else if (!refreshTimer->isActive()) {
+			refreshTimer->start();
+		}
+	}
 }
 
 void InvokeOutput(const char *method, bool streamOnly, bool recordOnly)
@@ -178,7 +186,22 @@ QWidget *BuildOtherPage(QWidget *parent)
 	refreshTimer = new QTimer(frame);
 	refreshTimer->setInterval(400);
 	QObject::connect(refreshTimer, &QTimer::timeout, frame, [] { RefreshActionButtons(); });
-	refreshTimer->start();
+	struct PageVis final : QObject {
+		using QObject::QObject;
+		bool eventFilter(QObject *watched, QEvent *event) override
+		{
+			if (!refreshTimer) {
+				return QObject::eventFilter(watched, event);
+			}
+			if (event->type() == QEvent::Hide) {
+				refreshTimer->stop();
+			} else if (event->type() == QEvent::Show && !refreshTimer->isActive()) {
+				refreshTimer->start();
+			}
+			return QObject::eventFilter(watched, event);
+		}
+	};
+	frame->installEventFilter(new PageVis(frame));
 	RefreshActionButtons();
 
 	frame->hide();

@@ -94,6 +94,7 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 	QPixmap pixmap = icon.pixmap(QSize(16, 16));
 	iconLabel = new QLabel();
 	iconLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Maximum);
+	iconLabel->setPixmap(pixmap);
 	iconLabel->setProperty("suiteIcon", pixmap);
 	iconLabel->setStyleSheet(QString::fromUtf8("background: none"));
 	iconLabel->setProperty("class", sourceVisible ? QString::fromUtf8("source-icon")
@@ -150,9 +151,6 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 		PolishWidget(iconLabel);
 		ApplyIconColor(iconLabel);
 	}
-	PolishWidget(label);
-	PolishWidget(vis);
-	PolishWidget(lock);
 
 	/* --------------------------------------------------------- */
 
@@ -428,14 +426,21 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 
 	OBSCanvasAutoRelease canvas = nullptr;
 	if (canvasSource) {
-		/* Source's own canvas is ground truth for the name hash. */
-		canvas = obs_source_get_canvas(source);
+		/* obs_scene_add_group inserts into the scene's canvas hash.
+		 * Rename uses that same hash, not obs_get_source_by_name (Main only). */
+		obs_scene_t *scene = tree->getScene(tree->getSceneParam);
+		obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
+		canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+		if (!canvas)
+			canvas = obs_source_get_canvas(source);
 		if (!canvas && tree->canvasDock && tree->canvasDock->GetCanvas())
 			canvas = obs_canvas_get_ref(tree->canvasDock->GetCanvas());
-		if (!canvas) {
-			obs_scene_t *scene = tree->getScene(tree->getSceneParam);
-			obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr;
-			canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+		obs_canvas_t *dockCanvas = tree->canvasDock ? tree->canvasDock->GetCanvas() : nullptr;
+		if (canvas && dockCanvas && canvas != dockCanvas) {
+			blog(LOG_INFO,
+			     "[Stream Suite] Scene '%s' is on canvas '%s'; this sources tab is bound to '%s'",
+			     sceneSource ? obs_source_get_name(sceneSource) : "?", obs_canvas_get_name(canvas),
+			     obs_canvas_get_name(dockCanvas));
 		}
 	}
 
@@ -523,7 +528,6 @@ void SourceTreeItem::VisibilityChanged(bool visible)
 		ApplyIconColor(iconLabel);
 	}
 	label->setProperty("class", visible ? QString() : QString::fromUtf8("text-muted"));
-	PolishWidget(label);
 	vis->setChecked(visible);
 }
 
@@ -599,7 +603,6 @@ void SourceTreeItem::Update(bool force)
 		expand->setAttribute(Qt::WA_LayoutUsesWidgetRect);
 #endif
 		boxLayout->insertWidget(0, expand);
-		PolishWidget(expand);
 
 		OBSDataAutoRelease private_settings = obs_sceneitem_get_private_settings(sceneitem);
 		expand->blockSignals(true);
@@ -695,11 +698,32 @@ void SourceTreeModel::SceneChanged()
 {
 	obs_scene_t *scene = st->getScene(st->getSceneParam);
 
+	QVector<OBSSceneItem> fresh;
+	if (scene) {
+		obs_scene_enum_items(scene, enumItem, &fresh);
+	}
+	if (fresh.count() == items.count()) {
+		bool same = true;
+		for (int i = 0; i < fresh.count(); i++) {
+			if (fresh[i].Get() != items[i].Get()) {
+				same = false;
+				break;
+			}
+		}
+		if (same) {
+			for (int i = 0; i < items.count(); i++) {
+				bool select = obs_sceneitem_selected(items[i]);
+				QModelIndex index = createIndex(i, 0);
+				st->selectionModel()->select(index, select ? QItemSelectionModel::Select
+									   : QItemSelectionModel::Deselect);
+			}
+			return;
+		}
+	}
+
 	beginResetModel();
 	items.clear();
-	if (scene) {
-		obs_scene_enum_items(scene, enumItem, &items);
-	}
+	items = fresh;
 	endResetModel();
 
 	UpdateGroupState(false);
@@ -915,6 +939,13 @@ QString SourceTreeModel::GetNewGroupName()
 		canvas = obs_source_get_canvas(sceneSource);
 	if (!canvas && st && st->canvasDock && st->canvasDock->GetCanvas())
 		canvas = obs_canvas_get_ref(st->canvasDock->GetCanvas());
+	obs_canvas_t *dockCanvas = (st && st->canvasDock) ? st->canvasDock->GetCanvas() : nullptr;
+	if (canvas && dockCanvas && canvas != dockCanvas) {
+		blog(LOG_INFO,
+		     "[Stream Suite] Scene '%s' is on canvas '%s'; this sources tab is bound to '%s'",
+		     sceneSource ? obs_source_get_name(sceneSource) : "?", obs_canvas_get_name(canvas),
+		     obs_canvas_get_name(dockCanvas));
+	}
 	for (;;) {
 		OBSSourceAutoRelease group = nullptr;
 		if (canvas) {
@@ -1106,8 +1137,18 @@ SourceTree::SourceTree(std::mutex *select_mutex, std::vector<obs_sceneitem_t *> 
 	setItemDelegate(new SourceTreeDelegate(this));
 }
 
+static bool SourceTreeHasRealWidth(const SourceTree *tree)
+{
+	return tree && tree->isVisible() && tree->viewport() && tree->viewport()->width() > 0;
+}
+
 void SourceTree::ResetWidgets()
 {
+	if (!SourceTreeHasRealWidth(this)) {
+		rowsDeferred = true;
+		return;
+	}
+	rowsDeferred = false;
 	SourceTreeModel *stm = GetStm();
 	stm->UpdateGroupState(false);
 
@@ -1119,6 +1160,10 @@ void SourceTree::ResetWidgets()
 
 void SourceTree::UpdateWidget(const QModelIndex &idx, obs_sceneitem_t *item)
 {
+	if (!SourceTreeHasRealWidth(this)) {
+		rowsDeferred = true;
+		return;
+	}
 	setIndexWidget(idx, new SourceTreeItem(this, item));
 }
 
@@ -1659,13 +1704,18 @@ void SourceTree::RelayoutIndexWidgets()
 void SourceTree::showEvent(QShowEvent *event)
 {
 	QListView::showEvent(event);
+	if (rowsDeferred && SourceTreeHasRealWidth(this)) {
+		ResetWidgets();
+	}
 	RelayoutIndexWidgets();
 }
 
 void SourceTree::resizeEvent(QResizeEvent *event)
 {
 	QListView::resizeEvent(event);
-	if (event->size().width() > 0 && event->size().width() != event->oldSize().width()) {
+	if (rowsDeferred && SourceTreeHasRealWidth(this)) {
+		ResetWidgets();
+	} else if (event->size().width() > 0 && event->size().width() != event->oldSize().width()) {
 		RelayoutIndexWidgets();
 	}
 }

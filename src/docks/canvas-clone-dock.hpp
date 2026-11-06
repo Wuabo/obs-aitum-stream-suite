@@ -5,6 +5,8 @@
 #include <obs.h>
 #include <QComboBox>
 #include <QFrame>
+#include <QHideEvent>
+#include <QShowEvent>
 #include <QSplitter>
 #include <util/threading.h>
 
@@ -37,6 +39,9 @@ private:
 	OBSProjector *OpenProjector(int monitor);
 	static void AddProjectorMenuMonitors(QMenu *parent, QObject *target, const char *slot);
 	static void DrawPreview(void *data, uint32_t cx, uint32_t cy);
+	void HookPreviewVisibility();
+	void showEvent(QShowEvent *event) override;
+	void hideEvent(QHideEvent *event) override;
 	static void Tick(void *param, float seconds);
 	static bool AddSourceToCombos(void *param, obs_source_t *source);
 	static void source_create(void *param, calldata_t *cd);
@@ -51,6 +56,7 @@ private slots:
 public:
 	CanvasCloneDock(obs_data_t *settings, QWidget *parent = nullptr);
 	~CanvasCloneDock();
+	void SyncPreviewDisplay();
 
 	obs_canvas_t *GetCanvas() const { return canvas; }
 	void UpdateSettings(obs_data_t *settings);

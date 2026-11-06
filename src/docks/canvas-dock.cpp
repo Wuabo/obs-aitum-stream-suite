@@ -13,6 +13,8 @@
 #include <obs-module.h>
 #include <QAbstractItemDelegate>
 #include <QComboBox>
+#include <QDockWidget>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFrame>
 #include <QGridLayout>
@@ -77,7 +79,7 @@ CanvasDock::CanvasDock(obs_data_t *settings_, QWidget *parent)
 	if (canvas && obs_canvas_removed(canvas)) {
 		obs_canvas_release(canvas);
 		canvas = nullptr;
-	} else if (canvas && obs_canvas_get_flags(canvas) != PROGRAM) {
+	} else if (canvas && (obs_canvas_get_flags(canvas) & PROGRAM) != PROGRAM) {
 		obs_frontend_remove_canvas(canvas);
 		obs_canvas_remove(canvas);
 		obs_canvas_release(canvas);
@@ -89,7 +91,7 @@ CanvasDock::CanvasDock(obs_data_t *settings_, QWidget *parent)
 			if (obs_canvas_removed(canvas)) {
 				obs_canvas_release(canvas);
 				canvas = nullptr;
-			} else if (obs_canvas_get_flags(canvas) != PROGRAM) {
+			} else if ((obs_canvas_get_flags(canvas) & PROGRAM) != PROGRAM) {
 				obs_frontend_remove_canvas(canvas);
 				obs_canvas_remove(canvas);
 				obs_canvas_release(canvas);
@@ -399,8 +401,11 @@ void CanvasDock::LoadUI()
 	preview->setFocusPolicy(Qt::ClickFocus);
 	preview->installEventFilter(eventFilter.get());
 	preview->show();
-	connect(preview, &OBSQTDisplay::DisplayCreated,
-		[this]() { obs_display_add_draw_callback(preview->GetDisplay(), DrawPreview, this); });
+	connect(preview, &OBSQTDisplay::DisplayCreated, [this]() {
+		obs_display_add_draw_callback(preview->GetDisplay(), DrawPreview, this);
+		HookPreviewVisibility();
+		SyncPreviewDisplay();
+	});
 
 	previewDisabledWidget = new QFrame;
 	previewDisabledWidget->setObjectName(QStringLiteral("previewDisabledWidget"));
@@ -410,9 +415,9 @@ void CanvasDock::LoadUI()
 		new QPushButton(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.PreviewConextMenu.Enable")));
 	connect(enablePreviewButton, &QPushButton::clicked, [this] {
 		preview_disabled = false;
-		obs_display_set_enabled(preview->GetDisplay(), true);
 		preview->setVisible(true);
 		previewDisabledWidget->setVisible(false);
+		SyncPreviewDisplay();
 	});
 	lv->addWidget(enablePreviewButton);
 	previewDisabledWidget->setLayout(lv);
@@ -983,7 +988,7 @@ void CanvasDock::LoadUI()
 		preview_disabled = obs_data_get_bool(settings, "preview_disabled");
 		locked = obs_data_get_bool(settings, "preview_locked");
 	}
-	obs_display_set_enabled(preview->GetDisplay(), !preview_disabled);
+	SyncPreviewDisplay();
 	preview->setVisible(!preview_disabled);
 	previewDisabledWidget->setVisible(preview_disabled);
 
@@ -1368,10 +1373,69 @@ void CanvasDock::UpdateContextBarVisibility()
 	UpdateContextBar(true);
 }
 
+void CanvasDock::SyncPreviewDisplay()
+{
+	if (!preview || !preview->GetDisplay()) {
+		return;
+	}
+	QWidget *top = window();
+	QWidget *dock = parentWidget() ? parentWidget() : static_cast<QWidget *>(this);
+	const bool minimized = top && top->isMinimized();
+	const bool shown = !minimized && dock->isVisible() && !dock->visibleRegion().isEmpty();
+	obs_display_set_enabled(preview->GetDisplay(), shown && !preview_disabled);
+}
+
+void CanvasDock::HookPreviewVisibility()
+{
+	if (property("suitePreviewHook").toBool()) {
+		return;
+	}
+	setProperty("suitePreviewHook", true);
+	if (auto *dock = qobject_cast<QDockWidget *>(parentWidget())) {
+		connect(dock, &QDockWidget::visibilityChanged, this, [this](bool) {
+			QTimer::singleShot(0, this, [this] { SyncPreviewDisplay(); });
+		});
+	}
+	if (auto *main = qobject_cast<QMainWindow *>(window())) {
+		connect(main, &QMainWindow::tabifiedDockWidgetActivated, this, [this](QDockWidget *) {
+			QTimer::singleShot(0, this, [this] { SyncPreviewDisplay(); });
+		});
+		struct StateHook : QObject {
+			CanvasDock *dock = nullptr;
+			explicit StateHook(CanvasDock *dock, QObject *parent) : QObject(parent), dock(dock) {}
+			bool eventFilter(QObject *watched, QEvent *event) override
+			{
+				if (dock && event->type() == QEvent::WindowStateChange && watched == dock->window()) {
+					dock->SyncPreviewDisplay();
+				}
+				return QObject::eventFilter(watched, event);
+			}
+		};
+		/* Parent the filter to the dock. A filter owned by the main window
+		 * outlives a canvas that is closed or replaced and would call
+		 * into a destroyed dock on minimize. */
+		main->installEventFilter(new StateHook(this, this));
+	}
+}
+
+void CanvasDock::showEvent(QShowEvent *event)
+{
+	QFrame::showEvent(event);
+	HookPreviewVisibility();
+	QTimer::singleShot(0, this, [this] { SyncPreviewDisplay(); });
+}
+
+void CanvasDock::hideEvent(QHideEvent *event)
+{
+	QFrame::hideEvent(event);
+	SyncPreviewDisplay();
+}
+
 void CanvasDock::resizeEvent(QResizeEvent *event)
 {
 	QFrame::resizeEvent(event);
 	UpdateContextBarVisibility();
+	SyncPreviewDisplay();
 }
 
 void CanvasDock::UpdateContextBar(bool force)
@@ -1678,6 +1742,22 @@ void CanvasDock::UpdatePreviewScaleControls()
 	}
 }
 
+static bool AnySelectedItem(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *found = static_cast<bool *>(param);
+	if (obs_sceneitem_selected(item)) {
+		*found = true;
+		return false;
+	}
+	if (obs_sceneitem_is_group(item)) {
+		obs_sceneitem_group_enum_items(item, AnySelectedItem, param);
+		if (*found) {
+			return false;
+		}
+	}
+	return true;
+}
+
 void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 {
 	CanvasDock *window = static_cast<CanvasDock *>(data);
@@ -1739,7 +1819,9 @@ void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	if (source) {
 		obs_source_video_render(source);
 	} else {
-		obs_canvas_render(window->canvas);
+		/* Same blit as OBSBasic::RenderMain (obs_render_main_texture_src_color_only).
+		 * The canvas mix already rendered this view. */
+		obs_render_canvas_texture_src_color_only(window->canvas);
 	}
 	gs_set_linear_srgb(previous);
 	gs_load_vertexbuffer(nullptr);
@@ -1753,7 +1835,11 @@ void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 	gs_technique_begin(tech);
 	gs_technique_begin_pass(tech, 0);
 
+	bool selected = false;
 	if (window->scene && !window->locked) {
+		obs_scene_enum_items(window->scene, AnySelectedItem, &selected);
+	}
+	if (selected) {
 		gs_matrix_push();
 		gs_matrix_scale3f(scale, scale, 1.0f);
 		obs_scene_enum_items(window->scene, DrawSelectedItem, data);
@@ -1795,8 +1881,10 @@ CanvasDock::~CanvasDock()
 	projectors.clear();
 	obs_frontend_remove_save_callback(save_load, this);
 	canvas_docks.remove(this);
-	if (preview && preview->GetDisplay())
+	if (preview && preview->GetDisplay()) {
+		obs_display_set_enabled(preview->GetDisplay(), false);
 		obs_display_remove_draw_callback(preview->GetDisplay(), DrawPreview, this);
+	}
 	SaveSettings(true);
 	obs_data_release(settings);
 	settings = nullptr;
@@ -1824,11 +1912,11 @@ CanvasDock::~CanvasDock()
 		auto sh = obs_canvas_get_signal_handler(canvas);
 		if (sh)
 			signal_handler_disconnect(sh, "source_add", source_add, this);
-		/* Clear program channel while sources are still valid, then
-		 * remove+release so obs_shutdown does not destroy a live view. */
+		/* Drop the plugin ref only. remove + the last release runs
+		 * obs_canvas_destroy while SCENE_REF scenes are still linked
+		 * and crashes in obs_source_release. OBS ClearCanvases destroys
+		 * the canvas after it has released those scenes. */
 		obs_canvas_set_channel(canvas, 0, nullptr);
-		obs_frontend_remove_canvas(canvas);
-		obs_canvas_remove(canvas);
 		obs_canvas_release(canvas);
 		canvas = nullptr;
 	}
@@ -3852,6 +3940,32 @@ static bool paste_transform_cb(obs_scene_t *, obs_sceneitem_t *item, void *)
 	return true;
 }
 
+static bool copy_save_functions = false;
+static void (*obs_frontend_copy_sceneitem_func)(obs_sceneitem_t *item) = nullptr;
+static bool (*obs_frontend_can_paste_sceneitem_func)(bool duplicate) = nullptr;
+static void (*obs_frontend_paste_sceneitem_func)(obs_scene_t *scene, bool duplicate) = nullptr;
+
+static void EnsureFrontendCopySymbols()
+{
+	if (copy_save_functions) {
+		return;
+	}
+	copy_save_functions = true;
+	if (obs_get_version() < MAKE_SEMANTIC_VERSION(32, 2, 0)) {
+		return;
+	}
+
+#ifdef __APPLE__
+	auto handle = os_dlopen("obs-frontend-api.dylib");
+#else
+	auto handle = os_dlopen("obs-frontend-api");
+#endif
+	obs_frontend_copy_sceneitem_func = (void (*)(obs_sceneitem_t *))os_dlsym(handle, "obs_frontend_copy_sceneitem");
+	obs_frontend_can_paste_sceneitem_func = (bool (*)(bool duplicate))os_dlsym(handle, "obs_frontend_can_paste_sceneitem");
+	obs_frontend_paste_sceneitem_func = (void (*)(obs_scene_t *scene, bool duplicate))os_dlsym(handle, "obs_frontend_paste_sceneitem");
+	os_dlclose(handle);
+}
+
 void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 {
 	QObject *parent = popup->parent();
@@ -4016,6 +4130,12 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 		obs_sceneitem_get_crop(sceneItem, &suiteCopiedCropInfo);
 		suiteHasCopiedTransform = true;
 		pasteTransform->setEnabled(true);
+		/* Same info+crop pair as OBSBasic::on_actionCopyTransform_triggered.
+		 * Also put the source on the native clipboard so Main can paste it. */
+		EnsureFrontendCopySymbols();
+		if (obs_frontend_copy_sceneitem_func) {
+			obs_frontend_copy_sceneitem_func(sceneItem);
+		}
 	});
 	transformMenu->addAction(
 		QString::fromUtf8(obs_frontend_get_locale_string("Basic.MainMenu.Edit.Transform.ResetTransform")), parent,
@@ -4354,31 +4474,9 @@ void CanvasDock::AddSceneItemMenuItems(QMenu *popup, OBSSceneItem sceneItem)
 	a->setEnabled(obs_source_configurable(s));
 }
 
-static bool copy_save_functions = false;
-static void (*obs_frontend_copy_sceneitem_func)(obs_sceneitem_t *item) = nullptr;
-static bool (*obs_frontend_can_paste_sceneitem_func)(bool duplicate) = nullptr;
-static void (*obs_frontend_paste_sceneitem_func)(obs_scene_t *scene, bool duplicate) = nullptr;
-
 void CanvasDock::AddCopyPasteMenuItems(QMenu *popup, OBSSceneItem sceneItem, OBSScene scene)
 {
-	if (!copy_save_functions) {
-		copy_save_functions = true;
-		if (obs_get_version() < MAKE_SEMANTIC_VERSION(32, 2, 0)) {
-			return;
-		}
-
-#ifdef __APPLE__
-		auto handle = os_dlopen("obs-frontend-api.dylib");
-#else
-		auto handle = os_dlopen("obs-frontend-api");
-#endif
-		obs_frontend_copy_sceneitem_func = (void (*)(obs_sceneitem_t *))os_dlsym(handle, "obs_frontend_copy_sceneitem");
-		obs_frontend_can_paste_sceneitem_func =
-			(bool (*)(bool duplicate))os_dlsym(handle, "obs_frontend_can_paste_sceneitem");
-		obs_frontend_paste_sceneitem_func =
-			(void (*)(obs_scene_t *scene, bool duplicate))os_dlsym(handle, "obs_frontend_paste_sceneitem");
-		os_dlclose(handle);
-	}
+	EnsureFrontendCopySymbols();
 	if (obs_frontend_copy_sceneitem_func && sceneItem) {
 		auto copyAction = popup->addAction(QString::fromUtf8(obs_frontend_get_locale_string("Copy")),
 						   [sceneItem] { obs_frontend_copy_sceneitem_func(sceneItem); });
@@ -5403,9 +5501,9 @@ bool CanvasDock::HandleMouseReleaseEvent(QMouseEvent *event)
 		QAction *a =
 			popup.addAction(QString::fromUtf8(obs_frontend_get_locale_string("Basic.Main.Preview.Disable")), [this] {
 				preview_disabled = !preview_disabled;
-				obs_display_set_enabled(preview->GetDisplay(), !preview_disabled);
 				preview->setVisible(!preview_disabled);
 				previewDisabledWidget->setVisible(preview_disabled);
+				SyncPreviewDisplay();
 			});
 		auto projectorMenu = popup.addMenu(QString::fromUtf8(obs_frontend_get_locale_string("Projector.Open.Preview")));
 		AddProjectorMenuMonitors(projectorMenu, this, SLOT(OpenPreviewProjector()));
@@ -6756,7 +6854,7 @@ void CanvasDock::save_load(obs_data_t *save_data, bool saving, void *param)
 					obs_canvas_release(window->canvas);
 					window->canvas = nullptr;
 				} else if (!window->settings && window->canvas &&
-					   obs_canvas_get_flags(window->canvas) != SCENE_REF) {
+					   (obs_canvas_get_flags(window->canvas) & SCENE_REF) == 0) {
 					obs_frontend_remove_canvas(window->canvas);
 					obs_canvas_remove(window->canvas);
 					obs_canvas_release(window->canvas);
@@ -6905,12 +7003,12 @@ void CanvasDock::UpdateSettings(obs_data_t *s)
 
 void CanvasDock::LogScenes()
 {
-	blog(LOG_INFO, "------------------------------------------------");
-	blog(LOG_INFO, "[Aitum Stream Suite] Canvas '%s' scenes:", obs_canvas_get_name(canvas));
+	blog(LOG_DEBUG, "------------------------------------------------");
+	blog(LOG_DEBUG, "[Aitum Stream Suite] Canvas '%s' scenes:", obs_canvas_get_name(canvas));
 	if (sceneList) {
 		for (int j = 0; j < sceneList->count(); j++) {
 			auto item = sceneList->item(j);
-			blog(LOG_INFO, "- scene '%s':", item->text().toUtf8().constData());
+			blog(LOG_DEBUG, "- scene '%s':", item->text().toUtf8().constData());
 			auto scene = obs_canvas_get_scene_by_name(canvas, item->text().toUtf8().constData());
 			obs_scene_enum_items(scene, LogSceneItem, (void *)(intptr_t)1);
 			obs_source_enum_filters(obs_scene_get_source(scene), LogFilter, (void *)(intptr_t)1);
@@ -6920,14 +7018,14 @@ void CanvasDock::LogScenes()
 	} else if (sceneCombo) {
 		for (int j = 0; j < sceneCombo->count(); j++) {
 			auto scene_name = sceneCombo->itemText(j);
-			blog(LOG_INFO, "- scene '%s':", scene_name.toUtf8().constData());
+			blog(LOG_DEBUG, "- scene '%s':", scene_name.toUtf8().constData());
 			auto scene = obs_canvas_get_scene_by_name(canvas, scene_name.toUtf8().constData());
 			obs_scene_enum_items(scene, LogSceneItem, (void *)(intptr_t)1);
 			obs_source_enum_filters(obs_scene_get_source(scene), LogFilter, (void *)(intptr_t)1);
 			obs_scene_release(scene);
 		}
 	}
-	blog(LOG_INFO, "------------------------------------------------");
+	blog(LOG_DEBUG, "------------------------------------------------");
 }
 
 bool CanvasDock::LogSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *v_val)
@@ -6942,13 +7040,13 @@ bool CanvasDock::LogSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *v_val)
 		indent += "    ";
 	}
 
-	blog(LOG_INFO, "%s- source: '%s' (%s)", indent.c_str(), name, id);
+	blog(LOG_DEBUG, "%s- source: '%s' (%s)", indent.c_str(), name, id);
 
 	if (obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) {
 		const uint32_t all_mixers = (1 << MAX_AUDIO_MIXES) - 1;
 		uint32_t mixers = obs_source_get_audio_mixers(source);
 		if (mixers == 0) {
-			blog(LOG_INFO, "    %s- audio tracks: none", indent.c_str());
+			blog(LOG_DEBUG, "    %s- audio tracks: none", indent.c_str());
 		} else if ((mixers & all_mixers) != all_mixers) {
 			std::string tracks;
 			for (uint32_t i = 0; i < MAX_AUDIO_MIXES; i++) {
@@ -6957,20 +7055,20 @@ bool CanvasDock::LogSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *v_val)
 					tracks += std::to_string(i + 1);
 				}
 			}
-			blog(LOG_INFO, "    %s- audio tracks:%s", indent.c_str(), tracks.c_str());
+			blog(LOG_DEBUG, "    %s- audio tracks:%s", indent.c_str(), tracks.c_str());
 		}
 
 #if LIBOBS_API_VER >= MAKE_SEMANTIC_VERSION(33, 0, 0)
 		bool monitoring = obs_source_get_monitoring_enabled(source);
 		if (monitoring) {
-			blog(LOG_INFO, "    %s- monitoring: enabled", indent.c_str());
+			blog(LOG_DEBUG, "    %s- monitoring: enabled", indent.c_str());
 		}
 #else
 		obs_monitoring_type monitoring_type = obs_source_get_monitoring_type(source);
 		if (monitoring_type != OBS_MONITORING_TYPE_NONE) {
 			const char *type = (monitoring_type == OBS_MONITORING_TYPE_MONITOR_ONLY) ? "monitor only"
 												 : "monitor and output";
-			blog(LOG_INFO, "    %s- monitoring: %s", indent.c_str(), type);
+			blog(LOG_DEBUG, "    %s- monitoring: %s", indent.c_str(), type);
 		}
 #endif
 	}
@@ -6980,10 +7078,10 @@ bool CanvasDock::LogSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *v_val)
 	obs_source_t *show_tn = obs_sceneitem_get_transition(item, true);
 	obs_source_t *hide_tn = obs_sceneitem_get_transition(item, false);
 	if (show_tn) {
-		blog(LOG_INFO, "    %s- show: '%s' (%s)", indent.c_str(), obs_source_get_name(show_tn), obs_source_get_id(show_tn));
+		blog(LOG_DEBUG, "    %s- show: '%s' (%s)", indent.c_str(), obs_source_get_name(show_tn), obs_source_get_id(show_tn));
 	}
 	if (hide_tn) {
-		blog(LOG_INFO, "    %s- hide: '%s' (%s)", indent.c_str(), obs_source_get_name(hide_tn), obs_source_get_id(hide_tn));
+		blog(LOG_DEBUG, "    %s- hide: '%s' (%s)", indent.c_str(), obs_source_get_name(hide_tn), obs_source_get_id(hide_tn));
 	}
 
 	if (obs_sceneitem_is_group(item)) {
@@ -7003,7 +7101,7 @@ void CanvasDock::LogFilter(obs_source_t *, obs_source_t *filter, void *v_val)
 		indent += "    ";
 	}
 
-	blog(LOG_INFO, "%s- filter: '%s' (%s)", indent.c_str(), name, id);
+	blog(LOG_DEBUG, "%s- filter: '%s' (%s)", indent.c_str(), name, id);
 }
 
 void CanvasDock::OpenSceneProjector()

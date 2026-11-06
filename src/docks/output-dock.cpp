@@ -355,8 +355,16 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 		for (auto it = outputWidgets.begin(); it != outputWidgets.end(); it++) {
 			(*it)->CheckActive();
 		}
+
+		const bool streamLive = mainStreamEnabled && obs_frontend_streaming_active();
+		const bool recordLive = mainRecordEnabled &&
+					(CanvasRecordActive() || (!RecordUsesCanvas() && obs_frontend_recording_active()));
+		const int want = (streamLive || recordLive) ? 500 : 1000;
+		if (videoCheckTimer.interval() != want) {
+			videoCheckTimer.setInterval(want);
+		}
 	});
-	videoCheckTimer.start(500);
+	videoCheckTimer.start(1000);
 	obs_frontend_add_event_callback(frontend_event, this);
 
 	StartStopHotkey = obs_hotkey_pair_register_frontend(

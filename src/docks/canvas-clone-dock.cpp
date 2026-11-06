@@ -2,12 +2,18 @@
 #include "canvas-clone-dock.hpp"
 #include "canvas-dock.hpp"
 #include <obs-module.h>
+#include <QDockWidget>
+#include <QEvent>
 #include <QGroupBox>
 #include <QGuiApplication>
+#include <QHideEvent>
 #include <QLabel>
 #include <QLayout>
+#include <QMainWindow>
 #include <QMenu>
 #include <QScrollArea>
+#include <QShowEvent>
+#include <QTimer>
 #include <src/utils/widgets/switching-splitter.hpp>
 
 std::list<CanvasCloneDock *> canvas_clone_docks;
@@ -127,8 +133,11 @@ CanvasCloneDock::CanvasCloneDock(obs_data_t *settings_, QWidget *parent)
 	preview->setSizePolicy(sizePolicy1);
 
 	preview->show();
-	connect(preview, &OBSQTDisplay::DisplayCreated,
-		[this]() { obs_display_add_draw_callback(preview->GetDisplay(), DrawPreview, this); });
+	connect(preview, &OBSQTDisplay::DisplayCreated, [this]() {
+		obs_display_add_draw_callback(preview->GetDisplay(), DrawPreview, this);
+		HookPreviewVisibility();
+		SyncPreviewDisplay();
+	});
 
 	preview->setContextMenuPolicy(Qt::CustomContextMenu);
 	QObject::connect(preview, &OBSQTDisplay::customContextMenuRequested, [this] {
@@ -193,11 +202,12 @@ CanvasCloneDock::CanvasCloneDock(obs_data_t *settings_, QWidget *parent)
 		canvas_name = "Clone";
 	}
 
+	constexpr uint32_t cloneBits = ACTIVATE | SCENE_REF | EPHEMERAL;
 	canvas = obs_get_canvas_by_name(canvas_name.c_str());
 	if (canvas && obs_canvas_removed(canvas)) {
 		obs_canvas_release(canvas);
 		canvas = nullptr;
-	} else if (canvas && obs_canvas_get_flags(canvas) != (ACTIVATE | SCENE_REF | EPHEMERAL)) {
+	} else if (canvas && (obs_canvas_get_flags(canvas) & cloneBits) != cloneBits) {
 		obs_frontend_remove_canvas(canvas);
 		obs_canvas_remove(canvas);
 		obs_canvas_release(canvas);
@@ -209,7 +219,7 @@ CanvasCloneDock::CanvasCloneDock(obs_data_t *settings_, QWidget *parent)
 			if (obs_canvas_removed(canvas)) {
 				obs_canvas_release(canvas);
 				canvas = nullptr;
-			} else if (obs_canvas_get_flags(canvas) != (ACTIVATE | SCENE_REF | EPHEMERAL)) {
+			} else if ((obs_canvas_get_flags(canvas) & cloneBits) != cloneBits) {
 				obs_frontend_remove_canvas(canvas);
 				obs_canvas_remove(canvas);
 				obs_canvas_release(canvas);
@@ -309,11 +319,19 @@ CanvasCloneDock::~CanvasCloneDock()
 	signal_handler_disconnect(sh, "source_rename", source_rename, this);
 	canvas_clone_docks.remove(this);
 	obs_remove_tick_callback(Tick, this);
+	if (preview && preview->GetDisplay()) {
+		obs_display_set_enabled(preview->GetDisplay(), false);
+		obs_display_remove_draw_callback(preview->GetDisplay(), DrawPreview, this);
+	}
 	obs_data_release(settings);
 	obs_weak_canvas_release(clone);
-	obs_frontend_remove_canvas(canvas);
-	obs_canvas_remove(canvas);
-	obs_canvas_release(canvas);
+	if (canvas) {
+		/* Same as CanvasDock: do not obs_canvas_remove here. The last
+		 * release would destroy SCENE_REF scenes mid-walk on shutdown. */
+		obs_canvas_set_channel(canvas, 0, nullptr);
+		obs_canvas_release(canvas);
+		canvas = nullptr;
+	}
 	obs_enter_graphics();
 	gs_vertexbuffer_destroy(box);
 	obs_leave_graphics();
@@ -324,6 +342,61 @@ CanvasCloneDock::~CanvasCloneDock()
 	replace_sources.clear();
 	pthread_mutex_unlock(&replace_sources_mutex);
 	pthread_mutex_destroy(&replace_sources_mutex);
+}
+
+void CanvasCloneDock::SyncPreviewDisplay()
+{
+	if (!preview || !preview->GetDisplay()) {
+		return;
+	}
+	QWidget *top = window();
+	QWidget *dock = parentWidget() ? parentWidget() : static_cast<QWidget *>(this);
+	const bool minimized = top && top->isMinimized();
+	const bool shown = !minimized && dock->isVisible() && !dock->visibleRegion().isEmpty();
+	obs_display_set_enabled(preview->GetDisplay(), shown);
+}
+
+void CanvasCloneDock::HookPreviewVisibility()
+{
+	if (property("suitePreviewHook").toBool()) {
+		return;
+	}
+	setProperty("suitePreviewHook", true);
+	if (auto *dock = qobject_cast<QDockWidget *>(parentWidget())) {
+		connect(dock, &QDockWidget::visibilityChanged, this, [this](bool) {
+			QTimer::singleShot(0, this, [this] { SyncPreviewDisplay(); });
+		});
+	}
+	if (auto *main = qobject_cast<QMainWindow *>(window())) {
+		connect(main, &QMainWindow::tabifiedDockWidgetActivated, this, [this](QDockWidget *) {
+			QTimer::singleShot(0, this, [this] { SyncPreviewDisplay(); });
+		});
+		struct StateHook : QObject {
+			CanvasCloneDock *dock = nullptr;
+			explicit StateHook(CanvasCloneDock *dock, QObject *parent) : QObject(parent), dock(dock) {}
+			bool eventFilter(QObject *watched, QEvent *event) override
+			{
+				if (dock && event->type() == QEvent::WindowStateChange && watched == dock->window()) {
+					dock->SyncPreviewDisplay();
+				}
+				return QObject::eventFilter(watched, event);
+			}
+		};
+		main->installEventFilter(new StateHook(this, this));
+	}
+}
+
+void CanvasCloneDock::showEvent(QShowEvent *event)
+{
+	QFrame::showEvent(event);
+	HookPreviewVisibility();
+	QTimer::singleShot(0, this, [this] { SyncPreviewDisplay(); });
+}
+
+void CanvasCloneDock::hideEvent(QHideEvent *event)
+{
+	QFrame::hideEvent(event);
+	SyncPreviewDisplay();
 }
 
 void CanvasCloneDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
@@ -362,7 +435,7 @@ void CanvasCloneDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 
 	gs_ortho(0.0f, float(sourceCX), 0.0f, float(sourceCY), -100.0f, 100.0f);
 	gs_set_viewport(x, y, (int)newCX, (int)newCY);
-	obs_canvas_render(window->canvas);
+	obs_render_canvas_texture_src_color_only(window->canvas);
 
 	gs_set_linear_srgb(previous);
 

@@ -159,6 +159,7 @@ class SourceTree : public QListView {
 	friend class SourcesDock;
 
 	bool textPrepared = false;
+	bool rowsDeferred = false;
 	QStaticText textNoSources;
 
 	void UpdateNoSourcesMessage();
