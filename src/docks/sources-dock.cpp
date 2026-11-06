@@ -6,6 +6,8 @@
 #include <QColorDialog>
 #include <QGuiApplication>
 #include <QItemSelectionModel>
+#include <QLabel>
+#include <QShowEvent>
 #include <QMenu>
 #include <QPushButton>
 #include <QStyle>
@@ -103,6 +105,11 @@ SourcesDock::SourcesDock(QWidget *parent, CanvasDock *canvas_dock) : QFrame(pare
 	connect(renameAction, &QAction::triggered, [this]() { sourceList->Edit(GetTopSelectedSourceItem()); });
 	sourceList->addAction(renameAction);
 
+	canvasWarning = new QLabel(this);
+	canvasWarning->setObjectName(QStringLiteral("AitumSourcesCanvasWarning"));
+	canvasWarning->setWordWrap(true);
+	canvasWarning->setVisible(false);
+	sourcesGroupLayout->addWidget(canvasWarning);
 	sourcesGroupLayout->addWidget(sourceList);
 
 	auto toolbar = new QToolBar();
@@ -296,6 +303,32 @@ void SourcesDock::SetScene(obs_source_t *s)
 	}
 	sourceList->GetStm()->SceneChanged();
 	UpdateSourceToolbar();
+	UpdateCanvasWarning();
+}
+
+void SourcesDock::showEvent(QShowEvent *event)
+{
+	QFrame::showEvent(event);
+	UpdateCanvasWarning();
+}
+
+void SourcesDock::UpdateCanvasWarning()
+{
+	if (!canvasWarning) {
+		return;
+	}
+	OBSSourceAutoRelease sceneSource = obs_weak_source_get_source(scene);
+	obs_canvas_t *dockCanvas = canvasDock ? canvasDock->GetCanvas() : nullptr;
+	OBSCanvasAutoRelease sceneCanvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+	if (!sceneSource || !sceneCanvas || !dockCanvas || sceneCanvas == dockCanvas) {
+		canvasWarning->hide();
+		return;
+	}
+	canvasWarning->setText(QString::fromUtf8(obs_module_text("SourcesCanvasMismatch"))
+				       .arg(QString::fromUtf8(obs_source_get_name(sceneSource)),
+					    QString::fromUtf8(obs_canvas_get_name(sceneCanvas)),
+					    QString::fromUtf8(obs_canvas_get_name(dockCanvas))));
+	canvasWarning->show();
 }
 
 void SourcesDock::SceneItemAdded(void *data, calldata_t *params)

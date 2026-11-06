@@ -6,6 +6,8 @@
 #include <vector>
 
 class QAction;
+class QLabel;
+class QShowEvent;
 class QToolBar;
 class CanvasDock;
 
@@ -18,6 +20,7 @@ private:
 	SourceTree *sourceList;
 	CanvasDock *canvasDock = nullptr;
 	QToolBar *sourceToolbar = nullptr;
+	QLabel *canvasWarning = nullptr;
 	QAction *removeAction = nullptr;
 	QAction *propertiesAction = nullptr;
 	QAction *moveUpAction = nullptr;
@@ -28,6 +31,7 @@ private:
 	obs_sceneitem_t *GetCurrentSceneItem();
 	int GetTopSelectedSourceItem();
 	void UpdateSourceToolbar();
+	void UpdateCanvasWarning();
 
 	void ShowSourcesContextMenu(obs_sceneitem_t *item);
 
@@ -45,6 +49,7 @@ public:
 	~SourcesDock();
 	void SetScene(obs_source_t *scene);
 	void Shutdown() { SetScene(nullptr); }
+	void showEvent(QShowEvent *event) override;
 	void RelayoutSourceList()
 	{
 		setUpdatesEnabled(true);

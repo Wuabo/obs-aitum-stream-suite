@@ -352,14 +352,19 @@ OutputDock::OutputDock(QWidget *parent) : QFrame(parent)
 			SetTimerText(mainRecordTimerLabel, active, mainRecordStartTime);
 		}
 
+		bool extraLive = false;
 		for (auto it = outputWidgets.begin(); it != outputWidgets.end(); it++) {
 			(*it)->CheckActive();
+			obs_output_t *extra = (*it)->GetOutput();
+			if (extra && obs_output_active(extra)) {
+				extraLive = true;
+			}
 		}
 
 		const bool streamLive = mainStreamEnabled && obs_frontend_streaming_active();
 		const bool recordLive = mainRecordEnabled &&
 					(CanvasRecordActive() || (!RecordUsesCanvas() && obs_frontend_recording_active()));
-		const int want = (streamLive || recordLive) ? 500 : 1000;
+		const int want = (streamLive || recordLive || extraLive) ? 500 : 1000;
 		if (videoCheckTimer.interval() != want) {
 			videoCheckTimer.setInterval(want);
 		}

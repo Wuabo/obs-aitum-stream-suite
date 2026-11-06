@@ -2,6 +2,7 @@
 #include "source-tree.hpp"
 #include <obs.h>
 #include <obs-frontend-api.h>
+#include <cstring>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -24,6 +25,56 @@
 #endif
 
 /* ========================================================================= */
+
+struct VisibilityUndoFind {
+	const char *uuid = nullptr;
+	obs_source_t *source = nullptr;
+};
+
+static bool FindCanvasSourceByUuid(void *param, obs_source_t *source)
+{
+	auto *find = static_cast<VisibilityUndoFind *>(param);
+	const char *uuid = source ? obs_source_get_uuid(source) : nullptr;
+	if (uuid && find->uuid && strcmp(uuid, find->uuid) == 0) {
+		find->source = obs_source_get_ref(source);
+		return false;
+	}
+	return true;
+}
+
+/* Scenes and groups on extra canvases are not in the global UUID map.
+ * obs_get_source_by_uuid would miss Kick, YouTube and Vertical. */
+static void ApplyVisibilityUndo(const char *json)
+{
+	if (!json || !json[0]) {
+		return;
+	}
+	OBSDataAutoRelease data = obs_data_create_from_json(json);
+	if (!data) {
+		return;
+	}
+	const char *canvasUuid = obs_data_get_string(data, "canvas_uuid");
+	const char *sourceUuid = obs_data_get_string(data, "source_uuid");
+	if (!canvasUuid || !canvasUuid[0] || !sourceUuid || !sourceUuid[0]) {
+		return;
+	}
+	OBSCanvasAutoRelease canvas = obs_get_canvas_by_uuid(canvasUuid);
+	if (!canvas) {
+		return;
+	}
+	VisibilityUndoFind find;
+	find.uuid = sourceUuid;
+	obs_canvas_enum_scenes(canvas, FindCanvasSourceByUuid, &find);
+	OBSSourceAutoRelease sceneSource = find.source;
+	if (!sceneSource) {
+		return;
+	}
+	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = scene ? obs_scene_find_sceneitem_by_id(scene, obs_data_get_int(data, "item_id")) : nullptr;
+	if (item) {
+		obs_sceneitem_set_visible(item, obs_data_get_bool(data, "visible"));
+	}
+}
 
 static void PolishWidget(QWidget *widget)
 {
@@ -155,9 +206,39 @@ SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tre
 	/* --------------------------------------------------------- */
 
 	auto setItemVisible = [this](bool val) {
+		obs_scene_t *itemScene = sceneitem ? obs_sceneitem_get_scene(sceneitem) : nullptr;
+		obs_source_t *sceneSource = itemScene ? obs_scene_get_source(itemScene) : nullptr;
+		OBSCanvasAutoRelease canvas = sceneSource ? obs_source_get_canvas(sceneSource) : nullptr;
+		const char *canvasUuid = canvas ? obs_canvas_get_uuid(canvas) : nullptr;
+		const char *sourceUuid = sceneSource ? obs_source_get_uuid(sceneSource) : nullptr;
+		const int64_t itemId = sceneitem ? obs_sceneitem_get_id(sceneitem) : 0;
+		obs_source_t *itemSource = sceneitem ? obs_sceneitem_get_source(sceneitem) : nullptr;
+
 		const bool blocked = blockSignals(true);
 		obs_sceneitem_set_visible(sceneitem, val);
 		blockSignals(blocked);
+
+		if (!canvasUuid || !canvasUuid[0] || !sourceUuid || !sourceUuid[0]) {
+			return;
+		}
+
+		auto pack = [&](bool visible) {
+			OBSDataAutoRelease data = obs_data_create();
+			obs_data_set_string(data, "canvas_uuid", canvasUuid);
+			obs_data_set_string(data, "source_uuid", sourceUuid);
+			obs_data_set_int(data, "item_id", itemId);
+			obs_data_set_bool(data, "visible", visible);
+			return std::string(obs_data_get_json(data));
+		};
+		const std::string undoData = pack(!val);
+		const std::string redoData = pack(val);
+		const char *itemName = itemSource ? obs_source_get_name(itemSource) : "";
+		const char *sceneName = sceneSource ? obs_source_get_name(sceneSource) : "";
+		const QString undoName =
+			QString::fromUtf8(obs_frontend_get_locale_string(val ? "Undo.ShowSceneItem" : "Undo.HideSceneItem"))
+				.arg(QString::fromUtf8(itemName), QString::fromUtf8(sceneName));
+		obs_frontend_add_undo_redo_action(undoName.toUtf8().constData(), ApplyVisibilityUndo, ApplyVisibilityUndo,
+						  undoData.c_str(), redoData.c_str(), false);
 	};
 
 	auto setItemLocked = [this](bool checked) {
