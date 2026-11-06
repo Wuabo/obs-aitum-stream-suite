@@ -828,24 +828,14 @@ void RemoveIfNotText(const QString &name)
 	if (!existing) {
 		return;
 	}
-	if (!IsTextSource(existing)) {
+	/* Only drop a leftover from an unknown source id. A real source that
+	 * happens to share the countdown name stays, and the text source is named
+	 * alongside it. */
+	const char *id = obs_source_get_id(existing);
+	if (id && !obs_source_get_display_name(id)) {
 		obs_source_remove(existing);
 	}
 	obs_source_release(existing);
-}
-
-bool SourceIsRealText(const QString &name)
-{
-	if (name.isEmpty()) {
-		return false;
-	}
-	QByteArray utf8 = name.toUtf8();
-	obs_source_t *source = obs_get_source_by_name(utf8.constData());
-	const bool real = IsTextSource(source);
-	if (source) {
-		obs_source_release(source);
-	}
-	return real;
 }
 
 QString UniqueSourceName(const QString &base)
@@ -1791,29 +1781,17 @@ void countdowns_reload()
 		}
 	}
 	items = loaded;
-	bool createdSource = false;
 	for (auto &item : items) {
-		obs_source_t *created = nullptr;
-		if (!SourceIsRealText(item.sourceName)) {
-			created = CreateTextSource(item);
-			createdSource = created != nullptr || createdSource;
-		}
+		/* The text source lives in the scene collection. Creating one here
+		 * and releasing it destroys it, because nothing else holds a reference. */
 		bool live = false;
-		if (created || !item.sourceName.isEmpty()) {
-			obs_source_t *source = created;
-			if (!source) {
-				QByteArray sourceName = item.sourceName.toUtf8();
-				source = obs_get_source_by_name(sourceName.constData());
-			} else {
-				obs_source_get_ref(source);
-			}
+		if (!item.sourceName.isEmpty()) {
+			QByteArray sourceName = item.sourceName.toUtf8();
+			obs_source_t *source = obs_get_source_by_name(sourceName.constData());
 			live = source && (obs_source_active(source) || obs_source_showing(source));
 			if (source) {
 				obs_source_release(source);
 			}
-		}
-		if (created) {
-			obs_source_release(created);
 		}
 		if (live && item.phase == Phase::Idle && !item.sourceLive) {
 			item.sourceLive = true;
@@ -1828,9 +1806,6 @@ void countdowns_reload()
 	}
 	RebuildRows();
 	EnsureTick();
-	if (createdSource) {
-		Persist();
-	}
 }
 
 void countdowns_shutdown()
