@@ -883,35 +883,29 @@ bool SceneHasSource(obs_scene_t *scene, obs_source_t *source)
 	return found.found;
 }
 
-bool PlaceOnScene(const QString &sourceName, const QString &canvasName, const QString &sceneName)
+bool PlaceOnScene(obs_source_t *source, const QString &canvasName, const QString &sceneName)
 {
-	if (sourceName.isEmpty() || canvasName.isEmpty() || sceneName.isEmpty()) {
+	if (!source || canvasName.isEmpty() || sceneName.isEmpty()) {
 		return false;
 	}
-	QByteArray sourceUtf8 = sourceName.toUtf8();
 	QByteArray canvasUtf8 = canvasName.toUtf8();
 	QByteArray sceneUtf8 = sceneName.toUtf8();
-	obs_source_t *source = obs_get_source_by_name(sourceUtf8.constData());
-	if (!source) {
-		return false;
-	}
 	obs_canvas_t *canvas = obs_get_canvas_by_name(canvasUtf8.constData());
 	if (!canvas) {
-		obs_source_release(source);
 		return false;
 	}
 	obs_scene_t *scene = obs_canvas_get_scene_by_name(canvas, sceneUtf8.constData());
 	obs_canvas_release(canvas);
 	if (!scene) {
-		obs_source_release(source);
 		return false;
 	}
-	if (!SceneHasSource(scene, source)) {
-		obs_scene_add(scene, source);
+	bool placed = SceneHasSource(scene, source);
+	if (!placed) {
+		/* obs_scene_add is what puts the text source in that scene's Sources list. */
+		placed = obs_scene_add(scene, source) != nullptr;
 	}
 	obs_scene_release(scene);
-	obs_source_release(source);
-	return true;
+	return placed;
 }
 
 QStringList SceneNames(const QString &canvasName)
@@ -985,11 +979,13 @@ QString PreferredScene(const QString &canvasName)
 	return QString();
 }
 
-bool CreateTextSource(Countdown &c)
+/* Caller owns the returned reference. The global source list does not hold
+ * one, so releasing before obs_scene_add destroys the source. */
+obs_source_t *CreateTextSource(Countdown &c)
 {
 	const char *id = TextSourceId();
 	if (!id) {
-		return false;
+		return nullptr;
 	}
 	RemoveIfNotText(c.name);
 	const QString name = UniqueSourceName(c.name);
@@ -1018,13 +1014,13 @@ bool CreateTextSource(Countdown &c)
 			obs_source_remove(source);
 			obs_source_release(source);
 		}
-		return false;
+		return nullptr;
 	}
-	obs_source_release(source);
-	c.sourceName = name;
+	const char *actual = obs_source_get_name(source);
+	c.sourceName = actual ? QString::fromUtf8(actual) : name;
 	c.lastText.clear();
 	c.fontDirty = true;
-	return true;
+	return source;
 }
 
 void ApplyColorButton(QPushButton *button, uint32_t color)
@@ -1292,23 +1288,21 @@ bool EditCountdown(Countdown &c, QWidget *parent, bool isNew)
 						     QString::fromUtf8(obs_module_text("CountdownNoScene")));
 				return;
 			}
-			if (!CreateTextSource(next)) {
+			obs_source_t *created = CreateTextSource(next);
+			if (!created) {
 				QMessageBox::warning(&dialog, dialog.windowTitle(),
 						     QString::fromUtf8(obs_module_text("CountdownCreateFailed")));
 				return;
 			}
-			if (!PlaceOnScene(next.sourceName, canvasName, sceneName)) {
-				QByteArray createdName = next.sourceName.toUtf8();
-				obs_source_t *created = obs_get_source_by_name(createdName.constData());
-				if (created) {
-					obs_source_remove(created);
-					obs_source_release(created);
-				}
+			if (!PlaceOnScene(created, canvasName, sceneName)) {
+				obs_source_remove(created);
+				obs_source_release(created);
 				next.sourceName.clear();
 				QMessageBox::warning(&dialog, dialog.windowTitle(),
 						     QString::fromUtf8(obs_module_text("CountdownPlaceFailed")));
 				return;
 			}
+			obs_source_release(created);
 		} else if (picked != c.sourceName) {
 			next.sourceName = picked;
 			next.lastText.clear();
@@ -1799,17 +1793,27 @@ void countdowns_reload()
 	items = loaded;
 	bool createdSource = false;
 	for (auto &item : items) {
+		obs_source_t *created = nullptr;
 		if (!SourceIsRealText(item.sourceName)) {
-			createdSource = CreateTextSource(item) || createdSource;
+			created = CreateTextSource(item);
+			createdSource = created != nullptr || createdSource;
 		}
 		bool live = false;
-		if (!item.sourceName.isEmpty()) {
-			QByteArray sourceName = item.sourceName.toUtf8();
-			obs_source_t *source = obs_get_source_by_name(sourceName.constData());
+		if (created || !item.sourceName.isEmpty()) {
+			obs_source_t *source = created;
+			if (!source) {
+				QByteArray sourceName = item.sourceName.toUtf8();
+				source = obs_get_source_by_name(sourceName.constData());
+			} else {
+				obs_source_get_ref(source);
+			}
 			live = source && (obs_source_active(source) || obs_source_showing(source));
 			if (source) {
 				obs_source_release(source);
 			}
+		}
+		if (created) {
+			obs_source_release(created);
 		}
 		if (live && item.phase == Phase::Idle && !item.sourceLive) {
 			item.sourceLive = true;

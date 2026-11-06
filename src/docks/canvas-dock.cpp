@@ -53,6 +53,19 @@
 
 std::list<CanvasDock *> canvas_docks;
 
+/* Signal callbacks keep a raw dock pointer. A closed dock stays out of this
+ * list, so a late "remove" during ClearSceneData can bail out before it
+ * touches the freed object. */
+static bool CanvasDockLive(void *data)
+{
+	auto *dock = static_cast<CanvasDock *>(data);
+	for (auto *it : canvas_docks) {
+		if (it == dock)
+			return true;
+	}
+	return false;
+}
+
 extern obs_websocket_vendor vendor;
 
 CanvasDock::CanvasDock(obs_data_t *settings_, QWidget *parent)
@@ -2029,12 +2042,14 @@ void CanvasDock::DrawPreview(void *data, uint32_t cx, uint32_t cy)
 
 CanvasDock::~CanvasDock()
 {
+	/* Drop the live pointer before anything below can emit source signals. */
+	canvas_docks.remove(this);
+
 	for (auto projector : projectors) {
 		delete projector;
 	}
 	projectors.clear();
 	obs_frontend_remove_save_callback(save_load, this);
-	canvas_docks.remove(this);
 	if (preview && preview->GetDisplay()) {
 		obs_display_set_enabled(preview->GetDisplay(), false);
 		obs_display_remove_draw_callback(preview->GetDisplay(), DrawPreview, this);
@@ -2048,6 +2063,15 @@ CanvasDock::~CanvasDock()
 		sourceList->Clear();
 	stretchGroup = nullptr;
 	stretchItem = nullptr;
+	if (scene) {
+		obs_source_t *editing = obs_scene_get_source(scene);
+		signal_handler_t *itemSignals = editing ? obs_source_get_signal_handler(editing) : nullptr;
+		if (itemSignals) {
+			signal_handler_disconnect(itemSignals, "item_add", SceneItemAdded, this);
+			signal_handler_disconnect(itemSignals, "reorder", SceneReordered, this);
+			signal_handler_disconnect(itemSignals, "refresh", SceneRefreshed, this);
+		}
+	}
 	scene = nullptr;
 
 	obs_source_t *oldTransition = obs_weak_source_get_source(source);
@@ -2063,6 +2087,25 @@ CanvasDock::~CanvasDock()
 	transitions.clear();
 
 	if (canvas) {
+		obs_canvas_enum_scenes(
+			canvas,
+			[](void *param, obs_source_t *src) {
+				auto *dock = static_cast<CanvasDock *>(param);
+				auto *sh = obs_source_get_signal_handler(src);
+				if (!sh)
+					return true;
+				/* SceneAdded can connect the same callback more than once.
+				 * disconnect removes a single match. */
+				for (int i = 0; i < 4; i++) {
+					signal_handler_disconnect(sh, "rename", source_rename, dock);
+					signal_handler_disconnect(sh, "remove", source_remove, dock);
+					signal_handler_disconnect(sh, "item_add", SceneItemAdded, dock);
+					signal_handler_disconnect(sh, "reorder", SceneReordered, dock);
+					signal_handler_disconnect(sh, "refresh", SceneRefreshed, dock);
+				}
+				return true;
+			},
+			this);
 		auto sh = obs_canvas_get_signal_handler(canvas);
 		if (sh)
 			signal_handler_disconnect(sh, "source_add", source_add, this);
@@ -3451,6 +3494,8 @@ void CanvasDock::SwitchScene(const QString &scene_name, bool transition)
 
 void CanvasDock::SceneItemAdded(void *data, calldata_t *params)
 {
+	if (!CanvasDockLive(data))
+		return;
 	CanvasDock *window = static_cast<CanvasDock *>(data);
 
 	obs_sceneitem_t *item = (obs_sceneitem_t *)calldata_ptr(params, "item");
@@ -3461,6 +3506,8 @@ void CanvasDock::SceneItemAdded(void *data, calldata_t *params)
 
 void CanvasDock::SceneReordered(void *data, calldata_t *params)
 {
+	if (!CanvasDockLive(data))
+		return;
 	CanvasDock *window = static_cast<CanvasDock *>(data);
 
 	obs_scene_t *scene = (obs_scene_t *)calldata_ptr(params, "scene");
@@ -3470,6 +3517,8 @@ void CanvasDock::SceneReordered(void *data, calldata_t *params)
 
 void CanvasDock::SceneRefreshed(void *data, calldata_t *params)
 {
+	if (!CanvasDockLive(data))
+		return;
 	CanvasDock *window = static_cast<CanvasDock *>(data);
 
 	obs_scene_t *scene = (obs_scene_t *)calldata_ptr(params, "scene");
@@ -5271,6 +5320,8 @@ void CanvasDock::UpdateLinkedScenes()
 
 void CanvasDock::source_rename(void *data, calldata_t *calldata)
 {
+	if (!CanvasDockLive(data))
+		return;
 	const auto d = static_cast<CanvasDock *>(data);
 	const auto prev_name = QString::fromUtf8(calldata_string(calldata, "prev_name"));
 	const auto new_name = QString::fromUtf8(calldata_string(calldata, "new_name"));
@@ -5321,6 +5372,8 @@ void CanvasDock::source_rename(void *data, calldata_t *calldata)
 
 void CanvasDock::source_add(void *data, calldata_t *calldata)
 {
+	if (!CanvasDockLive(data))
+		return;
 	const auto d = static_cast<CanvasDock *>(data);
 	const auto source = (obs_source_t *)calldata_ptr(calldata, "source");
 	if (!obs_source_is_scene(source)) {
@@ -5379,6 +5432,8 @@ void CanvasDock::SceneAdded(const QString sn)
 
 void CanvasDock::source_remove(void *data, calldata_t *calldata)
 {
+	if (!CanvasDockLive(data))
+		return;
 	const auto d = static_cast<CanvasDock *>(data);
 	const auto source = (obs_source_t *)calldata_ptr(calldata, "source");
 	if (!obs_source_is_scene(source)) {
